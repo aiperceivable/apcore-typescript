@@ -41,6 +41,7 @@ export class SchemaExporter {
         destructiveHint: annotations?.destructive ?? false,
         idempotentHint: annotations?.idempotent ?? false,
         openWorldHint: annotations?.openWorld ?? true,
+        streaming: annotations?.streaming ?? false,
       },
     };
   }

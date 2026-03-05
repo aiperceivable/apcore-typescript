@@ -115,6 +115,11 @@ export class Registry {
   private _idMapPath: string | null = null;
   private _idMapLoaded = false;
 
+  // Safe hot-reload state (F09 / Algorithm A21)
+  private _refCounts: Map<string, number> = new Map();
+  private _draining: Set<string> = new Set();
+  private _drainResolvers: Map<string, Array<() => void>> = new Map();
+
   constructor(options?: {
     config?: Config | null;
     extensionsDir?: string | null;
@@ -633,5 +638,125 @@ export class Registry {
 
   clearCache(): void {
     this._schemaCache.clear();
+  }
+
+  // ── Safe Hot-Reload (F09 / Algorithm A21) ───────────────────────
+
+  /**
+   * Number of in-flight executions per module.
+   */
+  get refCount(): ReadonlyMap<string, number> {
+    return new Map(this._refCounts);
+  }
+
+  /**
+   * Acquire a reference to a module for execution.
+   *
+   * Increments the reference count. Throws ModuleNotFoundError if the
+   * module is draining or not registered. Call {@link release} when done.
+   */
+  acquire(moduleId: string): unknown {
+    if (this._draining.has(moduleId)) {
+      throw new ModuleNotFoundError(moduleId);
+    }
+    const mod = this._modules.get(moduleId);
+    if (mod == null) {
+      throw new ModuleNotFoundError(moduleId);
+    }
+    this._refCounts.set(moduleId, (this._refCounts.get(moduleId) ?? 0) + 1);
+    return mod;
+  }
+
+  /**
+   * Release a previously acquired module reference.
+   *
+   * Decrements the reference count and notifies drain waiters when it
+   * reaches zero.
+   */
+  release(moduleId: string): void {
+    const count = (this._refCounts.get(moduleId) ?? 1) - 1;
+    if (count <= 0) {
+      this._refCounts.delete(moduleId);
+      const resolvers = this._drainResolvers.get(moduleId);
+      if (resolvers) {
+        for (const resolve of resolvers) resolve();
+        this._drainResolvers.delete(moduleId);
+      }
+    } else {
+      this._refCounts.set(moduleId, count);
+    }
+  }
+
+  /**
+   * Check whether a module is marked for unload (draining).
+   */
+  isDraining(moduleId: string): boolean {
+    return this._draining.has(moduleId);
+  }
+
+  /**
+   * Mark a module as draining so no new acquire() calls are accepted.
+   */
+  beginDrain(moduleId: string): void {
+    this._draining.add(moduleId);
+  }
+
+  /**
+   * Remove the draining mark and clean up drain state.
+   */
+  endDrain(moduleId: string): void {
+    this._draining.delete(moduleId);
+    this._drainResolvers.delete(moduleId);
+    this._refCounts.delete(moduleId);
+  }
+
+  /**
+   * Wait until all in-flight executions of a module have completed.
+   *
+   * Returns a promise that resolves to `true` if the module drained
+   * cleanly, or `false` if the timeout was reached.
+   */
+  waitDrained(moduleId: string, timeoutMs: number = 5000): Promise<boolean> {
+    const current = this._refCounts.get(moduleId) ?? 0;
+    if (current <= 0) return Promise.resolve(true);
+
+    return new Promise<boolean>((resolve) => {
+      const resolvers = this._drainResolvers.get(moduleId) ?? [];
+      resolvers.push(() => resolve(true));
+      this._drainResolvers.set(moduleId, resolvers);
+
+      setTimeout(() => {
+        // If still draining when timeout fires, resolve false
+        if (this._refCounts.has(moduleId)) {
+          resolve(false);
+        }
+      }, timeoutMs);
+    });
+  }
+
+  /**
+   * Safely unregister a module with cooperative drain.
+   *
+   * Marks the module as draining, waits for in-flight executions to
+   * complete (up to timeoutMs), then unregisters the module.
+   *
+   * Returns true if drained cleanly, false if force-unloaded after timeout.
+   */
+  async safeUnregister(moduleId: string, timeoutMs: number = 5000): Promise<boolean> {
+    if (!this._modules.has(moduleId)) return false;
+
+    this.beginDrain(moduleId);
+    const clean = await this.waitDrained(moduleId, timeoutMs);
+
+    if (!clean) {
+      console.warn(
+        `[apcore:registry] Force-unloading module ${moduleId} after ${timeoutMs}ms timeout ` +
+        `(${this._refCounts.get(moduleId) ?? 0} in-flight executions)`,
+      );
+    }
+
+    this.endDrain(moduleId);
+    this.unregister(moduleId);
+    return clean;
   }
 }

@@ -151,6 +151,16 @@ export class Executor {
     }
   }
 
+  static fromRegistry(
+    registry: Registry,
+    middlewares?: Middleware[] | null,
+    acl?: ACL | null,
+    config?: Config | null,
+    approvalHandler?: ApprovalHandler | null,
+  ): Executor {
+    return new Executor({ registry, middlewares, acl, config, approvalHandler });
+  }
+
   get registry(): Registry {
     return this._registry;
   }

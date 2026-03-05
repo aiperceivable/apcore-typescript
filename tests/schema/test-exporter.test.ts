@@ -66,6 +66,22 @@ describe('SchemaExporter', () => {
       expect(annots['destructiveHint']).toBe(false);
       expect(annots['idempotentHint']).toBe(true);
       expect(annots['openWorldHint']).toBe(false);
+      expect(annots['streaming']).toBe(false);
+    });
+
+    it('includes streaming hint when annotation is true', () => {
+      const sd = makeSchemaDef();
+      const annotations: ModuleAnnotations = {
+        readonly: false,
+        destructive: false,
+        idempotent: false,
+        requiresApproval: false,
+        openWorld: true,
+        streaming: true,
+      };
+      const result = exporter.exportMcp(sd, annotations);
+      const annots = result['annotations'] as Record<string, unknown>;
+      expect(annots['streaming']).toBe(true);
     });
 
     it('falls back to moduleId when name is null', () => {
@@ -82,6 +98,7 @@ describe('SchemaExporter', () => {
       expect(annots['destructiveHint']).toBe(false);
       expect(annots['idempotentHint']).toBe(false);
       expect(annots['openWorldHint']).toBe(true);
+      expect(annots['streaming']).toBe(false);
     });
   });
 
