@@ -66,10 +66,11 @@ export type { ErrorCode, ErrorOptions } from './errors.js';
 
 // ACL
 export { ACL } from './acl.js';
-export type { ACLRule } from './acl.js';
+export type { ACLRule, AuditEntry, AuditLogger } from './acl.js';
 
 // Middleware
-export { Middleware, MiddlewareManager, MiddlewareChainError, BeforeMiddleware, AfterMiddleware, LoggingMiddleware } from './middleware/index.js';
+export { Middleware, MiddlewareManager, MiddlewareChainError, BeforeMiddleware, AfterMiddleware, LoggingMiddleware, RetryMiddleware } from './middleware/index.js';
+export type { RetryConfig } from './middleware/index.js';
 
 // Decorator
 export { module, FunctionModule, normalizeResult, makeAutoId } from './decorator.js';
@@ -86,7 +87,16 @@ export type { TaskInfo } from './async-task.js';
 export { BindingLoader } from './bindings.js';
 
 // Utils
-export { matchPattern } from './utils/pattern.js';
+export { matchPattern, calculateSpecificity } from './utils/pattern.js';
+export { normalizeToCanonicalId } from './utils/normalize.js';
+export { guardCallChain, DEFAULT_MAX_CALL_DEPTH, DEFAULT_MAX_MODULE_REPEAT } from './utils/call-chain.js';
+export { propagateError } from './utils/error-propagation.js';
+
+// Error Code Registry
+export { ErrorCodeRegistry, ErrorCodeCollisionError, FRAMEWORK_ERROR_CODE_PREFIXES } from './error-code-registry.js';
+
+// Version
+export { negotiateVersion, VersionIncompatibleError } from './version.js';
 
 // Schema
 export { SchemaLoader, jsonSchemaToTypeBox } from './schema/loader.js';
@@ -110,4 +120,4 @@ export { ContextLogger, ObsLoggingMiddleware } from './observability/context-log
 export { TraceContext } from './trace-context.js';
 export type { TraceParent } from './trace-context.js';
 
-export const VERSION = '0.7.1';
+export const VERSION = '0.8.0';

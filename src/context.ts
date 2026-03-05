@@ -23,7 +23,7 @@ export function createIdentity(
   return Object.freeze({ id, type, roles: Object.freeze([...roles]), attrs: Object.freeze({ ...attrs }) });
 }
 
-export class Context {
+export class Context<T = null> {
   readonly traceId: string;
   readonly callerId: string | null;
   readonly callChain: readonly string[];
@@ -31,6 +31,7 @@ export class Context {
   readonly identity: Identity | null;
   redactedInputs: Record<string, unknown> | null;
   readonly data: Record<string, unknown>;
+  readonly services: T;
   readonly cancelToken: CancelToken | null;
 
   constructor(
@@ -42,6 +43,7 @@ export class Context {
     redactedInputs: Record<string, unknown> | null = null,
     data: Record<string, unknown> = {},
     cancelToken: CancelToken | null = null,
+    services: T = null as T,
   ) {
     this.traceId = traceId;
     this.callerId = callerId;
@@ -50,6 +52,7 @@ export class Context {
     this.identity = identity;
     this.redactedInputs = redactedInputs;
     this.data = data;
+    this.services = services;
     this.cancelToken = cancelToken;
   }
 
@@ -60,12 +63,13 @@ export class Context {
    * converted to UUID format (8-4-4-4-12) and used instead of generating
    * a new one.
    */
-  static create(
+  static create<S = null>(
     executor: unknown = null,
     identity: Identity | null = null,
     data?: Record<string, unknown>,
     traceParent?: TraceParent | null,
-  ): Context {
+    services?: S,
+  ): Context<S> {
     let traceId: string;
     if (traceParent) {
       const h = traceParent.traceId;
@@ -73,7 +77,7 @@ export class Context {
     } else {
       traceId = uuidv4();
     }
-    return new Context(
+    return new Context<S>(
       traceId,
       null,
       [],
@@ -81,6 +85,8 @@ export class Context {
       identity,
       null,
       data ?? {},
+      null,
+      services ?? (null as S),
     );
   }
 
@@ -135,8 +141,8 @@ export class Context {
     };
   }
 
-  child(targetModuleId: string): Context {
-    return new Context(
+  child(targetModuleId: string): Context<T> {
+    return new Context<T>(
       this.traceId,
       this.callChain.length > 0 ? this.callChain[this.callChain.length - 1] : null,
       [...this.callChain, targetModuleId],
@@ -145,6 +151,7 @@ export class Context {
       null,
       this.data, // shared reference
       this.cancelToken,
+      this.services,
     );
   }
 }

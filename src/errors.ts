@@ -681,6 +681,8 @@ export const ErrorCodes = Object.freeze({
   APPROVAL_DENIED: "APPROVAL_DENIED",
   APPROVAL_TIMEOUT: "APPROVAL_TIMEOUT",
   APPROVAL_PENDING: "APPROVAL_PENDING",
+  VERSION_INCOMPATIBLE: "VERSION_INCOMPATIBLE",
+  ERROR_CODE_COLLISION: "ERROR_CODE_COLLISION",
   // Forward declarations for Level 2 Phase 2 features.
   // Exception classes will be added when the corresponding features are implemented.
   GENERAL_NOT_IMPLEMENTED: "GENERAL_NOT_IMPLEMENTED",

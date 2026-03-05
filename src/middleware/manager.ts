@@ -7,6 +7,8 @@ import { ModuleError } from '../errors.js';
 import { Middleware } from './base.js';
 
 export class MiddlewareChainError extends ModuleError {
+  static override readonly DEFAULT_RETRYABLE: boolean | null = false;
+
   readonly original: Error;
   readonly executedMiddlewares: Middleware[];
 

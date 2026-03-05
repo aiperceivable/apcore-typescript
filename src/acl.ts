@@ -19,6 +19,23 @@ export interface ACLRule {
   conditions?: Record<string, unknown> | null;
 }
 
+/** Structured record of an ACL check decision. */
+export interface AuditEntry {
+  readonly timestamp: string; // ISO 8601
+  readonly callerId: string;
+  readonly targetId: string;
+  readonly decision: string; // "allow" or "deny"
+  readonly reason: string; // "rule_match", "default_effect", "no_rules"
+  readonly matchedRule: string | null; // Rule description
+  readonly matchedRuleIndex: number | null;
+  readonly identityType: string | null;
+  readonly roles: readonly string[];
+  readonly callDepth: number | null;
+  readonly traceId: string | null;
+}
+
+export type AuditLogger = (entry: AuditEntry) => void;
+
 function parseAclRule(rawRule: unknown, index: number): ACLRule {
   if (typeof rawRule !== 'object' || rawRule === null || Array.isArray(rawRule)) {
     throw new ACLRuleError(`Rule ${index} must be a mapping, got ${typeof rawRule}`);
@@ -59,14 +76,16 @@ export class ACL {
   private _rules: ACLRule[];
   private _defaultEffect: string;
   private _yamlPath: string | null = null;
+  private _auditLogger: AuditLogger | null = null;
   debug: boolean = false;
 
-  constructor(rules: ACLRule[], defaultEffect: string = 'deny') {
+  constructor(rules: ACLRule[], defaultEffect: string = 'deny', auditLogger?: AuditLogger | null) {
     if (defaultEffect !== 'allow' && defaultEffect !== 'deny') {
       throw new ACLRuleError(`Invalid default_effect '${defaultEffect}', must be 'allow' or 'deny'`);
     }
     this._rules = [...rules];
     this._defaultEffect = defaultEffect;
+    this._auditLogger = auditLogger ?? null;
   }
 
   static load(yamlPath: string): ACL {
@@ -108,14 +127,69 @@ export class ACL {
 
   check(callerId: string | null, targetId: string, context?: Context | null): boolean {
     const effectiveCaller = callerId === null ? '@external' : callerId;
+    const ctx = context ?? null;
 
-    for (const rule of this._rules) {
-      if (this._matchesRule(rule, effectiveCaller, targetId, context ?? null)) {
-        return rule.effect === 'allow';
+    for (let idx = 0; idx < this._rules.length; idx++) {
+      const rule = this._rules[idx];
+      if (this._matchesRule(rule, effectiveCaller, targetId, ctx)) {
+        const decision = rule.effect === 'allow';
+        if (this._auditLogger) {
+          this._auditLogger(this._buildAuditEntry(
+            effectiveCaller, targetId, decision ? 'allow' : 'deny',
+            'rule_match', rule, idx, ctx,
+          ));
+        }
+        return decision;
       }
     }
 
-    return this._defaultEffect === 'allow';
+    const defaultDecision = this._defaultEffect === 'allow';
+    if (this._auditLogger) {
+      const reason = this._rules.length === 0 ? 'no_rules' : 'default_effect';
+      this._auditLogger(this._buildAuditEntry(
+        effectiveCaller, targetId, defaultDecision ? 'allow' : 'deny',
+        reason, null, null, ctx,
+      ));
+    }
+    return defaultDecision;
+  }
+
+  private _buildAuditEntry(
+    callerId: string,
+    targetId: string,
+    decision: string,
+    reason: string,
+    matchedRule: ACLRule | null,
+    matchedRuleIndex: number | null,
+    context: Context | null,
+  ): AuditEntry {
+    let identityType: string | null = null;
+    let roles: readonly string[] = [];
+    let callDepth: number | null = null;
+    let traceId: string | null = null;
+
+    if (context !== null) {
+      traceId = context.traceId;
+      callDepth = context.callChain.length;
+      if (context.identity !== null) {
+        identityType = context.identity.type;
+        roles = context.identity.roles;
+      }
+    }
+
+    return {
+      timestamp: new Date().toISOString(),
+      callerId,
+      targetId,
+      decision,
+      reason,
+      matchedRule: matchedRule?.description ?? null,
+      matchedRuleIndex,
+      identityType,
+      roles,
+      callDepth,
+      traceId,
+    };
   }
 
   private _matchPattern(pattern: string, value: string, context: Context | null): boolean {
@@ -200,5 +274,6 @@ export class ACL {
     const reloaded = ACL.load(this._yamlPath);
     this._rules = reloaded._rules;
     this._defaultEffect = reloaded._defaultEffect;
+    // Preserve auditLogger — reload only refreshes rules and default effect
   }
 }

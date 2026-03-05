@@ -5,6 +5,64 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] - 2026-03-05
+
+### Added
+
+#### Executor Enhancements
+- **Dual-timeout model** — Global deadline enforcement (`executor.global_timeout`) alongside per-module timeout. The shorter of the two is applied, preventing nested call chains from exceeding the global budget.
+- **Error propagation (Algorithm A11)** — All execution paths wrap exceptions via `propagateError()`, ensuring middleware always receives `ModuleError` instances with trace context.
+
+#### Error System
+- **ErrorCodeRegistry** — Custom module error codes are validated against framework prefixes and other modules to prevent collisions. Raises `ErrorCodeCollisionError` on conflict.
+- **VersionIncompatibleError** — New error class for SDK/config version mismatches with `negotiateVersion()` utility.
+- **MiddlewareChainError** — Now explicitly `DEFAULT_RETRYABLE = false` per PROTOCOL_SPEC §8.6.
+- **ErrorCodes** — Added `VERSION_INCOMPATIBLE` and `ERROR_CODE_COLLISION` constants (34 total).
+
+#### Utilities
+- **`guardCallChain()`** — Standalone Algorithm A20 implementation for call chain safety checks (depth, circular, frequency). Executor delegates to this utility instead of inline logic.
+- **`propagateError()`** — Standalone Algorithm A11 implementation for error wrapping and trace context attachment.
+- **`normalizeToCanonicalId()`** — Cross-language module ID normalization (Python snake_case, Go PascalCase, etc.).
+- **`calculateSpecificity()`** — ACL pattern specificity scoring for deterministic rule ordering.
+
+#### ACL Enhancements
+- **Audit logging** — `ACL` constructor accepts optional `auditLogger` callback. All access decisions emit `AuditEntry` with timestamp, caller/target IDs, matched rule, identity, and trace context.
+- **Condition-based rules** — ACL rules support `conditions` for identity type, role, and call depth filtering.
+
+#### Config System
+- **Full validation** — `Config.validate()` checks schema structure, value types, and range constraints.
+- **Hot reload** — `Config.reload()` re-reads the YAML source and re-validates.
+- **Environment overrides** — `APCORE_*` environment variables override config values (e.g., `APCORE_EXECUTOR_DEFAULT_TIMEOUT=5000`).
+- **`Config.fromDefaults()`** — Factory method for default configuration.
+
+#### Middleware
+- **RetryMiddleware** — Configurable retry with exponential/fixed backoff, jitter, and max delay. Only retries errors marked `retryable: true`.
+
+#### Context
+- **Generic `services` typing** — `Context<T>` supports typed dependency injection via the `services` field.
+
+### Changed
+
+#### Executor Internals
+- `_checkSafety()` now delegates to standalone `guardCallChain()` instead of inline duplicated logic.
+- Global deadline set on root call only, propagated to child contexts via shared `data['_global_deadline']`.
+
+#### Public API
+- Expanded `index.ts` exports with new symbols: `RetryMiddleware`, `RetryConfig`, `ErrorCodeRegistry`, `ErrorCodeCollisionError`, `VersionIncompatibleError`, `negotiateVersion`, `guardCallChain`, `propagateError`, `normalizeToCanonicalId`, `calculateSpecificity`, `AuditEntry`.
+
+## [0.7.2] - 2026-03-04
+
+### Fixed
+- **CHANGELOG cleanup** — Removed duplicate entries that were incorrectly repeated in the 0.4.0 and 0.3.0 sections.
+
+### Changed
+- **README.md** — Added documentation link section pointing to the official Getting Started guide. Updated project structure to reflect files added in recent releases (`async-task.ts`, `cancel.ts`, `extensions.ts`, `trace-context.ts`), and corrected error class count from 20+ to 30+.
+
+## [0.7.1] - 2026-03-03
+
+### Changed
+- **`license` field aligned** — Updated `package.json` `license` field from `"MIT"` to `"Apache-2.0"` to match the license file change made in 0.7.0.
+
 ## [0.7.0] - 2026-03-02
 
 ### Added

@@ -28,3 +28,33 @@ export function matchPattern(pattern: string, moduleId: string): boolean {
 
   return true;
 }
+
+/**
+ * Calculate the specificity score of an ACL pattern (Algorithm A10).
+ *
+ * Higher scores indicate more specific patterns. Scoring per segment:
+ * - "*" (pure wildcard) -> 0
+ * - Segment containing "*" (partial wildcard) -> +1
+ * - Exact segment (no wildcard) -> +2
+ *
+ * @example
+ * calculateSpecificity("*")                       // 0
+ * calculateSpecificity("api.*")                   // 2
+ * calculateSpecificity("api.handler.*")           // 4
+ * calculateSpecificity("api.handler.task_submit") // 6
+ */
+export function calculateSpecificity(pattern: string): number {
+  if (pattern === '*') return 0;
+
+  let score = 0;
+  for (const segment of pattern.split('.')) {
+    if (segment === '*') {
+      // +0
+    } else if (segment.includes('*')) {
+      score += 1;
+    } else {
+      score += 2;
+    }
+  }
+  return score;
+}

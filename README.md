@@ -20,6 +20,11 @@ apcore provides a unified task orchestration framework with schema validation, a
 - **Observability** — Tracing (spans + exporters), metrics (counters + histograms + Prometheus export), structured logging with redaction
 - **Schema export** — JSON/YAML schema export with strict and compact modes
 
+## Documentation
+
+For full documentation, including Quick Start guides for both Python and TypeScript, visit:
+**[https://aipartnerup.github.io/apcore/getting-started.html](https://aipartnerup.github.io/apcore/getting-started.html)**
+
 ## Requirements
 
 - Node.js >= 18.0.0
@@ -65,10 +70,14 @@ src/
   config.ts             # Dot-path configuration accessor
   acl.ts                # Access control with pattern matching
   approval.ts           # Pluggable approval gate (handlers, request/result types)
+  async-task.ts         # Async task manager
+  cancel.ts             # Cancellation token support
   decorator.ts          # FunctionModule class and helpers
   bindings.ts           # YAML binding loader
-  errors.ts             # Error hierarchy (20+ typed errors)
+  errors.ts             # Error hierarchy (30+ typed errors)
+  extensions.ts         # Extension manager
   module.ts             # Module types and annotations
+  trace-context.ts     # W3C trace context (inject/extract)
   middleware/
     base.ts             # Middleware base class
     manager.ts          # MiddlewareManager (onion model)

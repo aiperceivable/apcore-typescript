@@ -18,9 +18,6 @@ import {
   ApprovalDeniedError,
   ApprovalPendingError,
   ApprovalTimeoutError,
-  CallDepthExceededError,
-  CallFrequencyExceededError,
-  CircularCallError,
   InvalidInputError,
   ModuleNotFoundError,
   ModuleTimeoutError,
@@ -28,6 +25,7 @@ import {
 } from './errors.js';
 import { AfterMiddleware, BeforeMiddleware, Middleware } from './middleware/index.js';
 import { MiddlewareChainError, MiddlewareManager } from './middleware/manager.js';
+import { guardCallChain } from './utils/call-chain.js';
 import type { ModuleAnnotations, ValidationResult } from './module.js';
 import { DEFAULT_ANNOTATIONS } from './module.js';
 import type { Registry } from './registry/registry.js';
@@ -117,6 +115,7 @@ export class Executor {
   private _config: Config | null;
   private _approvalHandler: ApprovalHandler | null;
   private _defaultTimeout: number;
+  private _globalTimeout: number;
   private _maxCallDepth: number;
   private _maxModuleRepeat: number;
 
@@ -141,10 +140,12 @@ export class Executor {
 
     if (this._config !== null) {
       this._defaultTimeout = (this._config.get('executor.default_timeout') as number) ?? 30000;
+      this._globalTimeout = (this._config.get('executor.global_timeout') as number) ?? 60000;
       this._maxCallDepth = (this._config.get('executor.max_call_depth') as number) ?? 32;
       this._maxModuleRepeat = (this._config.get('executor.max_module_repeat') as number) ?? 3;
     } else {
       this._defaultTimeout = 30000;
+      this._globalTimeout = 60000;
       this._maxCallDepth = 32;
       this._maxModuleRepeat = 3;
     }
@@ -194,6 +195,12 @@ export class Executor {
   ): Promise<Record<string, unknown>> {
     let effectiveInputs = inputs ?? {};
     const ctx = this._createContext(moduleId, context);
+
+    // Set global deadline on root call only
+    if (!('_global_deadline' in ctx.data) && this._globalTimeout > 0) {
+      ctx.data['_global_deadline'] = Date.now() + this._globalTimeout;
+    }
+
     this._checkSafety(moduleId, ctx);
 
     const mod = this._lookupModule(moduleId);
@@ -237,6 +244,12 @@ export class Executor {
   ): AsyncGenerator<Record<string, unknown>> {
     let effectiveInputs = inputs ?? {};
     const ctx = this._createContext(moduleId, context);
+
+    // Set global deadline on root call only
+    if (!('_global_deadline' in ctx.data) && this._globalTimeout > 0) {
+      ctx.data['_global_deadline'] = Date.now() + this._globalTimeout;
+    }
+
     this._checkSafety(moduleId, ctx);
 
     const mod = this._lookupModule(moduleId);
@@ -464,28 +477,7 @@ export class Executor {
   }
 
   private _checkSafety(moduleId: string, ctx: Context): void {
-    const callChain = ctx.callChain;
-
-    // Depth check
-    if (callChain.length > this._maxCallDepth) {
-      throw new CallDepthExceededError(callChain.length, this._maxCallDepth, [...callChain]);
-    }
-
-    // Circular detection (strict cycles of length >= 2)
-    const priorChain = callChain.slice(0, -1);
-    const lastIdx = priorChain.lastIndexOf(moduleId);
-    if (lastIdx !== -1) {
-      const subsequence = priorChain.slice(lastIdx + 1);
-      if (subsequence.length > 0) {
-        throw new CircularCallError(moduleId, [...callChain]);
-      }
-    }
-
-    // Frequency check
-    const count = callChain.filter((id) => id === moduleId).length;
-    if (count > this._maxModuleRepeat) {
-      throw new CallFrequencyExceededError(moduleId, count, this._maxModuleRepeat, [...callChain]);
-    }
+    guardCallChain(moduleId, ctx.callChain, this._maxCallDepth, this._maxModuleRepeat);
   }
 
   /** Check if a module requires approval, handling both interface and dict annotations. */
@@ -597,7 +589,19 @@ export class Executor {
     inputs: Record<string, unknown>,
     ctx: Context,
   ): Promise<Record<string, unknown>> {
-    const timeoutMs = this._defaultTimeout;
+    let timeoutMs = this._defaultTimeout;
+
+    // Respect global deadline: use whichever is shorter
+    const globalDeadline = ctx.data['_global_deadline'] as number | undefined;
+    if (globalDeadline !== undefined) {
+      const remaining = globalDeadline - Date.now();
+      if (remaining <= 0) {
+        throw new ModuleTimeoutError(moduleId, 0);
+      }
+      if (timeoutMs === 0 || remaining < timeoutMs) {
+        timeoutMs = remaining;
+      }
+    }
 
     if (timeoutMs < 0) {
       throw new InvalidInputError(`Negative timeout: ${timeoutMs}ms`);

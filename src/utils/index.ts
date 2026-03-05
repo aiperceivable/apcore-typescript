@@ -1,4 +1,7 @@
-export { matchPattern } from './pattern.js';
+export { matchPattern, calculateSpecificity } from './pattern.js';
+export { normalizeToCanonicalId } from './normalize.js';
+export { guardCallChain, DEFAULT_MAX_CALL_DEPTH, DEFAULT_MAX_MODULE_REPEAT } from './call-chain.js';
+export { propagateError } from './error-propagation.js';
 
 // Lazy-load node:crypto for environments without globalThis.crypto (Node.js < 19)
 let _nodeCrypto: typeof import('node:crypto') | undefined;
