@@ -636,6 +636,43 @@ export class Registry {
     return null;
   }
 
+  /**
+   * Register a module bypassing reserved-word checks.
+   * Used exclusively by the sys-modules subsystem for system.* IDs.
+   */
+  registerInternal(moduleId: string, module: unknown): void {
+    if (!moduleId || typeof moduleId !== "string") {
+      throw new InvalidInputError("Module ID must be a non-empty string");
+    }
+    if (!MODULE_ID_PATTERN.test(moduleId)) {
+      throw new InvalidInputError(
+        `Invalid module ID: "${moduleId}". Must match pattern: ${MODULE_ID_PATTERN}`,
+      );
+    }
+    if (moduleId.length > MAX_MODULE_ID_LENGTH) {
+      throw new InvalidInputError(`Module ID exceeds maximum length of ${MAX_MODULE_ID_LENGTH}: ${moduleId.length}`);
+    }
+    if (this._modules.has(moduleId)) {
+      throw new InvalidInputError(`Module already exists: ${moduleId}`);
+    }
+
+    this._modules.set(moduleId, module);
+    const modObj = module as Record<string, unknown>;
+    this._moduleMeta.set(moduleId, mergeModuleMetadata(modObj, {}));
+
+    if (typeof modObj['onLoad'] === 'function') {
+      try {
+        (modObj['onLoad'] as () => void)();
+      } catch (e) {
+        this._modules.delete(moduleId);
+        this._moduleMeta.delete(moduleId);
+        throw e;
+      }
+    }
+
+    this._triggerEvent(REGISTRY_EVENTS.REGISTER, moduleId, module);
+  }
+
   clearCache(): void {
     this._schemaCache.clear();
   }

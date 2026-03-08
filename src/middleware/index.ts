@@ -6,3 +6,5 @@ export { LoggingMiddleware } from './logging.js';
 export type { Logger } from './logging.js';
 export { RetryMiddleware, CTX_RETRY_COUNT_PREFIX, CTX_RETRY_DELAY_PREFIX } from './retry.js';
 export type { RetryConfig } from './retry.js';
+export { ErrorHistoryMiddleware } from './error-history.js';
+export { PlatformNotifyMiddleware } from './platform-notify.js';

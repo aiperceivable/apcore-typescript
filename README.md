@@ -22,7 +22,7 @@ apcore provides a unified task orchestration framework with schema validation, a
 
 ## Documentation
 
-For full documentation, including Quick Start guides for both Python and TypeScript, visit:
+For full documentation, including Quick Start guides and API reference, visit:
 **[https://aipartnerup.github.io/apcore/getting-started.html](https://aipartnerup.github.io/apcore/getting-started.html)**
 
 ## Requirements
@@ -92,6 +92,7 @@ const result = await executor.call('example.greet', { name: 'World' });
 ```
 src/
   index.ts              # Public API exports
+  client.ts             # High-level APCore client (unified entry point)
   executor.ts           # 11-step execution pipeline
   context.ts            # Execution context and identity
   config.ts             # Dot-path configuration accessor
@@ -101,16 +102,27 @@ src/
   cancel.ts             # Cancellation token support
   decorator.ts          # FunctionModule class and helpers
   bindings.ts           # YAML binding loader
-  errors.ts             # Error hierarchy (36 typed errors)
+  errors.ts             # Error hierarchy (35 typed errors)
+  error-code-registry.ts # Custom error code registration with collision detection
   extensions.ts         # Extension manager
   module.ts             # Module types and annotations
-  trace-context.ts     # W3C trace context (inject/extract)
+  trace-context.ts      # W3C trace context (inject/extract)
+  version.ts            # Version negotiation (semver parsing)
+  events/
+    index.ts            # Event module barrel exports
+    emitter.ts          # Global event bus with fan-out delivery
+    subscribers.ts      # Webhook and A2A protocol event subscribers
   middleware/
+    index.ts            # Middleware barrel exports
     base.ts             # Middleware base class
     manager.ts          # MiddlewareManager (onion model)
     adapters.ts         # BeforeMiddleware, AfterMiddleware adapters
     logging.ts          # LoggingMiddleware
+    retry.ts            # RetryMiddleware for automatic retry of retryable errors
+    error-history.ts    # Middleware that records errors into ErrorHistory
+    platform-notify.ts  # Threshold sensor with hysteresis for error/latency alerts
   registry/
+    index.ts            # Registry barrel exports
     registry.ts         # Registry with discover() pipeline
     scanner.ts          # File-based module discovery
     entry-point.ts      # Dynamic import and entry point resolution
@@ -120,18 +132,36 @@ src/
     schema-export.ts    # Schema export (JSON/YAML, strict/compact)
     types.ts            # Registry type definitions
   schema/
+    index.ts            # Schema barrel exports
     loader.ts           # JSON Schema to TypeBox conversion
     validator.ts        # Schema validation
     exporter.ts         # Schema serialization
     ref-resolver.ts     # $ref resolution
     strict.ts           # Strict schema transforms
     types.ts            # Schema type definitions
+    annotations.ts      # Annotation conflict resolution (YAML + code metadata)
   observability/
+    index.ts            # Observability barrel exports
     tracing.ts          # Span, SpanExporter, TracingMiddleware
     metrics.ts          # MetricsCollector, MetricsMiddleware
+    metrics-utils.ts    # Shared metric extraction utilities
     context-logger.ts   # ContextLogger, ObsLoggingMiddleware
+    usage.ts            # Time-windowed usage tracking with analytics
+    error-history.ts    # Error history with ring-buffer eviction and dedup
+  sys-modules/
+    index.ts            # System module barrel exports
+    registration.ts     # Auto-registration of sys.* modules and middleware
+    control.ts          # Runtime config update and hot-reload modules
+    health.ts           # System and per-module health modules
+    manifest.ts         # Module metadata and system manifest modules
+    toggle.ts           # Module disable/enable without unloading
+    usage.ts            # Usage summary and per-module usage detail modules
   utils/
+    index.ts            # Utils barrel exports
     pattern.ts          # Glob-style pattern matching
+    call-chain.ts       # Call chain safety guard (depth, frequency, cycles)
+    error-propagation.ts # Standardized error wrapping
+    normalize.ts        # Cross-language module ID normalization
 ```
 
 ## Development

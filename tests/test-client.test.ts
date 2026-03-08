@@ -199,8 +199,8 @@ describe('APCore.use()', () => {
 describe('APCore.discover()', () => {
   it('delegates to registry.discover()', async () => {
     const client = new APCore();
-    // Without a valid extensions dir, discover() should throw
-    await expect(client.discover()).rejects.toThrow();
+    // Without a valid extensions config, discover() should throw ConfigNotFoundError
+    await expect(client.discover()).rejects.toThrow('extensions');
   });
 });
 
@@ -415,6 +415,107 @@ describe('APCore.remove()', () => {
     await client.call('math.add', { a: 1, b: 2 });
     expect(mw.beforeCalled).toBe(false);
     expect(mw.afterCalled).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// callAsync tests
+// ---------------------------------------------------------------------------
+
+describe('APCore.callAsync()', () => {
+  it('executes a module and returns the result (alias for call)', async () => {
+    const client = new APCore();
+    registerAdd(client);
+
+    const result = await client.callAsync('math.add', { a: 3, b: 7 });
+    expect(result).toEqual({ result: 10 });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Events on/off tests
+// ---------------------------------------------------------------------------
+
+describe('APCore.on() / off()', () => {
+  it('throws when events are not enabled', () => {
+    const client = new APCore();
+    expect(() => client.on('test', () => {})).toThrow('Events are not enabled');
+  });
+
+  it('throws off() when events are not enabled', () => {
+    const client = new APCore();
+    expect(() => client.off({ onEvent: () => {} })).toThrow('Events are not enabled');
+  });
+
+  it('subscribes and receives events when enabled', async () => {
+    const config = new Config({
+      sys_modules: { enabled: true, events: { enabled: true } },
+    });
+    const client = new APCore({ config });
+    registerAdd(client);
+
+    const received: string[] = [];
+    client.on('module_registered', (event) => {
+      received.push(event.moduleId!);
+    });
+
+    // Register another module to trigger event
+    client.module({
+      id: 'math.sub',
+      inputSchema: AddInputSchema,
+      outputSchema: AddOutputSchema,
+      execute: (inputs) => ({ result: (inputs.a as number) - (inputs.b as number) }),
+    });
+
+    expect(received).toContain('math.sub');
+  });
+
+  it('unsubscribes via off()', () => {
+    const config = new Config({
+      sys_modules: { enabled: true, events: { enabled: true } },
+    });
+    const client = new APCore({ config });
+
+    let count = 0;
+    const sub = client.on('module_registered', () => { count++; });
+    client.off(sub);
+
+    // Register a module - subscriber should not be called
+    client.module({
+      id: 'math.add',
+      inputSchema: AddInputSchema,
+      outputSchema: AddOutputSchema,
+      execute: (inputs) => ({ result: (inputs.a as number) + (inputs.b as number) }),
+    });
+    expect(count).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Enable/disable tests
+// ---------------------------------------------------------------------------
+
+describe('APCore.enable() / disable()', () => {
+  it('throws when sys_modules with events not enabled', async () => {
+    const client = new APCore();
+    await expect(client.disable('mod.a')).rejects.toThrow('sys_modules');
+    await expect(client.enable('mod.a')).rejects.toThrow('sys_modules');
+  });
+
+  it('disables and enables a module', async () => {
+    const config = new Config({
+      sys_modules: { enabled: true, events: { enabled: true } },
+    });
+    const client = new APCore({ config });
+    registerAdd(client);
+
+    const disableResult = await client.disable('math.add', 'testing');
+    expect(disableResult['success']).toBe(true);
+    expect(disableResult['enabled']).toBe(false);
+
+    const enableResult = await client.enable('math.add', 'testing');
+    expect(enableResult['success']).toBe(true);
+    expect(enableResult['enabled']).toBe(true);
   });
 });
 

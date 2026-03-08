@@ -208,6 +208,7 @@ export class Executor {
     moduleId: string,
     inputs?: Record<string, unknown> | null,
     context?: Context | null,
+    _versionHint?: string | null,
   ): Promise<Record<string, unknown>> {
     const { mod, effectiveInputs, ctx } = await this._prepareExecution(moduleId, inputs, context);
     return this._executeWithMiddleware(mod, moduleId, effectiveInputs, ctx);
@@ -221,8 +222,9 @@ export class Executor {
     moduleId: string,
     inputs?: Record<string, unknown> | null,
     context?: Context | null,
+    versionHint?: string | null,
   ): Promise<Record<string, unknown>> {
-    return this.call(moduleId, inputs, context);
+    return this.call(moduleId, inputs, context, versionHint);
   }
 
   /**
@@ -240,6 +242,7 @@ export class Executor {
     moduleId: string,
     inputs?: Record<string, unknown> | null,
     context?: Context | null,
+    _versionHint?: string | null,
   ): AsyncGenerator<Record<string, unknown>> {
     const { mod, effectiveInputs, ctx } = await this._prepareExecution(moduleId, inputs, context);
     yield* this._streamWithMiddleware(mod, moduleId, effectiveInputs, ctx);

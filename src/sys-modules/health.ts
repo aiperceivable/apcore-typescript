@@ -1,0 +1,148 @@
+/**
+ * System health modules -- summary and single-module health.
+ */
+
+import type { Registry } from '../registry/registry.js';
+import type { MetricsCollector } from '../observability/metrics.js';
+import { computeModuleErrorRate, estimateP99FromHistogram } from '../observability/metrics-utils.js';
+import type { ErrorHistory } from '../observability/error-history.js';
+import type { Config } from '../config.js';
+import { InvalidInputError, ModuleNotFoundError } from '../errors.js';
+
+const DEFAULT_HEALTHY_THRESHOLD = 0.01;
+const DEFAULT_DEGRADED_THRESHOLD = 0.10;
+
+export function classifyHealthStatus(
+  errorRate: number,
+  totalCalls: number,
+  healthyThreshold: number = DEFAULT_HEALTHY_THRESHOLD,
+  degradedThreshold: number = DEFAULT_DEGRADED_THRESHOLD,
+): string {
+  if (totalCalls === 0) return 'unknown';
+  if (errorRate < healthyThreshold) return 'healthy';
+  if (errorRate < degradedThreshold) return 'degraded';
+  return 'error';
+}
+
+export class HealthSummaryModule {
+  readonly description = 'Aggregated health overview of all registered modules';
+  readonly annotations = { readonly: true, destructive: false, idempotent: true, requiresApproval: false, openWorld: false, streaming: false };
+
+  private readonly _registry: Registry;
+  private readonly _metrics: MetricsCollector | null;
+  private readonly _errorHistory: ErrorHistory;
+  private readonly _config: Config | null;
+
+  constructor(
+    registry: Registry,
+    metrics: MetricsCollector | null,
+    errorHistory: ErrorHistory,
+    config: Config | null = null,
+  ) {
+    this._registry = registry;
+    this._metrics = metrics;
+    this._errorHistory = errorHistory;
+    this._config = config;
+  }
+
+  execute(inputs: Record<string, unknown>, _context: unknown): Record<string, unknown> {
+    const healthyThreshold = Number(inputs['error_rate_threshold'] ?? DEFAULT_HEALTHY_THRESHOLD);
+    const degradedThreshold = healthyThreshold * 10;
+    const includeHealthy = inputs['include_healthy'] !== false && inputs['include_healthy'] !== 'false';
+
+    const moduleIds = this._registry.list();
+    const counts = { healthy: 0, degraded: 0, error: 0, unknown: 0 };
+    const modules: Record<string, unknown>[] = [];
+
+    for (const mid of moduleIds) {
+      const { totalCalls, errorRate } = this._getModuleMetrics(mid);
+      const status = classifyHealthStatus(errorRate, totalCalls, healthyThreshold, degradedThreshold);
+      counts[status as keyof typeof counts]++;
+      if (!includeHealthy && status === 'healthy') continue;
+
+      const topError = this._getTopError(mid);
+      modules.push({ module_id: mid, status, error_rate: errorRate, top_error: topError });
+    }
+
+    const projectName = this._config?.get('project.name', 'apcore') ?? 'apcore';
+    return {
+      project: { name: projectName },
+      summary: { total_modules: moduleIds.length, ...counts },
+      modules,
+    };
+  }
+
+  private _getModuleMetrics(moduleId: string): { totalCalls: number; errorRate: number } {
+    if (!this._metrics) return { totalCalls: 0, errorRate: 0 };
+    const { totalCalls, errorRate } = computeModuleErrorRate(this._metrics, moduleId);
+    return { totalCalls, errorRate };
+  }
+
+  private _getTopError(moduleId: string): Record<string, unknown> | null {
+    const entries = this._errorHistory.get(moduleId);
+    if (entries.length === 0) return null;
+    const top = entries.reduce((a, b) => (a.count >= b.count ? a : b));
+    return { code: top.code, message: top.message, ai_guidance: top.aiGuidance, count: top.count };
+  }
+}
+
+export class HealthModuleModule {
+  readonly description = 'Detailed health information for a single module';
+  readonly annotations = { readonly: true, destructive: false, idempotent: true, requiresApproval: false, openWorld: false, streaming: false };
+
+  private readonly _registry: Registry;
+  private readonly _metrics: MetricsCollector | null;
+  private readonly _errorHistory: ErrorHistory;
+
+  constructor(
+    registry: Registry,
+    metrics: MetricsCollector | null,
+    errorHistory: ErrorHistory,
+  ) {
+    this._registry = registry;
+    this._metrics = metrics;
+    this._errorHistory = errorHistory;
+  }
+
+  private _getModuleMetrics(moduleId: string): {
+    totalCalls: number; errorCount: number; errorRate: number;
+    avgLatencyMs: number; p99LatencyMs: number;
+  } {
+    if (!this._metrics) return { totalCalls: 0, errorCount: 0, errorRate: 0, avgLatencyMs: 0, p99LatencyMs: 0 };
+    const { totalCalls, errorCount, errorRate } = computeModuleErrorRate(this._metrics, moduleId);
+    const { avgLatencyMs, p99LatencyMs } = estimateP99FromHistogram(this._metrics, moduleId);
+    return { totalCalls, errorCount, errorRate, avgLatencyMs, p99LatencyMs };
+  }
+
+  execute(inputs: Record<string, unknown>, _context: unknown): Record<string, unknown> {
+    const moduleId = inputs['module_id'];
+    if (typeof moduleId !== 'string' || !moduleId) {
+      throw new InvalidInputError('module_id is required');
+    }
+    if (!this._registry.has(moduleId)) {
+      throw new ModuleNotFoundError(moduleId);
+    }
+
+    const errorLimit = Number(inputs['error_limit'] ?? 10);
+    const recentErrors = this._errorHistory.get(moduleId, errorLimit).map((e) => ({
+      code: e.code,
+      message: e.message,
+      ai_guidance: e.aiGuidance,
+      count: e.count,
+      first_occurred: e.firstOccurred,
+      last_occurred: e.lastOccurred,
+    }));
+
+    const { totalCalls, errorCount, errorRate, avgLatencyMs, p99LatencyMs } = this._getModuleMetrics(moduleId);
+    return {
+      module_id: moduleId,
+      status: classifyHealthStatus(errorRate, totalCalls),
+      total_calls: totalCalls,
+      error_count: errorCount,
+      error_rate: errorRate,
+      avg_latency_ms: avgLatencyMs,
+      p99_latency_ms: p99LatencyMs,
+      recent_errors: recentErrors,
+    };
+  }
+}

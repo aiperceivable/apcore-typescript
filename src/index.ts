@@ -43,6 +43,7 @@ export {
   ApprovalTimeoutError,
   ApprovalPendingError,
   ModuleNotFoundError,
+  ModuleDisabledError,
   ModuleTimeoutError,
   SchemaValidationError,
   SchemaNotFoundError,
@@ -62,8 +63,9 @@ export {
   BindingFileInvalidError,
   CircularDependencyError,
   DependencyNotFoundError,
-  NotImplementedError,
+  FeatureNotImplementedError,
   ModuleLoadError,
+  ReloadFailedError,
   ModuleExecuteError,
   InternalError,
   ErrorCodes,
@@ -75,7 +77,7 @@ export { ACL } from './acl.js';
 export type { ACLRule, AuditEntry, AuditLogger } from './acl.js';
 
 // Middleware
-export { Middleware, MiddlewareManager, MiddlewareChainError, BeforeMiddleware, AfterMiddleware, LoggingMiddleware, RetryMiddleware, CTX_RETRY_COUNT_PREFIX, CTX_RETRY_DELAY_PREFIX } from './middleware/index.js';
+export { Middleware, MiddlewareManager, MiddlewareChainError, BeforeMiddleware, AfterMiddleware, LoggingMiddleware, RetryMiddleware, CTX_RETRY_COUNT_PREFIX, CTX_RETRY_DELAY_PREFIX, ErrorHistoryMiddleware, PlatformNotifyMiddleware } from './middleware/index.js';
 export type { RetryConfig } from './middleware/index.js';
 
 // Decorator
@@ -84,6 +86,33 @@ export { module, FunctionModule, normalizeResult, makeAutoId } from './decorator
 // Extensions
 export { ExtensionManager } from './extensions.js';
 export type { ExtensionPoint } from './extensions.js';
+
+// Events
+export { EventEmitter, createEvent, WebhookSubscriber, A2ASubscriber } from './events/index.js';
+export type { ApCoreEvent, EventSubscriber } from './events/index.js';
+
+// System Modules
+export {
+  registerSysModules,
+  registerSubscriberType,
+  unregisterSubscriberType,
+  resetSubscriberRegistry,
+  ToggleState,
+  ToggleFeatureModule,
+  defaultToggleState,
+  isModuleDisabled,
+  checkModuleDisabled,
+  HealthSummaryModule,
+  HealthModuleModule,
+  classifyHealthStatus,
+  ManifestModuleModule,
+  ManifestFullModule,
+  UpdateConfigModule,
+  ReloadModuleModule,
+  UsageSummaryModule,
+  UsageModuleModule,
+} from './sys-modules/index.js';
+export type { SysModulesContext } from './sys-modules/index.js';
 
 // Async tasks
 export { AsyncTaskManager, TaskStatus } from './async-task.js';
@@ -121,9 +150,14 @@ export { TracingMiddleware, StdoutExporter, InMemoryExporter, OTLPExporter, crea
 export type { Span, SpanExporter } from './observability/tracing.js';
 export { MetricsCollector, MetricsMiddleware } from './observability/metrics.js';
 export { ContextLogger, ObsLoggingMiddleware } from './observability/context-logger.js';
+export { ErrorHistory } from './observability/error-history.js';
+export type { ErrorEntry } from './observability/error-history.js';
+export { UsageCollector, UsageMiddleware, bucketKey } from './observability/usage.js';
+export { computeModuleErrorRate, estimateP99FromHistogram, matchesModuleId, METRIC_CALLS_TOTAL, METRIC_DURATION_SECONDS } from './observability/metrics-utils.js';
+export type { UsageRecord, CallerUsageSummary, HourlyBucket, ModuleUsageSummary, ModuleUsageDetail } from './observability/usage.js';
 
 // Trace Context
 export { TraceContext } from './trace-context.js';
 export type { TraceParent } from './trace-context.js';
 
-export const VERSION = '0.10.0';
+export const VERSION = '0.11.0';

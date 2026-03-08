@@ -166,6 +166,25 @@ export class ModuleNotFoundError extends ModuleError {
   }
 }
 
+export class ModuleDisabledError extends ModuleError {
+  static override readonly DEFAULT_RETRYABLE: boolean | null = false;
+
+  constructor(moduleId: string, options?: ErrorOptions) {
+    super(
+      'MODULE_DISABLED',
+      `Module is disabled: ${moduleId}`,
+      { moduleId },
+      options?.cause,
+      options?.traceId,
+      options?.retryable,
+      options?.aiGuidance,
+      options?.userFixable,
+      options?.suggestion,
+    );
+    this.name = 'ModuleDisabledError';
+  }
+}
+
 export class ModuleTimeoutError extends ModuleError {
   static override readonly DEFAULT_RETRYABLE: boolean | null = true;
 
@@ -549,7 +568,7 @@ export class DependencyNotFoundError extends ModuleError {
   }
 }
 
-export class NotImplementedError extends ModuleError {
+export class FeatureNotImplementedError extends ModuleError {
   static override readonly DEFAULT_RETRYABLE: boolean | null = false;
 
   constructor(message: string = 'Feature not implemented', options?: ErrorOptions) {
@@ -564,7 +583,7 @@ export class NotImplementedError extends ModuleError {
       options?.userFixable,
       options?.suggestion,
     );
-    this.name = 'NotImplementedError';
+    this.name = 'FeatureNotImplementedError';
   }
 }
 
@@ -584,6 +603,25 @@ export class ModuleLoadError extends ModuleError {
       options?.suggestion,
     );
     this.name = 'ModuleLoadError';
+  }
+}
+
+export class ReloadFailedError extends ModuleError {
+  static override readonly DEFAULT_RETRYABLE: boolean | null = true;
+
+  constructor(moduleId: string, reason: string, options?: ErrorOptions) {
+    super(
+      'RELOAD_FAILED',
+      `Failed to reload module '${moduleId}': ${reason}`,
+      { moduleId, reason },
+      options?.cause,
+      options?.traceId,
+      options?.retryable,
+      options?.aiGuidance,
+      options?.userFixable,
+      options?.suggestion,
+    );
+    this.name = 'ReloadFailedError';
   }
 }
 
@@ -694,8 +732,10 @@ export const ErrorCodes = Object.freeze({
   ACL_RULE_ERROR: "ACL_RULE_ERROR",
   ACL_DENIED: "ACL_DENIED",
   MODULE_NOT_FOUND: "MODULE_NOT_FOUND",
+  MODULE_DISABLED: "MODULE_DISABLED",
   MODULE_TIMEOUT: "MODULE_TIMEOUT",
   MODULE_LOAD_ERROR: "MODULE_LOAD_ERROR",
+  RELOAD_FAILED: "RELOAD_FAILED",
   MODULE_EXECUTE_ERROR: "MODULE_EXECUTE_ERROR",
   SCHEMA_VALIDATION_ERROR: "SCHEMA_VALIDATION_ERROR",
   SCHEMA_NOT_FOUND: "SCHEMA_NOT_FOUND",
