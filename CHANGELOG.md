@@ -5,6 +5,45 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.0] - 2026-03-08
+
+### Added
+
+#### System Modules — AI Bidirectional Introspection
+Built-in `system.*` modules that allow AI agents to query, monitor
+
+- **`system.health.summary`** / **`system.health.module`** — Health status classification with error history integration.
+- **`system.manifest.module`** / **`system.manifest.full`** — Module introspection and full registry manifest with filtering.
+- **`system.usage.summary`** / **`system.usage.module`** — Usage statistics with hourly trend data.
+- **`system.control.update_config`** — Runtime config hot-patching.
+- **`system.control.reload_module`** — Hot-reload modules from disk.
+- **`system.control.toggle_feature`** — Enable/disable modules at runtime.
+- **`registerSysModules()`** — Auto-registration wiring for all system modules.
+
+#### Observability
+- **`ErrorHistory`** — Ring buffer tracking recent errors with deduplication.
+- **`ErrorHistoryMiddleware`** — Middleware recording `ModuleError` details.
+- **`UsageCollector`** / **`UsageMiddleware`** — Per-module call counting, latency histograms, and hourly trends.
+- **`PlatformNotifyMiddleware`** — Threshold-based sensor emitting events on error rate spikes.
+
+#### Event System
+- **`EventEmitter`** — Global event bus with async subscriber dispatch.
+- **`WebhookSubscriber`** — HTTP POST event delivery with retry.
+- **`A2ASubscriber`** — Agent-to-Agent protocol event bridge.
+
+#### APCore Unified Client
+- **`APCore.on()`** / **`APCore.off()`** — Event subscription management via the unified client.
+- **`APCore.disable()`** / **`APCore.enable()`** — Module toggle control via the unified client.
+
+#### Registry
+- **Module toggle** — `ToggleState` with `disable()`/`enable()`, `ModuleDisabledError` enforcement.
+
+### Fixed
+- README architecture tree updated to include ~20 missing source files (`client.ts`, `events/`, `sys-modules/`, etc.).
+- README error class count corrected to 35.
+
+---
+
 ## [0.10.0] - 2026-03-07
 
 ### Added
@@ -368,6 +407,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+[0.11.0]: https://github.com/aipartnerup/apcore-typescript/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/aipartnerup/apcore-typescript/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/aipartnerup/apcore-typescript/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/aipartnerup/apcore-typescript/compare/v0.7.0...v0.8.0
