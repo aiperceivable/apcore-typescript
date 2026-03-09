@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.11.0] - 2026-03-08
 
 ### Added
+- **Full lifecycle integration tests** (`tests/integration/test-full-lifecycle.test.ts`) — 8 tests covering the complete 11-step pipeline with all gates (ACL + Approval + Middleware + Schema validation) enabled simultaneously, nested module calls, shared `context.data`, error propagation, schema validation, and safe hot-reload lifecycle.
 
 #### System Modules — AI Bidirectional Introspection
 Built-in `system.*` modules that allow AI agents to query, monitor
@@ -39,6 +40,7 @@ Built-in `system.*` modules that allow AI agents to query, monitor
 - **Module toggle** — `ToggleState` with `disable()`/`enable()`, `ModuleDisabledError` enforcement.
 
 ### Fixed
+- **Stale `VERSION` constant** in built dist (`0.9.0` vs `0.11.0`). Rebuilt dist to match `package.json`.
 - README architecture tree updated to include ~20 missing source files (`client.ts`, `events/`, `sys-modules/`, etc.).
 - README error class count corrected to 35.
 
