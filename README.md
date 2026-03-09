@@ -87,6 +87,19 @@ const result = await executor.call('example.greet', { name: 'World' });
 // => { greeting: 'Hello, World!' }
 ```
 
+## API Overview
+
+| Class | Description |
+|-------|-------------|
+| `APCore` | High-level client — register modules, call, stream, validate |
+| `Registry` | Module storage — discover, register, get, list, watch |
+| `Executor` | Execution engine — call with middleware pipeline, ACL, approval |
+| `Context` | Request context — trace ID, identity, call chain, cancel token |
+| `Config` | Configuration — load from YAML, get/set values |
+| `ACL` | Access control — rule-based caller/target authorization |
+| `Middleware` | Pipeline hooks — before/after/onError interception |
+| `EventEmitter` | Event system — subscribe, emit, flush |
+
 ## Architecture
 
 ```
