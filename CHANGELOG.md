@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.13.0] - 2026-03-12
+
+### Added
+- **Caching/pagination annotations** — `ModuleAnnotations` gains 5 optional fields: `cacheable`, `cacheTtl`, `cacheKeyFields`, `paginated`, `paginationStyle` (backward compatible)
+- **`paginationStyle` union** — Typed as `'cursor' | 'offset' | 'page'` matching Python SDK and spec
+- **`sunsetDate`** — New field on `ModuleDescriptor` and `LLMExtensions` for module deprecation lifecycle
+- **`onSuspend()` / `onResume()` lifecycle hooks** — Optional methods on `Module` interface for state preservation during hot-reload; integrated into control module reload flow
+- **MCP `_meta` export** — Schema exporter includes `cacheable`, `cacheTtl`, `cacheKeyFields`, `paginated`, `paginationStyle` in `_meta` sub-dict
+- **Suspend/resume tests** — 5 test cases in `test-control.test.ts` covering happy path, null return, no hooks, error paths
+- **README Links section** — Footer with Documentation, Specification, GitHub, npm, Issues links
+
+### Changed
+- **Rebranded** — "module development framework" → "module standard" in package.json, index.ts, README, and internal JSDoc
+- **README** — Three-tier slogan/subtitle/definition format, annotation features in feature list
+- **`dictToAnnotations`** — Snake_case fallbacks for new fields (`cache_ttl`, `cache_key_fields`, `pagination_style`)
+- **All sys-module annotations** — Updated with new fields (9 modules across 5 files)
+
+---
+
 ## [0.12.0] - 2026-03-11
 
 ### Added
