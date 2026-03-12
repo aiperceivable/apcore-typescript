@@ -38,6 +38,11 @@ function createModule(
       requiresApproval: false,
       openWorld: false,
       streaming: false,
+      cacheable: false,
+      cacheTtl: 0,
+      cacheKeyFields: null,
+      paginated: false,
+      paginationStyle: 'cursor' as const,
     },
     examples: [
       {

@@ -14,7 +14,7 @@ const SENSITIVE_SEGMENTS = new Set(['token', 'secret', 'key', 'password', 'auth'
 
 export class UpdateConfigModule {
   readonly description = 'Update a runtime configuration value by dot-path key';
-  readonly annotations = { readonly: false, destructive: false, idempotent: true, requiresApproval: true, openWorld: false, streaming: false };
+  readonly annotations = { readonly: false, destructive: false, idempotent: true, requiresApproval: true, openWorld: false, streaming: false, cacheable: false, cacheTtl: 0, cacheKeyFields: null, paginated: false, paginationStyle: 'cursor' as const };
 
   private readonly _config: Config;
   private readonly _emitter: EventEmitter;
@@ -63,7 +63,7 @@ export class UpdateConfigModule {
 
 export class ReloadModuleModule {
   readonly description = 'Hot-reload a module by safe unregister and re-discover';
-  readonly annotations = { readonly: false, destructive: false, idempotent: true, requiresApproval: true, openWorld: false, streaming: false };
+  readonly annotations = { readonly: false, destructive: false, idempotent: true, requiresApproval: true, openWorld: false, streaming: false, cacheable: false, cacheTtl: 0, cacheKeyFields: null, paginated: false, paginationStyle: 'cursor' as const };
 
   private readonly _registry: Registry;
   private readonly _emitter: EventEmitter;
@@ -80,7 +80,18 @@ export class ReloadModuleModule {
     if (existing === null) {
       throw new ModuleNotFoundError(moduleId);
     }
-    const previousVersion = String((existing as Record<string, unknown>)['version'] ?? '1.0.0');
+    const existingObj = existing as Record<string, unknown>;
+    const previousVersion = String(existingObj['version'] ?? '1.0.0');
+
+    // Capture suspend state from old module (if onSuspend is defined)
+    let suspendedState: Record<string, unknown> | null = null;
+    if (typeof existingObj['onSuspend'] === 'function') {
+      try {
+        suspendedState = (existingObj['onSuspend'] as () => Record<string, unknown> | null)();
+      } catch (err) {
+        console.warn(`[apcore:control] onSuspend failed for ${moduleId}:`, err);
+      }
+    }
 
     const start = performance.now();
     this._registry.unregister(moduleId);
@@ -100,8 +111,18 @@ export class ReloadModuleModule {
       throw new ReloadFailedError(moduleId, `Module '${moduleId}' was not found after re-discovery`);
     }
 
+    // Resume state on new module (if state was captured and onResume is defined)
+    const reloadedObj = reloaded as Record<string, unknown>;
+    if (suspendedState !== null && typeof reloadedObj['onResume'] === 'function') {
+      try {
+        (reloadedObj['onResume'] as (state: Record<string, unknown>) => void)(suspendedState);
+      } catch (err) {
+        console.warn(`[apcore:control] onResume failed for ${moduleId}:`, err);
+      }
+    }
+
     const elapsedMs = performance.now() - start;
-    const newVersion = String((reloaded as Record<string, unknown>)['version'] ?? '1.0.0');
+    const newVersion = String(reloadedObj['version'] ?? '1.0.0');
 
     this._emitter.emit(createEvent('config_changed', moduleId, 'info', {
       previous_version: previousVersion,

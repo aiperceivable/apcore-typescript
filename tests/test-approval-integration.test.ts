@@ -46,6 +46,11 @@ function createDestructiveModule(): FunctionModule {
       requiresApproval: true,
       openWorld: true,
       streaming: false,
+      cacheable: false,
+      cacheTtl: 0,
+      cacheKeyFields: null,
+      paginated: false,
+      paginationStyle: 'cursor' as const,
     },
     execute: (inputs) => ({ deleted: true, user_id: inputs['user_id'] }),
   });
@@ -64,6 +69,11 @@ function createSafeModule(): FunctionModule {
       requiresApproval: false,
       openWorld: true,
       streaming: false,
+      cacheable: false,
+      cacheTtl: 0,
+      cacheKeyFields: null,
+      paginated: false,
+      paginationStyle: 'cursor' as const,
     },
     execute: () => ({ data: 'safe' }),
   });

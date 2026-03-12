@@ -4,9 +4,13 @@
 
 # apcore
 
-**AI-Perceivable Core** — A schema-driven module development framework for TypeScript.
+**AI-Perceivable Core**
 
-apcore provides a unified task orchestration framework with schema validation, access control, middleware pipelines, and observability built in.
+> **Build once, invoke by Code or AI.**
+
+A schema-enforced module standard for the AI-Perceivable era.
+
+apcore is an AI-Perceivable module standard that makes every interface naturally perceivable and understandable by AI through enforced Schema definitions and behavioral annotations. It provides schema validation, access control, middleware pipelines, and observability built in.
 
 ## Features
 
@@ -19,6 +23,7 @@ apcore provides a unified task orchestration framework with schema validation, a
 - **Middleware** — Onion-model middleware with before/after/onError hooks and error recovery
 - **Observability** — Tracing (spans + exporters), metrics (counters + histograms + Prometheus export), structured logging with redaction
 - **Schema export** — JSON/YAML schema export with strict and compact modes
+- **Caching & pagination annotations** — `cacheable`, `cacheTtl`, `cacheKeyFields` for result caching; `paginated`, `paginationStyle` for paginated modules
 
 ## Documentation
 
@@ -219,6 +224,14 @@ npm run build
 - Binding loader (YAML loading, target resolution, schema modes)
 - Observability (tracing, metrics, structured logging)
 - Integration tests (end-to-end flows, error propagation, safety checks)
+
+## Links
+
+- **Documentation:** [https://aipartnerup.github.io/apcore/getting-started.html](https://aipartnerup.github.io/apcore/getting-started.html)
+- **Specification:** [https://github.com/aipartnerup/apcore](https://github.com/aipartnerup/apcore)
+- **GitHub:** [https://github.com/aipartnerup/apcore-typescript](https://github.com/aipartnerup/apcore-typescript)
+- **npm:** [https://www.npmjs.com/package/apcore](https://www.npmjs.com/package/apcore)
+- **Issues:** [https://github.com/aipartnerup/apcore-typescript/issues](https://github.com/aipartnerup/apcore-typescript/issues)
 
 ## License
 

@@ -474,6 +474,7 @@ export class Registry {
       annotations: (mod['annotations'] as ModuleAnnotations) ?? null,
       examples: (mod['examples'] as ModuleExample[]) ?? [],
       metadata: (meta['metadata'] as Record<string, unknown>) ?? {},
+      sunsetDate: ((meta['sunsetDate'] as string) ?? (mod['sunsetDate'] as string)) ?? null,
     };
   }
 

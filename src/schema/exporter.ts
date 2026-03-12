@@ -43,6 +43,13 @@ export class SchemaExporter {
         openWorldHint: annotations?.openWorld ?? true,
         streaming: annotations?.streaming ?? false,
       },
+      _meta: {
+        cacheable: annotations?.cacheable ?? false,
+        cacheTtl: annotations?.cacheTtl ?? 0,
+        cacheKeyFields: annotations?.cacheKeyFields ?? null,
+        paginated: annotations?.paginated ?? false,
+        paginationStyle: annotations?.paginationStyle ?? 'cursor',
+      },
     };
   }
 

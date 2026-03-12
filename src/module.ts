@@ -12,6 +12,11 @@ export interface ModuleAnnotations {
   readonly requiresApproval: boolean;
   readonly openWorld: boolean;
   readonly streaming: boolean;
+  readonly cacheable?: boolean;
+  readonly cacheTtl?: number;
+  readonly cacheKeyFields?: string[] | null;
+  readonly paginated?: boolean;
+  readonly paginationStyle?: 'cursor' | 'offset' | 'page';
 }
 
 export const DEFAULT_ANNOTATIONS: ModuleAnnotations = Object.freeze({
@@ -21,6 +26,11 @@ export const DEFAULT_ANNOTATIONS: ModuleAnnotations = Object.freeze({
   requiresApproval: false,
   openWorld: true,
   streaming: false,
+  cacheable: false,
+  cacheTtl: 0,
+  cacheKeyFields: null,
+  paginated: false,
+  paginationStyle: 'cursor' as const,
 });
 
 export interface ModuleExample {
@@ -77,6 +87,10 @@ export interface Module {
   onLoad?(): void | Promise<void>;
   /** Optional: Called when module is unloaded from the registry. */
   onUnload?(): void | Promise<void>;
+  /** Optional: Capture module state before hot-reload. Return null to skip state transfer. */
+  onSuspend?(): Record<string, unknown> | null;
+  /** Optional: Restore module state after hot-reload. */
+  onResume?(state: Record<string, unknown>): void;
 }
 
 export interface ModuleDescription {

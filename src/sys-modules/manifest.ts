@@ -8,7 +8,7 @@ import { InvalidInputError, ModuleNotFoundError } from '../errors.js';
 
 export class ManifestModuleModule {
   readonly description = 'Full manifest for a registered module including source path';
-  readonly annotations = { readonly: true, destructive: false, idempotent: true, requiresApproval: false, openWorld: false, streaming: false };
+  readonly annotations = { readonly: true, destructive: false, idempotent: true, requiresApproval: false, openWorld: false, streaming: false, cacheable: false, cacheTtl: 0, cacheKeyFields: null, paginated: false, paginationStyle: 'cursor' as const };
 
   private readonly _registry: Registry;
   private readonly _config: Config | null;
@@ -57,7 +57,7 @@ export class ManifestModuleModule {
 
 export class ManifestFullModule {
   readonly description = 'Complete system manifest with filtering by prefix and tags';
-  readonly annotations = { readonly: true, destructive: false, idempotent: true, requiresApproval: false, openWorld: false, streaming: false };
+  readonly annotations = { readonly: true, destructive: false, idempotent: true, requiresApproval: false, openWorld: false, streaming: false, cacheable: false, cacheTtl: 0, cacheKeyFields: null, paginated: false, paginationStyle: 'cursor' as const };
 
   private readonly _registry: Registry;
   private readonly _config: Config | null;

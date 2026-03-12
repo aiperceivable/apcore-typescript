@@ -26,7 +26,7 @@ export function classifyHealthStatus(
 
 export class HealthSummaryModule {
   readonly description = 'Aggregated health overview of all registered modules';
-  readonly annotations = { readonly: true, destructive: false, idempotent: true, requiresApproval: false, openWorld: false, streaming: false };
+  readonly annotations = { readonly: true, destructive: false, idempotent: true, requiresApproval: false, openWorld: false, streaming: false, cacheable: false, cacheTtl: 0, cacheKeyFields: null, paginated: false, paginationStyle: 'cursor' as const };
 
   private readonly _registry: Registry;
   private readonly _metrics: MetricsCollector | null;
@@ -88,7 +88,7 @@ export class HealthSummaryModule {
 
 export class HealthModuleModule {
   readonly description = 'Detailed health information for a single module';
-  readonly annotations = { readonly: true, destructive: false, idempotent: true, requiresApproval: false, openWorld: false, streaming: false };
+  readonly annotations = { readonly: true, destructive: false, idempotent: true, requiresApproval: false, openWorld: false, streaming: false, cacheable: false, cacheTtl: 0, cacheKeyFields: null, paginated: false, paginationStyle: 'cursor' as const };
 
   private readonly _registry: Registry;
   private readonly _metrics: MetricsCollector | null;

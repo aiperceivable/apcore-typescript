@@ -111,6 +111,11 @@ function dictToAnnotations(dict: Record<string, unknown>): ModuleAnnotations {
     requiresApproval: Boolean(dict['requiresApproval'] ?? dict['requires_approval'] ?? false),
     openWorld: Boolean(dict['openWorld'] ?? dict['open_world'] ?? true),
     streaming: Boolean(dict['streaming'] ?? false),
+    cacheable: Boolean(dict['cacheable'] ?? false),
+    cacheTtl: Number(dict['cacheTtl'] ?? dict['cache_ttl'] ?? 0),
+    cacheKeyFields: (dict['cacheKeyFields'] ?? dict['cache_key_fields'] ?? null) as string[] | null,
+    paginated: Boolean(dict['paginated'] ?? false),
+    paginationStyle: (dict['paginationStyle'] ?? dict['pagination_style'] ?? 'cursor') as 'cursor' | 'offset' | 'page',
   };
 }
 

@@ -91,6 +91,11 @@ describe('Full Lifecycle Integration', () => {
         requiresApproval: true,
         openWorld: true,
         streaming: false,
+        cacheable: false,
+        cacheTtl: 0,
+        cacheKeyFields: null,
+        paginated: false,
+        paginationStyle: 'cursor' as const,
       },
     }));
 
@@ -147,6 +152,11 @@ describe('Full Lifecycle Integration', () => {
         requiresApproval: true,
         openWorld: true,
         streaming: false,
+        cacheable: false,
+        cacheTtl: 0,
+        cacheKeyFields: null,
+        paginated: false,
+        paginationStyle: 'cursor' as const,
       },
     }));
 
@@ -194,6 +204,11 @@ describe('Full Lifecycle Integration', () => {
         requiresApproval: true,
         openWorld: true,
         streaming: false,
+        cacheable: false,
+        cacheTtl: 0,
+        cacheKeyFields: null,
+        paginated: false,
+        paginationStyle: 'cursor' as const,
       },
     }));
 

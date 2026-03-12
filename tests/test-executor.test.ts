@@ -268,7 +268,7 @@ describe('Executor', () => {
       inputSchema: Type.Object({ x: Type.Number() }),
       outputSchema: Type.Object({ ok: Type.Boolean() }),
       description: 'Approval test',
-      annotations: { requiresApproval: true, readonly: false, destructive: false, idempotent: false, openWorld: true, streaming: false },
+      annotations: { requiresApproval: true, readonly: false, destructive: false, idempotent: false, openWorld: true, streaming: false, cacheable: false, cacheTtl: 0, cacheKeyFields: null, paginated: false, paginationStyle: 'cursor' as const },
     });
     registry.register('approval.test', mod);
 

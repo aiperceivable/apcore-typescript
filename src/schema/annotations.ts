@@ -12,6 +12,11 @@ const ANNOTATION_FIELDS: ReadonlyArray<keyof ModuleAnnotations> = [
   'requiresApproval',
   'openWorld',
   'streaming',
+  'cacheable',
+  'cacheTtl',
+  'cacheKeyFields',
+  'paginated',
+  'paginationStyle',
 ];
 
 export function mergeAnnotations(

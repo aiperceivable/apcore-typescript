@@ -41,7 +41,7 @@ function padHourlyDistribution(buckets: HourlyBucket[]): Record<string, unknown>
 
 export class UsageSummaryModule {
   readonly description = 'All modules usage overview with trend detection';
-  readonly annotations = { readonly: true, destructive: false, idempotent: true, requiresApproval: false, openWorld: false, streaming: false };
+  readonly annotations = { readonly: true, destructive: false, idempotent: true, requiresApproval: false, openWorld: false, streaming: false, cacheable: false, cacheTtl: 0, cacheKeyFields: null, paginated: false, paginationStyle: 'cursor' as const };
 
   private readonly _collector: UsageCollector;
 
@@ -75,7 +75,7 @@ export class UsageSummaryModule {
 
 export class UsageModuleModule {
   readonly description = 'Detailed usage statistics for a single module';
-  readonly annotations = { readonly: true, destructive: false, idempotent: true, requiresApproval: false, openWorld: false, streaming: false };
+  readonly annotations = { readonly: true, destructive: false, idempotent: true, requiresApproval: false, openWorld: false, streaming: false, cacheable: false, cacheTtl: 0, cacheKeyFields: null, paginated: false, paginationStyle: 'cursor' as const };
 
   private readonly _registry: Registry;
   private readonly _collector: UsageCollector;

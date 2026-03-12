@@ -70,4 +70,5 @@ export interface LLMExtensions {
   sensitive: boolean;
   constraints?: string | null;
   deprecated?: Record<string, unknown> | null;
+  sunsetDate?: string | null;
 }

@@ -52,7 +52,7 @@ export function checkModuleDisabled(moduleId: string): void {
  */
 export class ToggleFeatureModule {
   readonly description = 'Disable or enable a module without unloading it';
-  readonly annotations = { readonly: false, destructive: false, idempotent: true, requiresApproval: true, openWorld: false, streaming: false };
+  readonly annotations = { readonly: false, destructive: false, idempotent: true, requiresApproval: true, openWorld: false, streaming: false, cacheable: false, cacheTtl: 0, cacheKeyFields: null, paginated: false, paginationStyle: 'cursor' as const };
 
   private readonly _registry: Registry;
   private readonly _emitter: EventEmitter;

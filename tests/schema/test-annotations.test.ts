@@ -26,6 +26,11 @@ describe('mergeAnnotations', () => {
       requiresApproval: false,
       openWorld: false,
       streaming: false,
+      cacheable: false,
+      cacheTtl: 0,
+      cacheKeyFields: null,
+      paginated: false,
+      paginationStyle: 'cursor',
     };
     const result = mergeAnnotations(null, codeAnnotations);
     expect(result.readonly).toBe(true);
@@ -41,12 +46,57 @@ describe('mergeAnnotations', () => {
       requiresApproval: false,
       openWorld: true,
       streaming: false,
+      cacheable: false,
+      cacheTtl: 0,
+      cacheKeyFields: null,
+      paginated: false,
+      paginationStyle: 'cursor',
     };
     const yamlAnnotations = { readonly: false, destructive: true };
     const result = mergeAnnotations(yamlAnnotations, codeAnnotations);
     expect(result.readonly).toBe(false);
     expect(result.destructive).toBe(true);
     expect(result.idempotent).toBe(false);
+  });
+
+  it('applies cache and pagination annotation defaults', () => {
+    const result = mergeAnnotations(null, null);
+    expect(result.cacheable).toBe(false);
+    expect(result.cacheTtl).toBe(0);
+    expect(result.cacheKeyFields).toBeNull();
+    expect(result.paginated).toBe(false);
+    expect(result.paginationStyle).toBe('cursor');
+  });
+
+  it('applies cache and pagination annotations from code', () => {
+    const codeAnnotations: ModuleAnnotations = {
+      readonly: false,
+      destructive: false,
+      idempotent: false,
+      requiresApproval: false,
+      openWorld: true,
+      streaming: false,
+      cacheable: true,
+      cacheTtl: 300,
+      cacheKeyFields: ['id', 'name'],
+      paginated: true,
+      paginationStyle: 'offset',
+    };
+    const result = mergeAnnotations(null, codeAnnotations);
+    expect(result.cacheable).toBe(true);
+    expect(result.cacheTtl).toBe(300);
+    expect(result.cacheKeyFields).toEqual(['id', 'name']);
+    expect(result.paginated).toBe(true);
+    expect(result.paginationStyle).toBe('offset');
+  });
+
+  it('yaml overrides cache and pagination annotations', () => {
+    const yamlAnnotations = { cacheable: true, cacheTtl: 600, paginated: true, paginationStyle: 'offset' };
+    const result = mergeAnnotations(yamlAnnotations, null);
+    expect(result.cacheable).toBe(true);
+    expect(result.cacheTtl).toBe(600);
+    expect(result.paginated).toBe(true);
+    expect(result.paginationStyle).toBe('offset');
   });
 
   it('ignores unknown yaml keys', () => {

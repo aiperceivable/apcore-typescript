@@ -56,6 +56,11 @@ describe('SchemaExporter', () => {
         requiresApproval: false,
         openWorld: false,
         streaming: false,
+        cacheable: false,
+        cacheTtl: 0,
+        cacheKeyFields: null,
+        paginated: false,
+        paginationStyle: 'cursor',
       };
       const result = exporter.exportMcp(sd, annotations, 'MyTool');
       expect(result['name']).toBe('MyTool');
@@ -78,6 +83,11 @@ describe('SchemaExporter', () => {
         requiresApproval: false,
         openWorld: true,
         streaming: true,
+        cacheable: false,
+        cacheTtl: 0,
+        cacheKeyFields: null,
+        paginated: false,
+        paginationStyle: 'cursor',
       };
       const result = exporter.exportMcp(sd, annotations);
       const annots = result['annotations'] as Record<string, unknown>;
@@ -88,6 +98,41 @@ describe('SchemaExporter', () => {
       const sd = makeSchemaDef();
       const result = exporter.exportMcp(sd, null, null);
       expect(result['name']).toBe('test.module');
+    });
+
+    it('includes _meta with cache and pagination defaults when annotations is null', () => {
+      const sd = makeSchemaDef();
+      const result = exporter.exportMcp(sd, null);
+      const meta = result['_meta'] as Record<string, unknown>;
+      expect(meta['cacheable']).toBe(false);
+      expect(meta['cacheTtl']).toBe(0);
+      expect(meta['cacheKeyFields']).toBeNull();
+      expect(meta['paginated']).toBe(false);
+      expect(meta['paginationStyle']).toBe('cursor');
+    });
+
+    it('includes _meta with cache and pagination values from annotations', () => {
+      const sd = makeSchemaDef();
+      const annotations: ModuleAnnotations = {
+        readonly: false,
+        destructive: false,
+        idempotent: false,
+        requiresApproval: false,
+        openWorld: true,
+        streaming: false,
+        cacheable: true,
+        cacheTtl: 120,
+        cacheKeyFields: ['userId'],
+        paginated: true,
+        paginationStyle: 'offset',
+      };
+      const result = exporter.exportMcp(sd, annotations);
+      const meta = result['_meta'] as Record<string, unknown>;
+      expect(meta['cacheable']).toBe(true);
+      expect(meta['cacheTtl']).toBe(120);
+      expect(meta['cacheKeyFields']).toEqual(['userId']);
+      expect(meta['paginated']).toBe(true);
+      expect(meta['paginationStyle']).toBe('offset');
     });
 
     it('uses default annotation values when annotations is null', () => {

@@ -1,5 +1,5 @@
 /**
- * apcore - Schema-driven module development framework.
+ * apcore - Schema-driven module standard.
  */
 
 // Client

@@ -16,6 +16,7 @@ export interface ModuleDescriptor {
   annotations: ModuleAnnotations | null;
   examples: ModuleExample[];
   metadata: Record<string, unknown>;
+  sunsetDate: string | null;
 }
 
 export interface DiscoveredModule {
