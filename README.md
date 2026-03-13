@@ -107,92 +107,180 @@ const result = await executor.call('example.greet', { name: 'World' });
 
 ## Examples
 
-The `examples/` directory contains runnable examples demonstrating key features:
+The `examples/` directory contains runnable demos:
 
-| Example | Description |
-|---------|-------------|
-| `simple-client.ts` | APCore client with module registration and calls |
-| `modules/greet.ts` | Minimal FunctionModule |
-| `modules/get-user.ts` | Readonly + idempotent annotations |
-| `modules/send-email.ts` | Full-featured: annotations, examples, metadata, ContextLogger |
-| `modules/decorated-add.ts` | `module()` function for creating modules |
-| `bindings/format-date/` | YAML binding with target function |
+---
 
-## Architecture
+### `simple-client` — APCore client with module registration and calls
 
+Initializes an `APCore` client, registers modules inline, and calls them.
+
+```typescript
+import { Type } from '@sinclair/typebox';
+import { APCore } from 'apcore-js';
+
+const client = new APCore();
+
+client.module({
+  id: 'math.add',
+  description: 'Add two integers',
+  inputSchema: Type.Object({ a: Type.Number(), b: Type.Number() }),
+  outputSchema: Type.Object({ sum: Type.Number() }),
+  execute: (inputs) => ({ sum: (inputs.a as number) + (inputs.b as number) }),
+});
+
+client.module({
+  id: 'greet',
+  description: 'Greet a user by name',
+  inputSchema: Type.Object({
+    name: Type.String(),
+    greeting: Type.Optional(Type.String()),
+  }),
+  outputSchema: Type.Object({ message: Type.String() }),
+  execute: (inputs) => ({
+    message: `${(inputs.greeting as string) || 'Hello'}, ${inputs.name}!`,
+  }),
+});
+
+const result = await client.call('math.add', { a: 10, b: 5 });
+console.log(result); // { sum: 15 }
+
+const greetResult = await client.call('greet', { name: 'Alice' });
+console.log(greetResult); // { message: 'Hello, Alice!' }
 ```
-src/
-  index.ts              # Public API exports
-  client.ts             # High-level APCore client (unified entry point)
-  executor.ts           # Secured execution lifecycle
-  context.ts            # Execution context and identity
-  config.ts             # Dot-path configuration accessor
-  acl.ts                # Access control with pattern matching
-  approval.ts           # Pluggable approval gate (handlers, request/result types)
-  async-task.ts         # Async task manager
-  cancel.ts             # Cancellation token support
-  decorator.ts          # FunctionModule class and helpers
-  bindings.ts           # YAML binding loader
-  errors.ts             # Error hierarchy (36 typed errors)
-  error-code-registry.ts # Custom error code registration with collision detection
-  extensions.ts         # Extension manager
-  module.ts             # Module types and annotations
-  trace-context.ts      # W3C trace context (inject/extract)
-  version.ts            # Version negotiation (semver parsing)
-  events/
-    index.ts            # Event module barrel exports
-    emitter.ts          # Global event bus with fan-out delivery
-    subscribers.ts      # Webhook and A2A protocol event subscribers
-  middleware/
-    index.ts            # Middleware barrel exports
-    base.ts             # Middleware base class
-    manager.ts          # MiddlewareManager (onion model)
-    adapters.ts         # BeforeMiddleware, AfterMiddleware adapters
-    logging.ts          # LoggingMiddleware
-    retry.ts            # RetryMiddleware for automatic retry of retryable errors
-    error-history.ts    # Middleware that records errors into ErrorHistory
-    platform-notify.ts  # Threshold sensor with hysteresis for error/latency alerts
-  registry/
-    index.ts            # Registry barrel exports
-    registry.ts         # Registry with discover() pipeline
-    scanner.ts          # File-based module discovery
-    entry-point.ts      # Dynamic import and entry point resolution
-    metadata.ts         # YAML metadata and ID map loading
-    dependencies.ts     # Topological sort with cycle detection
-    validation.ts       # Module duck-type validation
-    schema-export.ts    # Schema export (JSON/YAML, strict/compact)
-    types.ts            # Registry type definitions
-  schema/
-    index.ts            # Schema barrel exports
-    loader.ts           # JSON Schema to TypeBox conversion
-    validator.ts        # Schema validation
-    exporter.ts         # Schema serialization
-    ref-resolver.ts     # $ref resolution
-    strict.ts           # Strict schema transforms
-    types.ts            # Schema type definitions
-    annotations.ts      # Annotation conflict resolution (YAML + code metadata)
-  observability/
-    index.ts            # Observability barrel exports
-    tracing.ts          # Span, SpanExporter, TracingMiddleware
-    metrics.ts          # MetricsCollector, MetricsMiddleware
-    metrics-utils.ts    # Shared metric extraction utilities
-    context-logger.ts   # ContextLogger, ObsLoggingMiddleware
-    usage.ts            # Time-windowed usage tracking with analytics
-    error-history.ts    # Error history with ring-buffer eviction and dedup
-  sys-modules/
-    index.ts            # System module barrel exports
-    registration.ts     # Auto-registration of sys.* modules and middleware
-    control.ts          # Runtime config update and hot-reload modules
-    health.ts           # System and per-module health modules
-    manifest.ts         # Module metadata and system manifest modules
-    toggle.ts           # Module disable/enable without unloading
-    usage.ts            # Usage summary and per-module usage detail modules
-  utils/
-    index.ts            # Utils barrel exports
-    pattern.ts          # Glob-style pattern matching
-    call-chain.ts       # Call chain safety guard (depth, frequency, cycles)
-    error-propagation.ts # Standardized error wrapping
-    normalize.ts        # Cross-language module ID normalization
+
+---
+
+### `greet` — Minimal FunctionModule
+
+Demonstrates the core `FunctionModule` structure with TypeBox schemas.
+
+```typescript
+import { Type } from '@sinclair/typebox';
+import { FunctionModule } from 'apcore-js';
+
+export const greetModule = new FunctionModule({
+  moduleId: 'greet',
+  description: 'Greet a user by name',
+  inputSchema: Type.Object({ name: Type.String() }),
+  outputSchema: Type.Object({ message: Type.String() }),
+  execute: (inputs) => ({ message: `Hello, ${inputs.name}!` }),
+});
+```
+
+---
+
+### `get-user` — Readonly + idempotent annotations
+
+Shows behavioral annotations and simulated database lookup.
+
+```typescript
+import { Type } from '@sinclair/typebox';
+import { FunctionModule } from 'apcore-js';
+
+const users: Record<string, { id: string; name: string; email: string }> = {
+  'user-1': { id: 'user-1', name: 'Alice', email: 'alice@example.com' },
+  'user-2': { id: 'user-2', name: 'Bob', email: 'bob@example.com' },
+};
+
+export const getUserModule = new FunctionModule({
+  moduleId: 'user.get',
+  description: 'Get user details by ID',
+  inputSchema: Type.Object({ userId: Type.String() }),
+  outputSchema: Type.Object({
+    id: Type.String(),
+    name: Type.String(),
+    email: Type.String(),
+  }),
+  annotations: {
+    readonly: true,
+    destructive: false,
+    idempotent: true,
+    requiresApproval: false,
+    openWorld: true,
+    streaming: false,
+  },
+  execute: (inputs) => {
+    const user = users[inputs.userId as string];
+    if (!user) {
+      return { id: inputs.userId as string, name: 'Unknown', email: 'unknown@example.com' };
+    }
+    return { ...user };
+  },
+});
+```
+
+---
+
+### `send-email` — Full-featured: annotations, examples, metadata, ContextLogger
+
+Demonstrates destructive annotations, `ModuleExample` for AI-perceivable documentation, metadata, and `ContextLogger` usage.
+
+```typescript
+import { Type } from '@sinclair/typebox';
+import { FunctionModule, ContextLogger } from 'apcore-js';
+import type { Context } from 'apcore-js';
+
+export const sendEmailModule = new FunctionModule({
+  moduleId: 'email.send',
+  description: 'Send an email message',
+  inputSchema: Type.Object({
+    to: Type.String(),
+    subject: Type.String(),
+    body: Type.String(),
+    apiKey: Type.String(),
+  }),
+  outputSchema: Type.Object({
+    status: Type.String(),
+    messageId: Type.String(),
+  }),
+  tags: ['email', 'communication', 'external'],
+  version: '1.2.0',
+  metadata: { provider: 'example-smtp', maxRetries: 3 },
+  annotations: {
+    readonly: false,
+    destructive: true,
+    idempotent: false,
+    requiresApproval: false,
+    openWorld: true,
+    streaming: false,
+  },
+  examples: [
+    {
+      title: 'Send a welcome email',
+      inputs: { to: 'user@example.com', subject: 'Welcome!', body: '...', apiKey: 'sk-xxx' },
+      output: { status: 'sent', messageId: 'msg-12345' },
+      description: 'Sends a welcome email to a new user.',
+    },
+  ],
+  execute: (inputs, context: Context) => {
+    const logger = ContextLogger.fromContext(context, 'send_email');
+    logger.info('Sending email', { to: inputs.to as string, subject: inputs.subject as string });
+    const hash = Math.abs(
+      (inputs.to as string).split('').reduce((a, c) => a + c.charCodeAt(0), 0) % 100000,
+    );
+    const messageId = `msg-${String(hash).padStart(5, '0')}`;
+    logger.info('Email sent successfully', { messageId });
+    return { status: 'sent', messageId };
+  },
+});
+```
+
+---
+
+### `decorated-add` — `module()` function for creating modules
+
+```typescript
+import { Type } from '@sinclair/typebox';
+import { module } from 'apcore-js';
+
+export const addModule = module({
+  id: 'math.add',
+  description: 'Add two integers',
+  inputSchema: Type.Object({ a: Type.Number(), b: Type.Number() }),
+  outputSchema: Type.Object({ sum: Type.Number() }),
+  execute: (inputs) => ({ sum: (inputs.a as number) + (inputs.b as number) }),
+});
 ```
 
 ## Development
@@ -230,7 +318,7 @@ npm run build
 - **Documentation:** [https://aipartnerup.github.io/apcore/getting-started.html](https://aipartnerup.github.io/apcore/getting-started.html)
 - **Specification:** [https://github.com/aipartnerup/apcore](https://github.com/aipartnerup/apcore)
 - **GitHub:** [https://github.com/aipartnerup/apcore-typescript](https://github.com/aipartnerup/apcore-typescript)
-- **npm:** [https://www.npmjs.com/package/apcore](https://www.npmjs.com/package/apcore)
+- **npm:** [https://www.npmjs.com/package/apcore-js](https://www.npmjs.com/package/apcore-js)
 - **Issues:** [https://github.com/aipartnerup/apcore-typescript/issues](https://github.com/aipartnerup/apcore-typescript/issues)
 
 ## License

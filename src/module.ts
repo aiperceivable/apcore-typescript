@@ -12,10 +12,15 @@ export interface ModuleAnnotations {
   readonly requiresApproval: boolean;
   readonly openWorld: boolean;
   readonly streaming: boolean;
+  /** Whether the module's results can be cached. */
   readonly cacheable?: boolean;
+  /** Cache time-to-live in seconds (0 means no expiry). */
   readonly cacheTtl?: number;
+  /** Input fields used to compute the cache key (null = all fields). */
   readonly cacheKeyFields?: string[] | null;
+  /** Whether the module supports paginated results. */
   readonly paginated?: boolean;
+  /** Pagination strategy. */
   readonly paginationStyle?: 'cursor' | 'offset' | 'page';
 }
 
