@@ -1,12 +1,11 @@
+/**
+ * Execution context, identity, and context creation.
+ */
 
 import { v4 as uuidv4 } from 'uuid';
 import type { CancelToken } from './cancel.js';
 import type { TraceParent } from './trace-context.js';
 import { ContextLogger } from './observability/context-logger.js';
-
-/**
- * Execution context, identity, and context creation.
- */
 
 export interface Identity {
   readonly id: string;
