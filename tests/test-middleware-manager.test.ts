@@ -10,8 +10,8 @@ function makeContext(): Context {
 class TaggingMiddleware extends Middleware {
   readonly tag: string;
 
-  constructor(tag: string) {
-    super();
+  constructor(tag: string, priority: number = 0) {
+    super(priority);
     this.tag = tag;
   }
 
@@ -181,5 +181,65 @@ describe('MiddlewareManager', () => {
     expect(caught).toBeInstanceOf(MiddlewareChainError);
     expect(caught!.original.message).toBe('before exploded');
     expect(caught!.executedMiddlewares).toHaveLength(2);
+  });
+
+  describe('priority ordering', () => {
+    it('higher priority middleware executes first in before()', () => {
+      const mgr = new MiddlewareManager();
+      mgr.add(new TaggingMiddleware('Low', 100));
+      mgr.add(new TaggingMiddleware('High', 500));
+      mgr.add(new TaggingMiddleware('Mid', 300));
+      const ctx = makeContext();
+      const [result] = mgr.executeBefore('mod.test', { trail: '' }, ctx);
+      // Sorted by priority descending: High(500), Mid(300), Low(100)
+      expect(result['trail']).toBe('HighMidLow');
+    });
+
+    it('equal priority preserves registration order', () => {
+      const mgr = new MiddlewareManager();
+      mgr.add(new TaggingMiddleware('First', 100));
+      mgr.add(new TaggingMiddleware('Second', 100));
+      mgr.add(new TaggingMiddleware('Third', 100));
+      const ctx = makeContext();
+      const [result] = mgr.executeBefore('mod.test', { trail: '' }, ctx);
+      expect(result['trail']).toBe('FirstSecondThird');
+    });
+
+    it('default priority (0) middleware is ordered after explicit priority', () => {
+      const mgr = new MiddlewareManager();
+      mgr.add(new TaggingMiddleware('Default'));
+      mgr.add(new TaggingMiddleware('Prioritized', 1));
+      const ctx = makeContext();
+      const [result] = mgr.executeBefore('mod.test', { trail: '' }, ctx);
+      expect(result['trail']).toBe('PrioritizedDefault');
+    });
+
+    it('executeAfter runs in reverse priority order (lowest priority first)', () => {
+      const mgr = new MiddlewareManager();
+      mgr.add(new TaggingMiddleware('Low', 100));
+      mgr.add(new TaggingMiddleware('High', 500));
+      mgr.add(new TaggingMiddleware('Mid', 300));
+      const ctx = makeContext();
+      const result = mgr.executeAfter('mod.test', {}, { trail: '' }, ctx);
+      // Internal order is [High, Mid, Low]; after() reverses: Low, Mid, High
+      expect(result['trail']).toBe('LowMidHigh');
+    });
+
+    it('Middleware base class defaults to priority 0', () => {
+      const mw = new Middleware();
+      expect(mw.priority).toBe(0);
+    });
+
+    it('snapshot reflects priority-sorted order', () => {
+      const mgr = new MiddlewareManager();
+      const low = new TaggingMiddleware('L', 10);
+      const high = new TaggingMiddleware('H', 900);
+      const mid = new TaggingMiddleware('M', 500);
+      mgr.add(low);
+      mgr.add(high);
+      mgr.add(mid);
+      const tags = mgr.snapshot().map((mw) => (mw as TaggingMiddleware).tag);
+      expect(tags).toEqual(['H', 'M', 'L']);
+    });
   });
 });

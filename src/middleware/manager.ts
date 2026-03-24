@@ -24,7 +24,17 @@ export class MiddlewareManager {
   private _middlewares: Middleware[] = [];
 
   add(middleware: Middleware): void {
-    this._middlewares.push(middleware);
+    // Stable insertion: find the first middleware with a strictly lower priority
+    // and insert before it. This keeps higher-priority middlewares first and
+    // preserves registration order among equal priorities.
+    let insertAt = this._middlewares.length;
+    for (let i = 0; i < this._middlewares.length; i++) {
+      if (this._middlewares[i].priority < middleware.priority) {
+        insertAt = i;
+        break;
+      }
+    }
+    this._middlewares.splice(insertAt, 0, middleware);
   }
 
   remove(middleware: Middleware): boolean {

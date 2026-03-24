@@ -160,4 +160,4 @@ export type { UsageRecord, CallerUsageSummary, HourlyBucket, ModuleUsageSummary,
 export { TraceContext } from './trace-context.js';
 export type { TraceParent } from './trace-context.js';
 
-export const VERSION = '0.13.1';
+export const VERSION = '0.13.2';
