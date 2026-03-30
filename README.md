@@ -24,6 +24,7 @@ apcore is an AI-Perceivable module standard that makes every interface naturally
 - **Observability** — Tracing (spans + exporters), metrics (counters + histograms + Prometheus export), structured logging with redaction
 - **Schema export** — JSON/YAML schema export with strict and compact modes
 - **Caching & pagination annotations** — `cacheable`, `cacheTtl`, `cacheKeyFields` for result caching; `paginated`, `paginationStyle` for paginated modules
+- **Config Bus** — Namespace-based configuration registry with typed access, env prefix dispatch, hot-reload, and external config mounting (`Config.registerNamespace()`, `config.namespace()`, `config.bind<T>()`, `config.mount()`)
 
 ## Documentation
 
@@ -100,10 +101,140 @@ const result = await executor.call('example.greet', { name: 'World' });
 | `Registry` | Module storage — discover, register, get, list, watch |
 | `Executor` | Execution engine — call with middleware pipeline, ACL, approval |
 | `Context` | Request context — trace ID, identity, call chain, cancel token |
-| `Config` | Configuration — load from YAML, get/set values |
+| `Config` | Configuration — load from YAML, namespace bus, get/set/bind values |
 | `ACL` | Access control — rule-based caller/target authorization |
 | `Middleware` | Pipeline hooks — before/after/onError interception |
 | `EventEmitter` | Event system — subscribe, emit, flush |
+
+## Configuration
+
+### Config Bus
+
+`Config` acts as an ecosystem-level Config Bus. Any package can register a namespace with optional JSON Schema validation, environment variable prefix, and defaults.
+
+```typescript
+import { Config } from 'apcore-js';
+
+// Register a namespace (class-level, shared across all Config instances)
+Config.registerNamespace('myPlugin', {
+  envPrefix: 'MY_PLUGIN',
+  defaults: { timeout: 5000, retries: 3 },
+  schema: {
+    type: 'object',
+    properties: {
+      timeout: { type: 'number' },
+      retries: { type: 'number' },
+    },
+  },
+});
+
+const config = Config.load('apcore.yaml');
+
+// Dot-path access with namespace resolution
+const timeout = config.get('myPlugin.timeout');   // 5000 (or env override)
+
+// Full namespace subtree
+const pluginConfig = config.namespace('myPlugin');
+
+// Typed access — pass a class constructor; its constructor receives the namespace dict
+class MyPluginConfig {
+  timeout: number;
+  retries: number;
+  constructor(data: Record<string, unknown>) {
+    this.timeout = (data['timeout'] as number) ?? 5000;
+    this.retries = (data['retries'] as number) ?? 3;
+  }
+}
+const typed = config.bind('myPlugin', MyPluginConfig);
+
+// Mount an external config source (e.g. an existing config file)
+config.mount('myPlugin', { fromFile: './my-plugin.yaml' });
+// Or from an in-memory object:
+config.mount('myPlugin', { fromDict: { timeout: 10000 } });
+
+// Introspect registered namespaces
+const names = Config.registeredNamespaces(); // string[]
+```
+
+### Environment Variable Overrides
+
+Merge priority (highest wins): **environment variables > config file > namespace defaults**.
+
+Two prefix conventions are supported:
+
+| Convention | Applies to | Example |
+|------------|------------|---------|
+| `APCORE_` + `KEY_PATH` (single `_` → `.`) | Legacy flat keys | `APCORE_EXECUTOR_DEFAULT_TIMEOUT=5000` |
+| `APCORE__` + namespace prefix (double `__`) | apcore sub-package namespaces | `APCORE__OBSERVABILITY_TRACING_ENABLED=true` |
+
+apcore pre-registers the following namespaces and env prefixes:
+
+| Namespace | Env prefix | Wraps |
+|-----------|-----------|-------|
+| `observability` | `APCORE__OBSERVABILITY` | `apcore.observability.*` keys |
+| `sysModules` | `APCORE__SYS` | `apcore.sys_modules.*` keys |
+
+Third-party packages should use their own prefix (e.g. `APCORE__MCP` for apcore-mcp) to avoid collisions.
+
+### Hot Reload
+
+`config.reload()` re-reads the source YAML, re-detects legacy/namespace mode, re-applies all namespace defaults and env overrides, re-validates, and re-reads any mounted files.
+
+```typescript
+const config = Config.load('apcore.yaml');
+// ... runtime config change on disk ...
+config.reload(); // picks up all changes
+```
+
+### YAML File Format
+
+Configuration files support two modes. **Legacy mode** (no `apcore:` key) is fully backward compatible. **Namespace mode** is activated when an `apcore:` top-level key is present; each namespace occupies its own top-level section. The `_config` reserved namespace controls validation behavior.
+
+```yaml
+# Namespace mode
+apcore:
+  version: "0.15.0"
+
+_config:
+  strict: true
+
+observability:
+  tracing:
+    enabled: true
+    samplingRate: 1.0
+
+myPlugin:
+  timeout: 10000
+  retries: 5
+```
+
+### Error Codes
+
+New error codes added in v0.15.0:
+
+| Code | Description |
+|------|-------------|
+| `CONFIG_NAMESPACE_DUPLICATE` | `Config.registerNamespace()` called with an already-registered name |
+| `CONFIG_NAMESPACE_RESERVED` | `Config.registerNamespace()` called with a reserved name (e.g. `_config`) |
+| `CONFIG_ENV_PREFIX_CONFLICT` | Two namespaces declare the same `envPrefix` |
+| `CONFIG_MOUNT_ERROR` | `config.mount()` cannot read or parse the external source |
+| `CONFIG_BIND_ERROR` | `config.bind<T>()` or `config.getTyped<T>()` type guard fails |
+| `ERROR_FORMATTER_DUPLICATE` | `ErrorFormatterRegistry.register()` called for an already-registered surface |
+
+### Event Type Canonical Names
+
+apcore 0.15.0 resolves two event-type collisions. Canonical dot-namespaced names should be used in new code; legacy short-form names remain emitted as aliases during the transition period.
+
+| Legacy name (alias) | Canonical name | Meaning |
+|---------------------|----------------|---------|
+| `"module_health_changed"` | `"apcore.module.toggled"` | Module enabled/disabled toggle |
+| `"module_health_changed"` | `"apcore.health.recovered"` | Error-rate recovery after spike |
+| `"config_changed"` | `"apcore.config.updated"` | Config key updated at runtime |
+| `"config_changed"` | `"apcore.module.reloaded"` | Module reloaded from disk |
+
+Naming convention: `apcore.*` is reserved for core events. Adapter packages use their own prefix (`apcore-mcp.*`, `apcore-a2a.*`, `apcore-cli.*`).
+
+---
 
 ## Examples
 
