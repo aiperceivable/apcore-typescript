@@ -1,9 +1,18 @@
 /**
  * Configuration loading, validation, and environment variable overrides (Algorithm A12).
+ * Supports legacy mode (flat YAML) and namespace mode (apcore top-level key).
  */
 
 import yaml from 'js-yaml';
-import { ConfigError, ConfigNotFoundError } from './errors.js';
+import {
+  ConfigError,
+  ConfigNotFoundError,
+  ConfigNamespaceDuplicateError,
+  ConfigNamespaceReservedError,
+  ConfigEnvPrefixConflictError,
+  ConfigMountError,
+  ConfigBindError,
+} from './errors.js';
 
 // Lazy-load Node.js built-in modules for browser compatibility
 let _nodeFs: typeof import('node:fs') | null = null;
@@ -12,10 +21,16 @@ try { _nodeFs = await import('node:fs'); } catch { /* browser environment */ }
 let _nodeProcess: typeof import('node:process') | null = null;
 try { _nodeProcess = await import('node:process'); } catch { /* browser environment */ }
 
-/** Environment variable prefix for overrides. */
+let _nodePath: typeof import('node:path') | null = null;
+try { _nodePath = await import('node:path'); } catch { /* browser environment */ }
+
+let _nodeOs: typeof import('node:os') | null = null;
+try { _nodeOs = await import('node:os'); } catch { /* browser environment */ }
+
+/** Environment variable prefix for legacy overrides. */
 const ENV_PREFIX = 'APCORE_';
 
-/** Required configuration fields (dot-paths). */
+/** Required configuration fields in legacy mode (dot-paths). */
 const REQUIRED_FIELDS = [
   'version',
   'extensions.root',
@@ -25,7 +40,7 @@ const REQUIRED_FIELDS = [
   'project.name',
 ] as const;
 
-/** Field constraints: field -> [validator, errorMessage]. */
+/** Field constraints in legacy mode: field -> [validator, errorMessage]. */
 const CONSTRAINTS: Record<string, [(v: unknown) => boolean, string]> = {
   'acl.default_effect': [
     (v) => v === 'allow' || v === 'deny',
@@ -57,7 +72,7 @@ const CONSTRAINTS: Record<string, [(v: unknown) => boolean, string]> = {
   ],
 };
 
-/** Default configuration values. */
+/** Default configuration values for legacy mode. */
 const DEFAULTS: Record<string, unknown> = {
   version: '0.8.0',
   extensions: {
@@ -94,6 +109,28 @@ const DEFAULTS: Record<string, unknown> = {
     name: 'apcore',
   },
 };
+
+// ---------------------------------------------------------------------------
+// Namespace registry (module-level singletons)
+// ---------------------------------------------------------------------------
+
+interface NamespaceRegistration {
+  name: string;
+  schema: object | string | null;
+  envPrefix: string | null;
+  defaults: Record<string, unknown> | null;
+}
+
+const _globalNsRegistry = new Map<string, NamespaceRegistration>();
+const _RESERVED_NAMESPACES = new Set(['apcore', '_config']);
+const _envPrefixUsed = new Set<string>();
+
+/** Pattern that matches the APCORE_[A-Z0-9] reservation rule. */
+const APCORE_ENV_RESERVED_RE = /^APCORE_[A-Z0-9]/;
+
+// ---------------------------------------------------------------------------
+// Utility helpers
+// ---------------------------------------------------------------------------
 
 function deepMergeDicts(
   base: Record<string, unknown>,
@@ -167,25 +204,207 @@ function applyEnvOverrides(data: Record<string, unknown>): Record<string, unknow
 }
 
 /**
+ * Apply per-namespace env overrides using longest-prefix-match dispatch.
+ *
+ * For each env var, finds the registered namespace whose envPrefix is the
+ * longest matching prefix, strips it, converts separators, and writes to
+ * that namespace's subtree in data.
+ */
+function applyNamespaceEnvOverrides(data: Record<string, unknown>): Record<string, unknown> {
+  const result = JSON.parse(JSON.stringify(data)) as Record<string, unknown>;
+  const env = _nodeProcess?.env ?? {};
+
+  // Sort registrations by envPrefix length descending (longest first)
+  const registrations = Array.from(_globalNsRegistry.values())
+    .filter((r) => r.envPrefix !== null)
+    .sort((a, b) => (b.envPrefix!.length) - (a.envPrefix!.length));
+
+  for (const [envKey, envValue] of Object.entries(env)) {
+    if (envValue === undefined) continue;
+    for (const reg of registrations) {
+      if (envKey.startsWith(reg.envPrefix!)) {
+        const suffix = envKey.slice(reg.envPrefix!.length);
+        if (!suffix) continue;
+        // Strip leading separator (single _ or __)
+        const stripped = suffix.startsWith('__') ? suffix.slice(2) : suffix.startsWith('_') ? suffix.slice(1) : suffix;
+        if (!stripped) continue;
+        // Convert: double __ -> literal _, single _ -> .
+        const dotPath = stripped.toLowerCase().replace(/__/g, '\x00').replace(/_/g, '.').replace(/\x00/g, '_');
+        // Ensure namespace subtree exists
+        if (typeof result[reg.name] !== 'object' || result[reg.name] === null) {
+          result[reg.name] = {};
+        }
+        setNested(result[reg.name] as Record<string, unknown>, dotPath, coerceEnvValue(envValue));
+        break;
+      }
+    }
+  }
+  return result;
+}
+
+/**
+ * Resolve the namespace from a dot-path like "apcore-mcp.transport".
+ * The namespace portion may contain hyphens, so we cannot simply split on ".".
+ * We match against known registered namespaces (longest match first).
+ */
+function resolveNamespacePath(key: string): { namespace: string; subPath: string } | null {
+  // Sort known namespaces by length descending for longest-match
+  const knownNamespaces = Array.from(_globalNsRegistry.keys())
+    .concat(Array.from(_RESERVED_NAMESPACES))
+    .sort((a, b) => b.length - a.length);
+
+  for (const ns of knownNamespaces) {
+    if (key === ns) {
+      return { namespace: ns, subPath: '' };
+    }
+    if (key.startsWith(ns + '.')) {
+      return { namespace: ns, subPath: key.slice(ns.length + 1) };
+    }
+  }
+
+  // Fallback: use naive first-segment split
+  const dotIndex = key.indexOf('.');
+  if (dotIndex === -1) {
+    return { namespace: key, subPath: '' };
+  }
+  return { namespace: key.slice(0, dotIndex), subPath: key.slice(dotIndex + 1) };
+}
+
+// ---------------------------------------------------------------------------
+// Config discovery (§9.14)
+// ---------------------------------------------------------------------------
+
+/**
+ * Search for a config file in the standard discovery order (§9.14).
+ * Returns the path of the first found file, or null if none found.
+ */
+export function discoverConfigFile(): string | null {
+  const env = _nodeProcess?.env ?? {};
+  const existsSync = _nodeFs?.existsSync;
+  const join = _nodePath?.join;
+  const homedir = _nodeOs?.homedir;
+
+  if (!existsSync || !join || !homedir) return null;
+
+  const envPath = env['APCORE_CONFIG_FILE'];
+  if (envPath) return envPath;
+
+  const cwdCandidates = ['project.yaml', 'project.yml', 'apcore.yaml', 'apcore.yml'];
+  for (const name of cwdCandidates) {
+    if (existsSync(name)) return name;
+  }
+
+  const home = homedir();
+  // W-10: Use lazy-loaded _nodeProcess so this works in non-Node environments.
+  const xdgConfig = (_nodeProcess?.platform ?? 'linux') === 'darwin'
+    ? join(home, 'Library', 'Application Support', 'apcore', 'config.yaml')
+    : join(home, '.config', 'apcore', 'config.yaml');
+  if (existsSync(xdgConfig)) return xdgConfig;
+
+  const legacy = join(home, '.apcore', 'config.yaml');
+  if (existsSync(legacy)) return legacy;
+
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Config class
+// ---------------------------------------------------------------------------
+
+/**
  * Configuration system with YAML loading, env overrides, and validation.
  *
- * Merge priority (highest wins): environment variables > config file > defaults.
+ * Merge priority (highest wins): environment variables > mount data > config file > namespace defaults > defaults.
+ *
+ * Two modes:
+ * - Legacy mode: top-level YAML has no "apcore" key. Backward compatible.
+ * - Namespace mode: top-level YAML has "apcore" key. Enables namespace features.
  *
  * Backward compatible: `new Config(data)` still works for in-memory configuration.
  */
 export class Config {
   private _data: Record<string, unknown>;
   private _yamlPath: string | null = null;
+  private _mode: 'legacy' | 'namespace' = 'legacy';
+  private _mounts: Map<string, Record<string, unknown>> = new Map();
 
   constructor(data?: Record<string, unknown>) {
     this._data = data ?? {};
   }
 
+  // -------------------------------------------------------------------------
+  // Static namespace registry methods
+  // -------------------------------------------------------------------------
+
+  /**
+   * Register a namespace globally.
+   *
+   * Throws:
+   * - ConfigNamespaceReservedError if name is in the reserved set.
+   * - ConfigNamespaceDuplicateError if name is already registered.
+   * - ConfigEnvPrefixConflictError if envPrefix is already used or matches the
+   *   APCORE_[A-Z0-9] pattern.
+   */
+  static registerNamespace(options: {
+    name: string;
+    schema?: object | string | null;
+    envPrefix?: string | null;
+    defaults?: Record<string, unknown> | null;
+  }): void {
+    const { name, schema = null, envPrefix = null, defaults = null } = options;
+
+    if (_RESERVED_NAMESPACES.has(name)) {
+      throw new ConfigNamespaceReservedError(name);
+    }
+    if (_globalNsRegistry.has(name)) {
+      throw new ConfigNamespaceDuplicateError(name);
+    }
+    if (envPrefix !== null) {
+      if (_envPrefixUsed.has(envPrefix) || APCORE_ENV_RESERVED_RE.test(envPrefix)) {
+        throw new ConfigEnvPrefixConflictError(envPrefix);
+      }
+    }
+
+    _globalNsRegistry.set(name, { name, schema, envPrefix, defaults });
+    if (envPrefix !== null) {
+      _envPrefixUsed.add(envPrefix);
+    }
+  }
+
+  /**
+   * Return a snapshot of all registered namespaces.
+   */
+  static registeredNamespaces(): Array<{ name: string; envPrefix: string | null; hasSchema: boolean }> {
+    return Array.from(_globalNsRegistry.values()).map((r) => ({
+      name: r.name,
+      envPrefix: r.envPrefix,
+      hasSchema: r.schema !== null,
+    }));
+  }
+
+  // -------------------------------------------------------------------------
+  // Static factory methods
+  // -------------------------------------------------------------------------
+
   /**
    * Load configuration from a YAML file with env overrides.
+   *
+   * Auto-detects mode:
+   * - Namespace mode: top-level "apcore" key present.
+   * - Legacy mode: otherwise (backward compatible).
    */
-  static load(yamlPath: string, options?: { validate?: boolean }): Config {
-    const { existsSync, readFileSync } = _nodeFs!;
+  static load(yamlPath?: string, options?: { validate?: boolean }): Config {
+    if (yamlPath === undefined || yamlPath === null) {
+      const found = discoverConfigFile();
+      if (found === null) return Config.fromDefaults();
+      yamlPath = found;
+    }
+
+    // C-5: Guard against non-Node environments where fs may not be available.
+    if (_nodeFs === null) {
+      throw new ConfigError(`Cannot load config file '${yamlPath}': filesystem not available`);
+    }
+    const { existsSync, readFileSync } = _nodeFs;
     if (!existsSync(yamlPath)) {
       throw new ConfigNotFoundError(yamlPath);
     }
@@ -206,11 +425,38 @@ export class Config {
       throw new ConfigError(`Config file must be a mapping, got ${typeof fileData}`);
     }
 
-    // Merge: defaults < file < env
-    let merged = deepMergeDicts(DEFAULTS, fileData as Record<string, unknown>);
-    merged = applyEnvOverrides(merged);
+    const rawData = fileData as Record<string, unknown>;
+    const isNamespaceMode = 'apcore' in rawData;
 
-    const config = new Config(merged);
+    let config: Config;
+
+    if (isNamespaceMode) {
+      // Namespace mode: apply namespace defaults, file data, then env overrides
+      let merged: Record<string, unknown> = {};
+
+      // Apply namespace defaults first
+      for (const reg of _globalNsRegistry.values()) {
+        if (reg.defaults !== null) {
+          merged[reg.name] = JSON.parse(JSON.stringify(reg.defaults));
+        }
+      }
+
+      // Merge file data over defaults
+      merged = deepMergeDicts(merged, rawData);
+
+      // Apply namespace-aware env overrides
+      merged = applyNamespaceEnvOverrides(merged);
+
+      config = new Config(merged);
+      config._mode = 'namespace';
+    } else {
+      // Legacy mode: merge defaults < file < env
+      let merged = deepMergeDicts(DEFAULTS, rawData);
+      merged = applyEnvOverrides(merged);
+      config = new Config(merged);
+      config._mode = 'legacy';
+    }
+
     config._yamlPath = yamlPath;
 
     if (options?.validate !== false) {
@@ -226,13 +472,41 @@ export class Config {
     return new Config(data);
   }
 
+  // -------------------------------------------------------------------------
+  // Instance methods
+  // -------------------------------------------------------------------------
+
   /** Get a configuration value by dot-path key. */
   get(key: string, defaultValue?: unknown): unknown {
+    if (this._mode === 'namespace') {
+      const resolved = resolveNamespacePath(key);
+      if (resolved === null) return defaultValue;
+      const nsData = this._data[resolved.namespace];
+      if (nsData === undefined || nsData === null) return defaultValue;
+      if (!resolved.subPath) return nsData;
+      return getNested(nsData as Record<string, unknown>, resolved.subPath, defaultValue);
+    }
     return getNested(this._data, key, defaultValue);
   }
 
   /** Set a configuration value by dot-path key. */
   set(key: string, value: unknown): void {
+    if (this._mode === 'namespace') {
+      const resolved = resolveNamespacePath(key);
+      if (resolved === null) {
+        setNested(this._data, key, value);
+        return;
+      }
+      if (!resolved.subPath) {
+        this._data[resolved.namespace] = value;
+        return;
+      }
+      if (typeof this._data[resolved.namespace] !== 'object' || this._data[resolved.namespace] === null) {
+        this._data[resolved.namespace] = {};
+      }
+      setNested(this._data[resolved.namespace] as Record<string, unknown>, resolved.subPath, value);
+      return;
+    }
     setNested(this._data, key, value);
   }
 
@@ -241,13 +515,117 @@ export class Config {
     return JSON.parse(JSON.stringify(this._data));
   }
 
+  /** Return the detected mode: 'legacy' or 'namespace'. */
+  get mode(): 'legacy' | 'namespace' {
+    return this._mode;
+  }
+
+  /**
+   * Attach external config data to a namespace.
+   *
+   * Exactly one of fromFile or fromDict must be provided.
+   * Throws ConfigMountError if namespace is "_config" or file not found.
+   */
+  mount(namespace: string, options: { fromFile?: string; fromDict?: Record<string, unknown> }): void {
+    if (namespace === '_config') {
+      throw new ConfigMountError("Cannot mount to reserved namespace '_config'");
+    }
+
+    const { fromFile, fromDict } = options;
+    const hasFile = fromFile !== undefined;
+    const hasDict = fromDict !== undefined;
+
+    if (hasFile && hasDict) {
+      throw new ConfigMountError("Specify exactly one of 'fromFile' or 'fromDict', not both");
+    }
+    if (!hasFile && !hasDict) {
+      throw new ConfigMountError("One of 'fromFile' or 'fromDict' is required");
+    }
+
+    let mountData: Record<string, unknown>;
+
+    if (hasFile) {
+      const { existsSync, readFileSync } = _nodeFs!;
+      if (!existsSync(fromFile!)) {
+        throw new ConfigMountError(`Mount file not found: ${fromFile}`);
+      }
+      let parsed: unknown;
+      try {
+        const content = readFileSync(fromFile!, 'utf-8');
+        parsed = yaml.load(content);
+      } catch (e) {
+        throw new ConfigMountError(`Failed to parse mount file '${fromFile}': ${e}`);
+      }
+      if (parsed === null || parsed === undefined) {
+        parsed = {};
+      }
+      if (typeof parsed !== 'object' || Array.isArray(parsed)) {
+        throw new ConfigMountError(`Mount file must be a YAML mapping: ${fromFile}`);
+      }
+      mountData = parsed as Record<string, unknown>;
+    } else {
+      mountData = fromDict!;
+    }
+
+    this._mounts.set(namespace, mountData);
+
+    // Merge mount data into namespace subtree
+    const existing = (this._data[namespace] ?? {}) as Record<string, unknown>;
+    this._data[namespace] = deepMergeDicts(existing, mountData);
+  }
+
+  /**
+   * Return a deep copy of a namespace subtree.
+   */
+  namespace(name: string): Record<string, unknown> {
+    const subtree = this._data[name];
+    if (subtree === undefined || subtree === null) {
+      return {};
+    }
+    return JSON.parse(JSON.stringify(subtree)) as Record<string, unknown>;
+  }
+
+  /**
+   * Typed get with coercion and validation.
+   * Applies the coerce function to the raw value and returns the result.
+   * Throws ConfigError if the raw value is undefined.
+   */
+  getTyped<T>(path: string, coerce: (v: unknown) => T): T {
+    const value = this.get(path);
+    if (value === undefined) {
+      throw new ConfigError(`Missing required config path: '${path}'`);
+    }
+    return coerce(value);
+  }
+
+  /**
+   * Deserialize a namespace subtree into a class instance.
+   * The schema constructor receives the namespace data as a plain object.
+   * Throws ConfigBindError if instantiation fails.
+   */
+  bind<T>(namespace: string, schema: new (data: Record<string, unknown>) => T): T {
+    const data = this.namespace(namespace);
+    try {
+      return new schema(data);
+    } catch (e) {
+      throw new ConfigBindError(`Failed to bind namespace '${namespace}': ${e}`);
+    }
+  }
+
   /**
    * Validate the configuration per Algorithm A12.
    *
-   * Checks required fields, type constraints, and semantic rules.
+   * In legacy mode: checks required fields, type constraints, and semantic rules.
+   * In namespace mode (A12-NS): validates data.apcore; throws on unknown namespaces
+   * if strict mode is enabled via data._config.strict.
    * Collects all errors before raising.
    */
   validate(): void {
+    if (this._mode === 'namespace') {
+      this._validateNamespaceMode();
+      return;
+    }
+
     const errors: string[] = [];
 
     // 1. Required field check
@@ -274,15 +652,99 @@ export class Config {
     }
   }
 
+  private _validateNamespaceMode(): void {
+    const apcore = this._data['apcore'];
+    if (apcore !== undefined && apcore !== null) {
+      // Run A12 checks on data.apcore subtree
+      const errors: string[] = [];
+      const apcoreData = apcore as Record<string, unknown>;
+      for (const [field, [checkFn, errMsg]] of Object.entries(CONSTRAINTS)) {
+        const value = getNested(apcoreData, field);
+        if (value !== undefined && value !== null && !checkFn(value)) {
+          errors.push(`Invalid value for 'apcore.${field}': ${errMsg} (got ${JSON.stringify(value)})`);
+        }
+      }
+      if (errors.length > 0) {
+        throw new ConfigError(
+          `Configuration validation failed (${errors.length} error(s)):\n` +
+          errors.map((e) => `  - ${e}`).join('\n'),
+        );
+      }
+    }
+
+    // Strict mode: reject unknown namespaces
+    const configMeta = this._data['_config'];
+    const isStrict = configMeta !== null && typeof configMeta === 'object' &&
+      (configMeta as Record<string, unknown>)['strict'] === true;
+
+    if (isStrict) {
+      const knownKeys = new Set([
+        ...Array.from(_globalNsRegistry.keys()),
+        'apcore',
+        '_config',
+      ]);
+      for (const key of Object.keys(this._data)) {
+        if (!knownKeys.has(key)) {
+          throw new ConfigError(`Unknown namespace '${key}' in strict mode`);
+        }
+      }
+    }
+  }
+
   /**
    * Re-read configuration from the original YAML file.
    * Only works if the Config was created via Config.load().
+   * In namespace mode, re-applies namespace defaults, env overrides, and mount data.
    */
   reload(): void {
     if (this._yamlPath === null) {
       throw new ConfigError('Cannot reload: Config was not loaded from a YAML file');
     }
-    const reloaded = Config.load(this._yamlPath);
+    const previousMounts = new Map(this._mounts);
+    const reloaded = Config.load(this._yamlPath, { validate: false });
     this._data = reloaded._data;
+    this._mode = reloaded._mode;
+    this._mounts = new Map();
+
+    // Re-apply mounts
+    for (const [namespace, mountData] of previousMounts) {
+      this.mount(namespace, { fromDict: mountData });
+    }
+
+    // Re-apply namespace env overrides in namespace mode
+    if (this._mode === 'namespace') {
+      this._data = applyNamespaceEnvOverrides(this._data);
+    }
   }
 }
+
+// ---------------------------------------------------------------------------
+// Bootstrap: register apcore built-in namespaces (§9.15)
+// ---------------------------------------------------------------------------
+
+// W-13: Use snake_case keys to match Python defaults and YAML config conventions.
+// camelCase keys would silently diverge from cross-language YAML configs.
+Config.registerNamespace({
+  name: 'observability',
+  envPrefix: 'APCORE__OBSERVABILITY',
+  defaults: {
+    tracing: { enabled: false, strategy: 'full', sampling_rate: 1.0, exporter: 'stdout', otlp_endpoint: null },
+    metrics: { enabled: false, exporter: 'stdout' },
+    logging: { enabled: true, level: 'info', format: 'json', redact_sensitive: true },
+    error_history: { max_entries_per_module: 50, max_total_entries: 1000 },
+    platform_notify: { enabled: false, error_rate_threshold: 0.1, latency_p99_threshold_ms: 5000.0 },
+  },
+});
+
+Config.registerNamespace({
+  name: 'sys_modules',
+  envPrefix: 'APCORE__SYS',
+  defaults: {
+    enabled: true,
+    health: { enabled: true },
+    manifest: { enabled: true },
+    usage: { enabled: true, retention_hours: 168, bucketing_strategy: 'hourly' },
+    control: { enabled: true },
+    events: { enabled: true, thresholds: { error_rate: 0.1, latency_p99_ms: 5000.0 } },
+  },
+});

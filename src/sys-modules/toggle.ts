@@ -74,7 +74,11 @@ export class ToggleFeatureModule {
     } else {
       this._toggleState.disable(moduleId);
     }
-    this._emitter.emit(createEvent('module_health_changed', moduleId, 'info', { enabled, reason }));
+    // Emit canonical event first, then legacy alias for transition period.
+    // W-12: Event payload carries only { enabled } to match Python reference implementation.
+    // `reason` is returned in the module output but not emitted in the event.
+    this._emitter.emit(createEvent('apcore.module.toggled', moduleId, 'info', { enabled }));
+    this._emitter.emit(createEvent('module_health_changed', moduleId, 'info', { enabled }));
     return { success: true, module_id: moduleId, enabled, reason };
   }
 

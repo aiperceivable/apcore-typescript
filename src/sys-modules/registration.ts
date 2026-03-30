@@ -20,6 +20,42 @@ import { UpdateConfigModule, ReloadModuleModule } from './control.js';
 import { UsageSummaryModule, UsageModuleModule } from './usage.js';
 
 // ---------------------------------------------------------------------------
+// Namespace-mode helpers — §9.15.3
+// ---------------------------------------------------------------------------
+
+/** §9.15.3: Return sys_modules namespace dict in namespace mode, null in legacy. */
+function _resolveSysCfg(config: Config): Record<string, unknown> | null {
+  // C-6: Access config.mode directly via the public getter — no unsafe cast needed.
+  if (config.mode === 'namespace') {
+    return (config.namespace('sys_modules') as Record<string, unknown>) ?? {};
+  }
+  return null;
+}
+
+function _nestedGet(data: Record<string, unknown>, dottedKey: string, defaultValue: unknown): unknown {
+  let current: unknown = data;
+  for (const key of dottedKey.split('.')) {
+    if (typeof current !== 'object' || current === null) return defaultValue;
+    const obj = current as Record<string, unknown>;
+    if (!(key in obj)) return defaultValue;
+    current = obj[key];
+  }
+  return current;
+}
+
+function _cfgGet(
+  sysCfg: Record<string, unknown> | null,
+  config: Config,
+  subKey: string,
+  defaultValue: unknown,
+): unknown {
+  if (sysCfg !== null) {
+    return _nestedGet(sysCfg, subKey, defaultValue);
+  }
+  return config.get(`sys_modules.${subKey}`, defaultValue);
+}
+
+// ---------------------------------------------------------------------------
 // Subscriber type registry — extensible factory for EventSubscriber types
 // ---------------------------------------------------------------------------
 
@@ -72,8 +108,9 @@ export function resetSubscriberRegistry(): void {
 export function _instantiateSubscribers(
   config: Config,
   eventEmitter: EventEmitter,
+  sysCfg: Record<string, unknown> | null = null,
 ): void {
-  const subscriberConfigs = config.get('sys_modules.events.subscribers', []) as
+  const subscriberConfigs = _cfgGet(sysCfg, config, 'events.subscribers', []) as
     ReadonlyArray<Record<string, unknown>>;
 
   for (const subscriberConfig of subscriberConfigs) {
@@ -118,13 +155,16 @@ export function registerSysModules(
 ): SysModulesContext {
   const result: SysModulesContext = {};
 
-  if (!config.get('sys_modules.enabled', false)) {
+  // §9.15.3: prefer config.namespace('sys_modules') in namespace mode
+  const sysCfg = _resolveSysCfg(config);
+
+  if (!_cfgGet(sysCfg, config, 'enabled', false)) {
     return result;
   }
 
   // Error history
-  const maxPerModule = Number(config.get('sys_modules.error_history.max_entries_per_module', 50));
-  const maxTotal = Number(config.get('sys_modules.error_history.max_total_entries', 1000));
+  const maxPerModule = Number(_cfgGet(sysCfg, config, 'error_history.max_entries_per_module', 50));
+  const maxTotal = Number(_cfgGet(sysCfg, config, 'error_history.max_total_entries', 1000));
   const errorHistory = new ErrorHistory(maxPerModule, maxTotal);
   result.errorHistory = errorHistory;
 
@@ -157,16 +197,16 @@ export function registerSysModules(
   reg('system.usage.module', new UsageModuleModule(registry, usageCollector));
 
   // Events system
-  if (config.get('sys_modules.events.enabled', false)) {
+  if (_cfgGet(sysCfg, config, 'events.enabled', false)) {
     const eventEmitter = new EventEmitter();
     result.eventEmitter = eventEmitter;
 
     // Config-driven subscribers
-    _instantiateSubscribers(config, eventEmitter);
+    _instantiateSubscribers(config, eventEmitter, sysCfg);
 
     // PlatformNotifyMiddleware
-    const errorRateThreshold = Number(config.get('sys_modules.events.thresholds.error_rate', 0.1));
-    const latencyP99Threshold = Number(config.get('sys_modules.events.thresholds.latency_p99_ms', 5000));
+    const errorRateThreshold = Number(_cfgGet(sysCfg, config, 'events.thresholds.error_rate', 0.1));
+    const latencyP99Threshold = Number(_cfgGet(sysCfg, config, 'events.thresholds.latency_p99_ms', 5000));
     const pnMiddleware = new PlatformNotifyMiddleware(eventEmitter, metricsCollector ?? null, errorRateThreshold, latencyP99Threshold);
     executor.use(pnMiddleware);
     result.platformNotifyMiddleware = pnMiddleware;
