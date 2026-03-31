@@ -74,7 +74,7 @@ function _registerBuiltInFactories(): void {
 
   _subscriberFactories.set('a2a', (config: Record<string, unknown>): EventSubscriber => {
     const platformUrl = config['platform_url'] as string;
-    const auth = config['auth'] as Record<string, unknown> | undefined;
+    const auth = config['auth'] as string | Record<string, string> | undefined;
     const timeoutMs = config['timeout_ms'] as number | undefined;
     return new A2ASubscriber(platformUrl, auth, timeoutMs);
   });

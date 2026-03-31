@@ -198,7 +198,7 @@ describe('ToggleFeatureModule', () => {
     expect(legacyEvent.moduleId).toBe('test.dummy');
   });
 
-  it('returns success result with module_id, enabled, and reason', () => {
+  it('returns success result with module_id and enabled (no reason per spec)', () => {
     const result = toggle.execute(
       { module_id: 'test.dummy', enabled: false, reason: 'disabled for test' },
       null,
@@ -207,7 +207,6 @@ describe('ToggleFeatureModule', () => {
       success: true,
       module_id: 'test.dummy',
       enabled: false,
-      reason: 'disabled for test',
     });
   });
 
@@ -221,7 +220,6 @@ describe('ToggleFeatureModule', () => {
       success: true,
       module_id: 'test.dummy',
       enabled: true,
-      reason: 're-enabled',
     });
   });
 });

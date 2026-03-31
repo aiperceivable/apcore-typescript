@@ -79,7 +79,7 @@ export class ToggleFeatureModule {
     // `reason` is returned in the module output but not emitted in the event.
     this._emitter.emit(createEvent('apcore.module.toggled', moduleId, 'info', { enabled }));
     this._emitter.emit(createEvent('module_health_changed', moduleId, 'info', { enabled }));
-    return { success: true, module_id: moduleId, enabled, reason };
+    return { success: true, module_id: moduleId, enabled };
   }
 
   private _validateInputs(inputs: Record<string, unknown>): { moduleId: string; enabled: boolean; reason: string } {

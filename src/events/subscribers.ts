@@ -101,16 +101,16 @@ export class WebhookSubscriber implements EventSubscriber {
  */
 export class A2ASubscriber implements EventSubscriber {
   private readonly _platformUrl: string;
-  private readonly _auth: Record<string, unknown> | undefined;
+  private readonly _auth: string | Record<string, string> | undefined;
   private readonly _timeoutMs: number;
 
   constructor(
     platformUrl: string,
-    auth?: Record<string, unknown>,
+    auth?: string | Record<string, string | unknown>,
     timeoutMs: number = 5000,
   ) {
     this._platformUrl = platformUrl;
-    this._auth = auth;
+    this._auth = auth as string | Record<string, string> | undefined;
     this._timeoutMs = timeoutMs;
   }
 
@@ -131,11 +131,11 @@ export class A2ASubscriber implements EventSubscriber {
     };
 
     if (this._auth !== undefined) {
-      const token = this._auth['token'];
-      if (typeof token === 'string') {
-        headers['Authorization'] = `Bearer ${token}`;
+      if (typeof this._auth === 'string') {
+        // String auth → Bearer token (per spec)
+        headers['Authorization'] = `Bearer ${this._auth}`;
       } else {
-        // Treat auth as header overrides
+        // Dict auth → merge as header overrides
         for (const [key, value] of Object.entries(this._auth)) {
           if (typeof value === 'string') {
             headers[key] = value;
