@@ -545,7 +545,10 @@ export class Config {
     let mountData: Record<string, unknown>;
 
     if (hasFile) {
-      const { existsSync, readFileSync } = _nodeFs!;
+      if (_nodeFs === null) {
+        throw new ConfigMountError('Cannot mount from file: filesystem not available');
+      }
+      const { existsSync, readFileSync } = _nodeFs;
       if (!existsSync(fromFile!)) {
         throw new ConfigMountError(`Mount file not found: ${fromFile}`);
       }

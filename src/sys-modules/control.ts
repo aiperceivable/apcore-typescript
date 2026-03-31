@@ -46,8 +46,7 @@ export class UpdateConfigModule {
       key, old_value: safeOld, new_value: safeNew,
     }));
 
-    // W-11: Audit events are INFO-level, not warnings.
-    console.info(`[apcore:control] Config updated: key=${key} old_value=${safeOld} new_value=${safeNew} reason=${reason}`);
+    console.warn(`[apcore:control] Config updated: key=${key} old_value=${safeOld} new_value=${safeNew} reason=${reason}`);
 
     return { success: true, key, old_value: safeOld, new_value: safeNew };
   }
@@ -139,8 +138,7 @@ export class ReloadModuleModule {
       new_version: newVersion,
     }));
 
-    // W-11: Audit events are INFO-level, not warnings.
-    console.info(
+    console.warn(
       `[apcore:control] Module reloaded: module_id=${moduleId} previous_version=${previousVersion} new_version=${newVersion} reason=${reason}`,
     );
 
