@@ -5,6 +5,79 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.15.0] - 2026-03-30
+
+### Added
+
+#### Config Bus Architecture (§9.4–§9.14)
+
+`Config` is upgraded from an internal configuration tool to an ecosystem-level Config Bus. Any package — apcore ecosystem or third-party — can register a named namespace with optional JSON Schema validation, environment variable prefix, and default values.
+
+- **`Config.registerNamespace(name, options?)`** — Register a namespace on the global (class-level) registry shared across all `Config` instances. Options:
+  - `schema?` — JSON Schema object for namespace-level validation
+  - `envPrefix?` — Environment variable prefix for this namespace (e.g. `'APCORE__MCP'`)
+  - `defaults?` — Default values merged before file and env overrides
+  - Late registration is permitted; call `config.reload()` afterward to apply defaults and env overrides
+  - Throws `CONFIG_NAMESPACE_DUPLICATE` if the name is already registered
+  - Throws `CONFIG_NAMESPACE_RESERVED` for reserved names (e.g. `_config`)
+- **`config.get("namespace.key.path")`** — Dot-path access with namespace resolution. The first segment resolves to a registered namespace; remaining segments traverse its subtree
+- **`config.namespace(name)`** — Returns the full subtree for a registered namespace as a plain object
+- **`config.bind<T>(namespace, type)`** — Returns a typed view of a namespace subtree; throws `CONFIG_BIND_ERROR` on schema mismatch
+- **`config.getTyped<T>(path, type)`** — Typed single-value accessor with runtime type guard
+- **`config.mount(namespace, options)`** — Attach an external configuration source to a namespace without requiring a unified YAML file. `options` accepts `fromFile` (path string) or `fromDict` (plain object). Throws `CONFIG_MOUNT_ERROR` on failure
+- **`Config.registeredNamespaces()`** — Returns a string array of all currently registered namespace names
+- **`config.reload()`** — Extended: re-reads YAML (when loaded via `Config.load()`), re-detects legacy/namespace mode, re-applies namespace defaults and env overrides, re-validates, and re-reads mounted files
+
+##### Unified YAML with namespace sections
+
+Config files now support a namespace mode when an `apcore:` top-level key is present. Each registered namespace occupies its own top-level section. The `_config` reserved meta-namespace controls validation behavior (`strict`, `allowUnknown`). Legacy files (no `apcore:` key) remain fully backward compatible.
+
+##### Per-namespace environment variable overrides
+
+Each namespace declares its own `envPrefix`. The loader uses a longest-prefix-match dispatch algorithm to route env vars to the correct namespace. The `APCORE__` double-underscore convention distinguishes apcore sub-package prefixes (e.g. `APCORE__MCP`, `APCORE__OBSERVABILITY`) from the existing `APCORE_` flat-key prefix.
+
+##### New error codes
+
+| Code | When thrown |
+|------|-------------|
+| `CONFIG_NAMESPACE_DUPLICATE` | `registerNamespace()` called with an already-registered name |
+| `CONFIG_NAMESPACE_RESERVED` | `registerNamespace()` called with a reserved name (e.g. `_config`) |
+| `CONFIG_ENV_PREFIX_CONFLICT` | Two namespaces declare the same `envPrefix` |
+| `CONFIG_MOUNT_ERROR` | `mount()` cannot read or parse the external source |
+| `CONFIG_BIND_ERROR` | `bind<T>()` or `getTyped<T>()` type guard fails |
+
+#### Built-in Namespace Registrations (§9.15)
+
+apcore pre-registers two namespaces for its own subsystems:
+
+- **`observability`** (`APCORE__OBSERVABILITY`) — Wraps the existing `apcore.observability.*` flat keys (tracing, metrics, logging, errorHistory, platformNotify) into a dedicated namespace. Adapter packages (apcore-mcp, apcore-a2a, apcore-cli) should read from this namespace instead of maintaining independent logging defaults.
+- **`sysModules`** (`APCORE__SYS`) — Promotes `apcore.sys_modules.*` flat keys into a dedicated namespace. `registerSysModules()` prefers `config.namespace("sysModules")` in namespace mode and falls back to `config.get("sys_modules.*")` in legacy mode.
+
+#### Error Formatter Registry (§8.8)
+
+New `ErrorFormatter` interface and `ErrorFormatterRegistry` singleton for adapter-specific error serialization:
+
+- **`ErrorFormatterRegistry.register(surface, formatter)`** — Register a named formatter (e.g. `'mcp'`, `'a2a'`). Throws `ERROR_FORMATTER_DUPLICATE` if already registered.
+- **`ErrorFormatterRegistry.get(surface)`** — Retrieve a registered formatter by surface name.
+- **`ErrorFormatterRegistry.format(surface, error)`** — Format a `ModuleError` using the registered formatter; falls back to `error.toDict()` when no formatter is registered for the surface.
+
+New error code: `ERROR_FORMATTER_DUPLICATE`.
+
+#### Event Type Naming Convention and Collision Fix (§9.16)
+
+Two confirmed event-type collisions in the emitted event stream are resolved. Canonical dot-namespaced names replace the ambiguous short-form names:
+
+| Legacy name (alias, still emitted) | Canonical name | Meaning |
+|------------------------------------|----------------|---------|
+| `"module_health_changed"` | `apcore.module.toggled` | Module enabled/disabled toggle |
+| `"module_health_changed"` | `apcore.health.recovered` | Error-rate recovery after spike |
+| `"config_changed"` | `apcore.config.updated` | Config key updated at runtime |
+| `"config_changed"` | `apcore.module.reloaded` | Module reloaded from disk |
+
+Naming convention: `apcore.*` is reserved for core events. Adapter packages use their own prefix (`apcore-mcp.*`, `apcore-a2a.*`, `apcore-cli.*`). All four legacy short-form names remain emitted as aliases during the transition period.
+
+---
+
 ## [0.14.1] - 2026-03-29
 
 ### Fixed

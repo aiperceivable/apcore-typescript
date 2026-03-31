@@ -722,6 +722,120 @@ export class ApprovalPendingError extends ApprovalError {
   }
 }
 
+export class ConfigNamespaceDuplicateError extends ModuleError {
+  static override readonly DEFAULT_RETRYABLE: boolean | null = false;
+
+  constructor(namespace: string, options?: ErrorOptions) {
+    super(
+      'CONFIG_NAMESPACE_DUPLICATE',
+      `Namespace already registered: '${namespace}'`,
+      { namespace },
+      options?.cause,
+      options?.traceId,
+      options?.retryable,
+      options?.aiGuidance,
+      options?.userFixable,
+      options?.suggestion,
+    );
+    this.name = 'ConfigNamespaceDuplicateError';
+  }
+}
+
+export class ConfigNamespaceReservedError extends ModuleError {
+  static override readonly DEFAULT_RETRYABLE: boolean | null = false;
+
+  constructor(namespace: string, options?: ErrorOptions) {
+    super(
+      'CONFIG_NAMESPACE_RESERVED',
+      `Namespace is reserved and cannot be registered: '${namespace}'`,
+      { namespace },
+      options?.cause,
+      options?.traceId,
+      options?.retryable,
+      options?.aiGuidance,
+      options?.userFixable,
+      options?.suggestion,
+    );
+    this.name = 'ConfigNamespaceReservedError';
+  }
+}
+
+export class ConfigEnvPrefixConflictError extends ModuleError {
+  static override readonly DEFAULT_RETRYABLE: boolean | null = false;
+
+  constructor(envPrefix: string, options?: ErrorOptions) {
+    super(
+      'CONFIG_ENV_PREFIX_CONFLICT',
+      `Environment variable prefix already in use or reserved: '${envPrefix}'`,
+      { envPrefix },
+      options?.cause,
+      options?.traceId,
+      options?.retryable,
+      options?.aiGuidance,
+      options?.userFixable,
+      options?.suggestion,
+    );
+    this.name = 'ConfigEnvPrefixConflictError';
+  }
+}
+
+export class ConfigMountError extends ModuleError {
+  static override readonly DEFAULT_RETRYABLE: boolean | null = false;
+
+  constructor(message: string, options?: ErrorOptions) {
+    super(
+      'CONFIG_MOUNT_ERROR',
+      message,
+      {},
+      options?.cause,
+      options?.traceId,
+      options?.retryable,
+      options?.aiGuidance,
+      options?.userFixable,
+      options?.suggestion,
+    );
+    this.name = 'ConfigMountError';
+  }
+}
+
+export class ConfigBindError extends ModuleError {
+  static override readonly DEFAULT_RETRYABLE: boolean | null = false;
+
+  constructor(message: string, options?: ErrorOptions) {
+    super(
+      'CONFIG_BIND_ERROR',
+      message,
+      {},
+      options?.cause,
+      options?.traceId,
+      options?.retryable,
+      options?.aiGuidance,
+      options?.userFixable,
+      options?.suggestion,
+    );
+    this.name = 'ConfigBindError';
+  }
+}
+
+export class ErrorFormatterDuplicateError extends ModuleError {
+  static override readonly DEFAULT_RETRYABLE: boolean | null = false;
+
+  constructor(adapterName: string, options?: ErrorOptions) {
+    super(
+      'ERROR_FORMATTER_DUPLICATE',
+      `Error formatter already registered for adapter: '${adapterName}'`,
+      { adapterName },
+      options?.cause,
+      options?.traceId,
+      options?.retryable,
+      options?.aiGuidance,
+      options?.userFixable,
+      options?.suggestion,
+    );
+    this.name = 'ErrorFormatterDuplicateError';
+  }
+}
+
 /**
  * All framework error codes as constants.
  * Use these instead of hardcoding error code strings.
@@ -729,6 +843,12 @@ export class ApprovalPendingError extends ApprovalError {
 export const ErrorCodes = Object.freeze({
   CONFIG_NOT_FOUND: "CONFIG_NOT_FOUND",
   CONFIG_INVALID: "CONFIG_INVALID",
+  CONFIG_NAMESPACE_DUPLICATE: "CONFIG_NAMESPACE_DUPLICATE",
+  CONFIG_NAMESPACE_RESERVED: "CONFIG_NAMESPACE_RESERVED",
+  CONFIG_ENV_PREFIX_CONFLICT: "CONFIG_ENV_PREFIX_CONFLICT",
+  CONFIG_MOUNT_ERROR: "CONFIG_MOUNT_ERROR",
+  CONFIG_BIND_ERROR: "CONFIG_BIND_ERROR",
+  ERROR_FORMATTER_DUPLICATE: "ERROR_FORMATTER_DUPLICATE",
   ACL_RULE_ERROR: "ACL_RULE_ERROR",
   ACL_DENIED: "ACL_DENIED",
   MODULE_NOT_FOUND: "MODULE_NOT_FOUND",

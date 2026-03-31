@@ -4,6 +4,10 @@
 
 # apcore
 
+[![TypeScript](https://img.shields.io/badge/TypeScript-Node_18+-blue.svg)](https://github.com/aiperceivable/apcore-typescript)
+[![License](https://img.shields.io/badge/license-Apache%202.0-green.svg)](https://opensource.org/licenses/Apache-2.0)
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/12294/badge)](https://www.bestpractices.dev/projects/12294)
+
 **AI-Perceivable Core**
 
 > **Build once, invoke by Code or AI.**

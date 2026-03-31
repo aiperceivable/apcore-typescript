@@ -19,7 +19,11 @@ export { DEFAULT_ANNOTATIONS, createPreflightResult } from './module.js';
 export type { ModuleAnnotations, ModuleExample, ModuleDescription, ValidationResult, PreflightCheckResult, PreflightResult, Module } from './module.js';
 
 // Config
-export { Config } from './config.js';
+export { Config, discoverConfigFile } from './config.js';
+
+// Error Formatter
+export { ErrorFormatterRegistry } from './error-formatter.js';
+export type { ErrorFormatter } from './error-formatter.js';
 
 // Approval
 export {
@@ -68,6 +72,12 @@ export {
   ReloadFailedError,
   ModuleExecuteError,
   InternalError,
+  ConfigNamespaceDuplicateError,
+  ConfigNamespaceReservedError,
+  ConfigEnvPrefixConflictError,
+  ConfigMountError,
+  ConfigBindError,
+  ErrorFormatterDuplicateError,
   ErrorCodes,
 } from './errors.js';
 export type { ErrorCode, ErrorOptions } from './errors.js';
