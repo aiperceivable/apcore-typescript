@@ -75,6 +75,7 @@ export {
   ConfigNamespaceDuplicateError,
   ConfigNamespaceReservedError,
   ConfigEnvPrefixConflictError,
+  ConfigEnvMapConflictError,
   ConfigMountError,
   ConfigBindError,
   ErrorFormatterDuplicateError,

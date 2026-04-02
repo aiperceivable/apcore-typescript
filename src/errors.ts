@@ -779,6 +779,25 @@ export class ConfigEnvPrefixConflictError extends ModuleError {
   }
 }
 
+export class ConfigEnvMapConflictError extends ModuleError {
+  static override readonly DEFAULT_RETRYABLE: boolean | null = false;
+
+  constructor(envVar: string, owner: string, options?: ErrorOptions) {
+    super(
+      'CONFIG_ENV_MAP_CONFLICT',
+      `Environment variable '${envVar}' is already mapped by '${owner}'`,
+      { envVar, owner },
+      options?.cause,
+      options?.traceId,
+      options?.retryable,
+      options?.aiGuidance,
+      options?.userFixable,
+      options?.suggestion,
+    );
+    this.name = 'ConfigEnvMapConflictError';
+  }
+}
+
 export class ConfigMountError extends ModuleError {
   static override readonly DEFAULT_RETRYABLE: boolean | null = false;
 

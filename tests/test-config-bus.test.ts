@@ -355,6 +355,163 @@ describe('Config namespace env dispatch', () => {
     const logging = obs['logging'] as Record<string, unknown> | undefined;
     expect(logging?.['level']).toBe('debug');
   });
+
+  it('env_style flat preserves underscores in keys', () => {
+    const name = 'flatns-' + Date.now();
+    const prefix = 'FLAT_' + Date.now();
+    Config.registerNamespace({ name, envPrefix: prefix, envStyle: 'flat' });
+    setEnv(`${prefix}_DEVTO_API_KEY`, 'abc123');
+    setEnv(`${prefix}_LLM_MODEL`, 'gemini-pro');
+    const yamlPath = path.join(tmpDir, 'flat.yaml');
+    fs.writeFileSync(yamlPath, 'apcore:\n  version: "1.0.0"\n');
+    const cfg = Config.load(yamlPath, { validate: false });
+    const ns = cfg.namespace(name);
+    // Flat style: underscores preserved, no nesting
+    expect(ns['devto_api_key']).toBe('abc123');
+    expect(ns['llm_model']).toBe('gemini-pro');
+    // No nested structure created
+    expect(ns['devto']).toBeUndefined();
+  });
+
+  it('env_style flat with defaults and env override', () => {
+    const name = 'flatdef-' + Date.now();
+    const prefix = 'FLATDEF_' + Date.now();
+    Config.registerNamespace({
+      name,
+      envPrefix: prefix,
+      envStyle: 'flat',
+      defaults: { db_url: 'sqlite://', max_retries: 3 },
+    });
+    setEnv(`${prefix}_DB_URL`, 'postgres://prod');
+    const yamlPath = path.join(tmpDir, 'flatdef.yaml');
+    fs.writeFileSync(yamlPath, 'apcore:\n  version: "1.0.0"\n');
+    const cfg = Config.load(yamlPath, { validate: false });
+    const ns = cfg.namespace(name);
+    expect(ns['db_url']).toBe('postgres://prod');
+    expect(ns['max_retries']).toBe(3);
+  });
+
+  it('env_style nested is the default behavior', () => {
+    const name = 'nestns-' + Date.now();
+    const prefix = 'NEST_' + Date.now();
+    Config.registerNamespace({ name, envPrefix: prefix });
+    setEnv(`${prefix}_API_TIMEOUT`, '60');
+    const yamlPath = path.join(tmpDir, 'nested.yaml');
+    fs.writeFileSync(yamlPath, 'apcore:\n  version: "1.0.0"\n');
+    const cfg = Config.load(yamlPath, { validate: false });
+    // Nested style: _ → . creates nesting
+    expect(cfg.get(`${name}.api.timeout`)).toBe(60);
+  });
+
+  it('env_style auto resolves mixed flat and nested keys', () => {
+    const name = 'autons-' + Date.now();
+    const prefix = 'AUTO_' + Date.now();
+    Config.registerNamespace({
+      name,
+      envPrefix: prefix,
+      envStyle: 'auto',
+      defaults: { devto_api_key: '', publish: { delay: 5, retry: 3 } },
+    });
+    setEnv(`${prefix}_DEVTO_API_KEY`, 'abc123');
+    setEnv(`${prefix}_PUBLISH_DELAY`, '10');
+    setEnv(`${prefix}_PUBLISH_RETRY`, '7');
+    const yamlPath = path.join(tmpDir, 'auto.yaml');
+    fs.writeFileSync(yamlPath, 'apcore:\n  version: "1.0.0"\n');
+    const cfg = Config.load(yamlPath, { validate: false });
+    const ns = cfg.namespace(name);
+    // Flat key matched
+    expect(ns['devto_api_key']).toBe('abc123');
+    // Nested keys matched
+    expect((ns['publish'] as Record<string, unknown>)['delay']).toBe(10);
+    expect((ns['publish'] as Record<string, unknown>)['retry']).toBe(7);
+    // No wrong nesting
+    expect(ns['devto']).toBeUndefined();
+  });
+
+  it('env_style auto falls back to nested for unknown keys', () => {
+    const name = 'autofb-' + Date.now();
+    const prefix = 'AUTOFB_' + Date.now();
+    Config.registerNamespace({
+      name,
+      envPrefix: prefix,
+      envStyle: 'auto',
+      defaults: { known_key: 'x' },
+    });
+    setEnv(`${prefix}_UNKNOWN_STUFF`, 'val');
+    const yamlPath = path.join(tmpDir, 'autofb.yaml');
+    fs.writeFileSync(yamlPath, 'apcore:\n  version: "1.0.0"\n');
+    const cfg = Config.load(yamlPath, { validate: false });
+    expect(cfg.get(`${name}.unknown.stuff`)).toBe('val');
+  });
+
+  it('max_depth limits nesting depth', () => {
+    const name = 'depthns-' + Date.now();
+    const prefix = 'DEPTH_' + Date.now();
+    Config.registerNamespace({ name, envPrefix: prefix, maxDepth: 3 });
+    setEnv(`${prefix}_A_B_C_D_E`, 'val');
+    const yamlPath = path.join(tmpDir, 'depth.yaml');
+    fs.writeFileSync(yamlPath, 'apcore:\n  version: "1.0.0"\n');
+    const cfg = Config.load(yamlPath, { validate: false });
+    // max_depth=3: at most 3 segments (2 dots), rest literal
+    expect(cfg.get(`${name}.a.b.c_d_e`)).toBe('val');
+  });
+
+  it('max_depth default is 5', () => {
+    const name = 'depth5ns-' + Date.now();
+    const prefix = 'DEPTH5_' + Date.now();
+    Config.registerNamespace({ name, envPrefix: prefix });
+    setEnv(`${prefix}_A_B_C_D_E_F_G`, 'val');
+    const yamlPath = path.join(tmpDir, 'depth5.yaml');
+    fs.writeFileSync(yamlPath, 'apcore:\n  version: "1.0.0"\n');
+    const cfg = Config.load(yamlPath, { validate: false });
+    // Default max_depth=5: 5 segments, rest literal
+    expect(cfg.get(`${name}.a.b.c.d.e_f_g`)).toBe('val');
+  });
+
+  it('env_prefix auto-derived from name', () => {
+    const name = 'autoderiv-' + Date.now();
+    Config.registerNamespace({ name });
+    const derivedPrefix = name.toUpperCase().replace(/-/g, '_');
+    setEnv(`${derivedPrefix}_FOO`, 'bar');
+    const yamlPath = path.join(tmpDir, 'autoderiv.yaml');
+    fs.writeFileSync(yamlPath, 'apcore:\n  version: "1.0.0"\n');
+    const cfg = Config.load(yamlPath, { validate: false });
+    expect(cfg.get(`${name}.foo`)).toBe('bar');
+  });
+
+  it('namespace env_map maps bare env vars', () => {
+    const name = 'mapns-' + Date.now();
+    Config.registerNamespace({
+      name,
+      envMap: { [`REDIS_URL_${Date.now()}`]: 'cache_url' },
+    });
+    const envVar = Object.keys(
+      (Array.from((Config as any)._getRegistry?.() ?? [])
+        .find((r: any) => r?.name === name) as any)?.envMap ?? {}
+    )[0] ?? `REDIS_URL_${Date.now()}`;
+    // Simpler: just use a known unique env var name
+    const redisKey = `NSMAP_REDIS_${Date.now()}`;
+    const name2 = 'mapns2-' + Date.now();
+    Config.registerNamespace({ name: name2, envMap: { [redisKey]: 'cache_url' } });
+    setEnv(redisKey, 'redis://localhost');
+    const yamlPath = path.join(tmpDir, 'mapns.yaml');
+    fs.writeFileSync(yamlPath, 'apcore:\n  version: "1.0.0"\n');
+    const cfg = Config.load(yamlPath, { validate: false });
+    expect(cfg.namespace(name2)['cache_url']).toBe('redis://localhost');
+  });
+
+  it('global env_map maps bare env vars to top-level', () => {
+    const portKey = `PORT_${Date.now()}`;
+    const dbKey = `DB_URL_${Date.now()}`;
+    Config.envMap({ [portKey]: 'port', [dbKey]: 'db_url' });
+    setEnv(portKey, '3000');
+    setEnv(dbKey, 'postgres://prod');
+    const yamlPath = path.join(tmpDir, 'globalmap.yaml');
+    fs.writeFileSync(yamlPath, 'apcore:\n  version: "1.0.0"\n');
+    const cfg = Config.load(yamlPath, { validate: false });
+    expect(cfg.get('port')).toBe(3000);
+    expect(cfg.get('db_url')).toBe('postgres://prod');
+  });
 });
 
 describe('Config A12-NS validation', () => {
