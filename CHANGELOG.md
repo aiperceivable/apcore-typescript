@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.16.0] - 2026-04-03
+
+### Added
+
+- **Config Bus**: `envStyle` (auto/nested/flat), `maxDepth`, `envPrefix` auto-derivation, `envMap` (namespace + global), `Config.envMap()`, `ConfigEnvMapConflictError`.
+- **Context**: `ContextKey<T>` typed accessor with `get()`/`set()`/`delete()`/`exists()`/`scoped()`. Built-in key constants. `globalDeadline: number | null` field. `Context.serialize()`/`deserialize()` with `_context_version: 1`.
+- **Annotations**: `extra: Readonly<Record<string, unknown>>` extension field. `paginationStyle` changed from union to `string`. All optional fields now required with defaults. `createAnnotations()` factory. `annotationsToJSON()`/`annotationsFromJSON()` wire format.
+- **ACL**: `ACLConditionHandler` interface (`boolean | Promise<boolean>`). `ACL.registerCondition()`. `$or`/`$not` compound operators. `asyncCheck()` method. Fail-closed for unknown conditions. `removeRule` fixed to element-wise comparison.
+- **Pipeline**: `Step` interface, `StepResult`, `PipelineContext`, `PipelineTrace`, `ExecutionStrategy`, `PipelineEngine`. 11 `BuiltinStep` classes. Preset strategies (standard/internal/testing/performance). `Executor.strategy` option. `callWithTrace()`. `registerStrategy()`/`listStrategies()`/`describePipeline()`.
+
+### Changed
+
+- Toggle system module now has PROTOCOL_SPEC reference comment.
+
+---
+
 ## [0.15.1] - 2026-03-31
 
 ### Changed
