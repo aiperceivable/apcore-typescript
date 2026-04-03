@@ -115,7 +115,7 @@ const DEFAULTS: Record<string, unknown> = {
 // Namespace registry (module-level singletons)
 // ---------------------------------------------------------------------------
 
-type EnvStyle = 'nested' | 'flat' | 'auto';
+export type EnvStyle = 'nested' | 'flat' | 'auto';
 
 const DEFAULT_MAX_DEPTH = 5;
 
@@ -129,11 +129,11 @@ interface NamespaceRegistration {
   envMap: Record<string, string> | null;
 }
 
-const _globalNsRegistry = new Map<string, NamespaceRegistration>();
+export const _globalNsRegistry = new Map<string, NamespaceRegistration>();
 const _RESERVED_NAMESPACES = new Set(['apcore', '_config']);
-const _globalEnvMap = new Map<string, string>();  // bare env var → top-level key
-const _envMapClaimed = new Map<string, string>();  // env var → owner (conflict detection)
-const _envPrefixUsed = new Set<string>();
+export const _globalEnvMap = new Map<string, string>();  // bare env var → top-level key
+export const _envMapClaimed = new Map<string, string>();  // env var → owner (conflict detection)
+export const _envPrefixUsed = new Set<string>();
 
 
 
@@ -198,7 +198,7 @@ function coerceEnvValue(value: string): unknown {
   return value;
 }
 
-function applyEnvOverrides(data: Record<string, unknown>): Record<string, unknown> {
+export function applyEnvOverrides(data: Record<string, unknown>): Record<string, unknown> {
   const result = JSON.parse(JSON.stringify(data)) as Record<string, unknown>;
   const env = _nodeProcess?.env ?? {};
   for (const [envKey, envValue] of Object.entries(env)) {
@@ -224,7 +224,7 @@ function applyEnvOverrides(data: Record<string, unknown>): Record<string, unknow
  * After max_depth segments, remaining _ are preserved as literal.
  * Double __ always becomes literal _.
  */
-function envSuffixToDotPathWithDepth(suffix: string, maxDepth: number): string {
+export function envSuffixToDotPathWithDepth(suffix: string, maxDepth: number): string {
   const lower = suffix.toLowerCase();
   const result: string[] = [];
   let dotCount = 0;
@@ -234,7 +234,7 @@ function envSuffixToDotPathWithDepth(suffix: string, maxDepth: number): string {
       if (i + 1 < lower.length && lower[i + 1] === '_') {
         result.push('_'); // double __ → literal _
         i += 2;
-      } else if (dotCount < maxDepth - 1) {
+      } else if (dotCount < maxDepth - 1) { // Stop at maxDepth segments (maxDepth - 1 dots)
         result.push('.');
         dotCount++;
         i++;
@@ -247,7 +247,7 @@ function envSuffixToDotPathWithDepth(suffix: string, maxDepth: number): string {
       i++;
     }
   }
-  return result.join('');
+  return result.join('').replace(/^\.+|\.+$/g, '');
 }
 
 /**
@@ -294,7 +294,8 @@ function autoResolveSuffix(suffix: string, defaults: Record<string, unknown> | n
  */
 function resolveEnvSuffix(suffix: string, reg: NamespaceRegistration): { key: string; isNested: boolean } {
   if (reg.envStyle === 'flat') {
-    return { key: suffix.toLowerCase(), isNested: false };
+    const key = suffix.toLowerCase().replace(/__/g, '_').replace(/^_/, '');
+    return { key, isNested: false };
   }
   if (reg.envStyle === 'auto') {
     const key = autoResolveSuffix(suffix, reg.defaults, reg.maxDepth);
@@ -302,22 +303,12 @@ function resolveEnvSuffix(suffix: string, reg: NamespaceRegistration): { key: st
   }
   // nested (default)
   const key = envSuffixToDotPathWithDepth(suffix, reg.maxDepth);
-  return { key, isNested: key.includes('.') };
+  return { key, isNested: true };
 }
 
-function applyNamespaceEnvOverrides(data: Record<string, unknown>): Record<string, unknown> {
+export function applyNamespaceEnvOverrides(data: Record<string, unknown>): Record<string, unknown> {
   const result = JSON.parse(JSON.stringify(data)) as Record<string, unknown>;
   const env = _nodeProcess?.env ?? {};
-
-  // Build namespace env_map lookup.
-  const nsEnvMaps = new Map<string, { nsName: string; configKey: string }>();
-  for (const reg of _globalNsRegistry.values()) {
-    if (reg.envMap !== null) {
-      for (const [envVar, configKey] of Object.entries(reg.envMap)) {
-        nsEnvMaps.set(envVar, { nsName: reg.name, configKey });
-      }
-    }
-  }
 
   // Sort registrations by envPrefix length descending (longest first)
   const registrations = Array.from(_globalNsRegistry.values())
@@ -330,31 +321,40 @@ function applyNamespaceEnvOverrides(data: Record<string, unknown>): Record<strin
 
     // 1. Global env_map (bare env var → top-level key).
     if (_globalEnvMap.has(envKey)) {
-      result[_globalEnvMap.get(envKey)!] = coerced;
+      const configKey = _globalEnvMap.get(envKey)!;
+      setNested(result, configKey, coerced);
       continue;
     }
 
     // 2. Namespace env_map (bare env var → namespace key).
-    if (nsEnvMaps.has(envKey)) {
-      const { nsName, configKey } = nsEnvMaps.get(envKey)!;
-      if (typeof result[nsName] !== 'object' || result[nsName] === null) {
-        result[nsName] = {};
+    // ... search in all registered namespaces ...
+    let handledByNsMap = false;
+    for (const reg of _globalNsRegistry.values()) {
+      if (reg.envMap && envKey in reg.envMap) {
+        const configKey = reg.envMap[envKey];
+        if (typeof result[reg.name] !== 'object' || result[reg.name] === null) {
+          result[reg.name] = {};
+        }
+        setNested(result[reg.name] as Record<string, unknown>, configKey, coerced);
+        handledByNsMap = true;
+        break;
       }
-      (result[nsName] as Record<string, unknown>)[configKey] = coerced;
-      continue;
     }
+    if (handledByNsMap) continue;
 
     // 3. Prefix-based dispatch.
     for (const reg of registrations) {
       if (envKey.startsWith(reg.envPrefix)) {
         const suffix = envKey.slice(reg.envPrefix.length);
         if (!suffix) continue;
-        const stripped = suffix.startsWith('__') ? suffix.slice(2) : suffix.startsWith('_') ? suffix.slice(1) : suffix;
-        if (!stripped) continue;
+
+        const { key, isNested } = resolveEnvSuffix(suffix, reg);
+        if (!key) continue;
+
         if (typeof result[reg.name] !== 'object' || result[reg.name] === null) {
           result[reg.name] = {};
         }
-        const { key, isNested } = resolveEnvSuffix(stripped, reg);
+
         if (isNested) {
           setNested(result[reg.name] as Record<string, unknown>, key, coerced);
         } else {
@@ -452,9 +452,11 @@ export class Config {
   private _yamlPath: string | null = null;
   private _mode: 'legacy' | 'namespace' = 'legacy';
   private _mounts: Map<string, Record<string, unknown>> = new Map();
+  private _envStyle: EnvStyle;
 
-  constructor(data?: Record<string, unknown>) {
+  constructor(data?: Record<string, unknown>, envStyle: EnvStyle = 'auto') {
     this._data = data ?? {};
+    this._envStyle = envStyle;
   }
 
   // -------------------------------------------------------------------------

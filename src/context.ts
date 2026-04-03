@@ -170,45 +170,18 @@ export class Context<T = null> {
     );
   }
 
+  /**
+   * Alias for serialize() to ensure automatic JSON.stringify() produces snake_case.
+   */
   toJSON(): Record<string, unknown> {
-    const publicData: Record<string, unknown> = {};
-    for (const [key, value] of Object.entries(this.data)) {
-      if (!key.startsWith('_')) {
-        publicData[key] = value;
-      }
-    }
-    return {
-      traceId: this.traceId,
-      callerId: this.callerId,
-      callChain: [...this.callChain],
-      identity: this.identity ? {
-        id: this.identity.id,
-        type: this.identity.type,
-        roles: [...this.identity.roles],
-        attrs: { ...this.identity.attrs },
-      } : null,
-      redactedInputs: this.redactedInputs ? { ...this.redactedInputs } : null,
-      data: publicData,
-    };
+    return this.serialize();
   }
 
-  static fromJSON(data: Record<string, unknown>, executor?: unknown): Context {
-    const identityData = data.identity as Record<string, unknown> | null;
-    const identity = identityData ? {
-      id: identityData.id as string,
-      type: (identityData.type as string) ?? 'user',
-      roles: Object.freeze([...(Array.isArray(identityData.roles) ? identityData.roles : [])]),
-      attrs: Object.freeze((identityData.attrs && typeof identityData.attrs === 'object' ? identityData.attrs : {}) as Record<string, unknown>),
-    } : null;
-    return new Context(
-      data.traceId as string,
-      (data.callerId as string) ?? null,
-      (data.callChain as string[]) ?? [],
-      executor ?? null,
-      identity,
-      (data.redactedInputs as Record<string, unknown>) ?? null,
-      data.data ? { ...(data.data as Record<string, unknown>) } : {},
-    );
+  /**
+   * Alias for deserialize() to ensure consistency with toJSON().
+   */
+  static fromJSON(data: Record<string, unknown>): Context {
+    return this.deserialize(data);
   }
 
   get logger(): ContextLogger {

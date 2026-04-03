@@ -25,25 +25,34 @@ export type EvalFn = (
 /** Check context.identity.type is in the allowed list. */
 export class IdentityTypesHandler implements ACLConditionHandler {
   evaluate(value: unknown, context: Context): boolean {
-    if (!Array.isArray(value) || context.identity === null) return false;
-    return value.includes(context.identity.type);
+    if (context.identity === null) return false;
+    const allowed = Array.isArray(value) ? value : [value];
+    return allowed.includes(context.identity.type);
   }
 }
 
 /** Check at least one role overlaps between identity and required roles. */
 export class RolesHandler implements ACLConditionHandler {
   evaluate(value: unknown, context: Context): boolean {
-    if (!Array.isArray(value) || context.identity === null) return false;
+    if (context.identity === null) return false;
+    const required = Array.isArray(value) ? value : [value];
     const identityRoles = new Set(context.identity.roles);
-    return value.some((r: string) => identityRoles.has(r));
+    return (required as string[]).some((r: string) => identityRoles.has(r));
   }
 }
 
 /** Check call chain length does not exceed threshold. */
 export class MaxCallDepthHandler implements ACLConditionHandler {
   evaluate(value: unknown, context: Context): boolean {
-    if (typeof value !== 'number') return false;
-    return context.callChain.length <= value;
+    let threshold: number;
+    if (typeof value === 'object' && value !== null && 'lte' in (value as any)) {
+      threshold = (value as any).lte;
+    } else if (typeof value === 'number') {
+      threshold = value;
+    } else {
+      return false;
+    }
+    return context.callChain.length <= threshold;
   }
 }
 

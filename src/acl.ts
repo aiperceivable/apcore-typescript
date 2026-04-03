@@ -44,6 +44,23 @@ export interface AuditEntry {
   readonly traceId: string | null;
 }
 
+/** Convert an AuditEntry to a snake_case object for cross-language JSON consistency. */
+export function serializeAuditEntry(entry: AuditEntry): Record<string, unknown> {
+  return {
+    timestamp: entry.timestamp,
+    caller_id: entry.callerId,
+    target_id: entry.targetId,
+    decision: entry.decision,
+    reason: entry.reason,
+    matched_rule: entry.matchedRule,
+    matched_rule_index: entry.matchedRuleIndex,
+    identity_type: entry.identityType,
+    roles: [...entry.roles],
+    call_depth: entry.callDepth,
+    trace_id: entry.traceId,
+  };
+}
+
 export type AuditLogger = (entry: AuditEntry) => void;
 
 function parseAclRule(rawRule: unknown, index: number): ACLRule {
@@ -242,12 +259,29 @@ export class ACL {
     return defaultDecision;
   }
 
-  private async _matchesRuleAsync(rule: ACLRule, caller: string, target: string, context: Context | null): Promise<boolean> {
-    const callerMatch = rule.callers.some((p) => this._matchPattern(p, caller, context));
-    if (!callerMatch) return false;
+  private async _matchPatternsAsync(patterns: string[], value: string, context: Context | null): Promise<boolean> {
+    if (patterns.length === 0) return false;
 
-    const targetMatch = rule.targets.some((p) => this._matchPattern(p, target, context));
-    if (!targetMatch) return false;
+    // Check for compound operators
+    const first = patterns[0];
+    if (first === '$or') {
+      for (const p of patterns.slice(1)) {
+        if (this._matchPattern(p, value, context)) return true;
+      }
+      return false;
+    }
+    if (first === '$not') {
+      if (patterns.length < 2) return false;
+      return !this._matchPattern(patterns[1], value, context);
+    }
+
+    // Standard OR behavior for flat list
+    return patterns.some((p) => this._matchPattern(p, value, context));
+  }
+
+  private async _matchesRuleAsync(rule: ACLRule, caller: string, target: string, context: Context | null): Promise<boolean> {
+    if (!await this._matchPatternsAsync(rule.callers, caller, context)) return false;
+    if (!await this._matchPatternsAsync(rule.targets, target, context)) return false;
 
     if (rule.conditions != null) {
       if (context === null) return false;
@@ -303,12 +337,26 @@ export class ACL {
     return matchPattern(pattern, value);
   }
 
-  private _matchesRule(rule: ACLRule, caller: string, target: string, context: Context | null): boolean {
-    const callerMatch = rule.callers.some((p) => this._matchPattern(p, caller, context));
-    if (!callerMatch) return false;
+  private _matchPatterns(patterns: string[], value: string, context: Context | null): boolean {
+    if (patterns.length === 0) return false;
 
-    const targetMatch = rule.targets.some((p) => this._matchPattern(p, target, context));
-    if (!targetMatch) return false;
+    // Check for compound operators
+    const first = patterns[0];
+    if (first === '$or') {
+      return patterns.slice(1).some((p) => this._matchPattern(p, value, context));
+    }
+    if (first === '$not') {
+      if (patterns.length < 2) return false;
+      return !this._matchPattern(patterns[1], value, context);
+    }
+
+    // Standard OR behavior for flat list
+    return patterns.some((p) => this._matchPattern(p, value, context));
+  }
+
+  private _matchesRule(rule: ACLRule, caller: string, target: string, context: Context | null): boolean {
+    if (!this._matchPatterns(rule.callers, caller, context)) return false;
+    if (!this._matchPatterns(rule.targets, target, context)) return false;
 
     if (rule.conditions != null) {
       if (!this._checkConditions(rule.conditions, context)) return false;
@@ -353,7 +401,10 @@ export class ACL {
 // ---------------------------------------------------------------------------
 
 ACL.registerCondition('identity_types', new IdentityTypesHandler());
+ACL.registerCondition('identity_type', new IdentityTypesHandler());
 ACL.registerCondition('roles', new RolesHandler());
+ACL.registerCondition('role', new RolesHandler());
 ACL.registerCondition('max_call_depth', new MaxCallDepthHandler());
+ACL.registerCondition('call_depth', new MaxCallDepthHandler());
 ACL.registerCondition('$or', new OrHandler(ACL._evaluateConditions.bind(ACL)));
 ACL.registerCondition('$not', new NotHandler(ACL._evaluateConditions.bind(ACL)));
