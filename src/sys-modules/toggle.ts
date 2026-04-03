@@ -1,5 +1,10 @@
 /**
  * Module toggle system -- disable/enable modules without unloading.
+ *
+ * Implements system.control.toggle_feature as defined in PROTOCOL_SPEC.md:
+ * - Error code: MODULE_DISABLED (HTTP 403)
+ * - Canonical event: apcore.module.toggled (legacy alias: module_health_changed)
+ * - See spec sections: "Error Codes" and "Canonical Event Types"
  */
 
 import { InvalidInputError, ModuleNotFoundError, ModuleDisabledError } from '../errors.js';
