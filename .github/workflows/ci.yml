@@ -17,7 +17,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: aiperceivable/apcore
-          path: ../apcore
+          path: apcore-spec
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -46,3 +46,5 @@ jobs:
 
       - name: Run tests
         run: pnpm test
+        env:
+          APCORE_SPEC_REPO: ${{ github.workspace }}/apcore-spec
