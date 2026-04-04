@@ -197,7 +197,7 @@ Configuration files support two modes. **Legacy mode** (no `apcore:` key) is ful
 ```yaml
 # Namespace mode
 apcore:
-  version: "0.15.0"
+  version: "0.16.0"
 
 _config:
   strict: true
