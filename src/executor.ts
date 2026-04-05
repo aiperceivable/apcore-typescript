@@ -5,43 +5,33 @@
  * Timeout uses Promise.race instead of threading.
  */
 
-import type { TSchema } from '@sinclair/typebox';
-import { Kind } from '@sinclair/typebox';
-import { Value } from '@sinclair/typebox/value';
-import { jsonSchemaToTypeBox } from './schema/loader.js';
 import type { ACL } from './acl.js';
-import type { ApprovalHandler, ApprovalRequest, ApprovalResult } from './approval.js';
-import { createApprovalRequest } from './approval.js';
+import type { ApprovalHandler } from './approval.js';
 import type { Config } from './config.js';
 import { Context } from './context.js';
 import { ExecutionCancelledError } from './cancel.js';
 import {
-  ACLDeniedError,
-  ApprovalDeniedError,
-  ApprovalPendingError,
-  ApprovalTimeoutError,
   InvalidInputError,
   ModuleError,
-  ModuleNotFoundError,
-  ModuleTimeoutError,
-  SchemaValidationError,
 } from './errors.js';
 import { AfterMiddleware, BeforeMiddleware, Middleware } from './middleware/index.js';
 import { MiddlewareChainError, MiddlewareManager } from './middleware/manager.js';
-import { guardCallChain } from './utils/call-chain.js';
 import type { Module, ModuleAnnotations, PreflightCheckResult, PreflightResult } from './module.js';
-import { DEFAULT_ANNOTATIONS, createPreflightResult } from './module.js';
+import { createPreflightResult } from './module.js';
 import { MODULE_ID_PATTERN } from './registry/registry.js';
 import type { Registry } from './registry/registry.js';
-import type { PipelineTrace, StrategyInfo } from './pipeline.js';
-import { ExecutionStrategy, PipelineEngine, StrategyNotFoundError } from './pipeline.js';
+import type { PipelineContext, PipelineTrace, StrategyInfo } from './pipeline.js';
+import { ExecutionStrategy, PipelineEngine, PipelineAbortError, StrategyNotFoundError } from './pipeline.js';
 import {
+  BuiltinACLCheck,
+  BuiltinApprovalGate,
   buildStandardStrategy,
   buildInternalStrategy,
   buildTestingStrategy,
   buildPerformanceStrategy,
 } from './builtin-steps.js';
 import type { StandardStrategyDeps } from './builtin-steps.js';
+import { propagateError } from './utils/error-propagation.js';
 
 export const REDACTED_VALUE: string = '***REDACTED***';
 
@@ -109,28 +99,6 @@ function redactSecretPrefix(data: Record<string, unknown>): void {
   }
 }
 
-/**
- * Normalize a dict-form annotations object into a ModuleAnnotations interface.
- * Handles both camelCase and snake_case keys (parallel to Python's
- * ``ModuleAnnotations(**{k: v for k, v in annotations.items() if k in valid_fields})``).
- */
-function dictToAnnotations(dict: Record<string, unknown>): ModuleAnnotations {
-  return {
-    readonly: Boolean(dict['readonly'] ?? false),
-    destructive: Boolean(dict['destructive'] ?? false),
-    idempotent: Boolean(dict['idempotent'] ?? false),
-    requiresApproval: Boolean(dict['requiresApproval'] ?? dict['requires_approval'] ?? false),
-    openWorld: Boolean(dict['openWorld'] ?? dict['open_world'] ?? true),
-    streaming: Boolean(dict['streaming'] ?? false),
-    cacheable: Boolean(dict['cacheable'] ?? false),
-    cacheTtl: Number(dict['cacheTtl'] ?? dict['cache_ttl'] ?? 0),
-    cacheKeyFields: (dict['cacheKeyFields'] ?? dict['cache_key_fields'] ?? null) as string[] | null,
-    paginated: Boolean(dict['paginated'] ?? false),
-    paginationStyle: (dict['paginationStyle'] ?? dict['pagination_style'] ?? 'cursor') as string,
-    extra: Object.freeze((dict['extra'] as Record<string, unknown>) ?? {}),
-  };
-}
-
 export class Executor {
   private _registry: Registry;
   private _middlewareManager: MiddlewareManager;
@@ -141,7 +109,8 @@ export class Executor {
   private _globalTimeout: number;
   private _maxCallDepth: number;
   private _maxModuleRepeat: number;
-  private _strategy: ExecutionStrategy | null;
+  private _strategy: ExecutionStrategy;
+  private _pipelineEngine: PipelineEngine;
 
   /** Global strategy registry for name-based resolution. */
   private static _strategyRegistry = new Map<string, ExecutionStrategy>();
@@ -178,11 +147,11 @@ export class Executor {
       this._maxModuleRepeat = 3;
     }
 
-    // Resolve strategy option
+    // Resolve strategy option (default to standard)
     const strategyOpt = options.strategy;
     if (strategyOpt === undefined || strategyOpt === null) {
-      // null/undefined: no pipeline strategy, use legacy execution path
-      this._strategy = null;
+      // Default to standard strategy (pipeline-first)
+      this._strategy = buildStandardStrategy(this._buildStrategyDeps());
     } else if (typeof strategyOpt === 'string') {
       // Resolve by name from the global registry
       const resolved = Executor._strategyRegistry.get(strategyOpt);
@@ -208,6 +177,8 @@ export class Executor {
       // ExecutionStrategy instance
       this._strategy = strategyOpt;
     }
+
+    this._pipelineEngine = new PipelineEngine();
   }
 
   /** Build the dependency bag for strategy factories. */
@@ -242,8 +213,8 @@ export class Executor {
     return target.info();
   }
 
-  /** Get the current execution strategy (may be null for legacy mode). */
-  get currentStrategy(): ExecutionStrategy | null {
+  /** Get the current execution strategy. */
+  get currentStrategy(): ExecutionStrategy {
     return this._strategy;
   }
 
@@ -265,14 +236,26 @@ export class Executor {
     return this._middlewareManager.snapshot();
   }
 
-  /** Set the access control provider. */
+  /** Set the access control provider. Updates both the executor field and the strategy's ACL step. */
   setAcl(acl: ACL): void {
     this._acl = acl;
+    for (const step of this._strategy.steps) {
+      if (step.name === 'acl_check' && step instanceof BuiltinACLCheck) {
+        step.setAcl(acl);
+        break;
+      }
+    }
   }
 
-  /** Set the approval handler for Step 5 gate. */
+  /** Set the approval handler for Step 5 gate. Updates both the executor field and the strategy's approval step. */
   setApprovalHandler(handler: ApprovalHandler): void {
     this._approvalHandler = handler;
+    for (const step of this._strategy.steps) {
+      if (step.name === 'approval_gate' && step instanceof BuiltinApprovalGate) {
+        step.setApprovalHandler(handler);
+        break;
+      }
+    }
   }
 
   use(middleware: Middleware): Executor {
@@ -298,10 +281,47 @@ export class Executor {
     moduleId: string,
     inputs?: Record<string, unknown> | null,
     context?: Context | null,
-    _versionHint?: string | null,
+    versionHint?: string | null,
   ): Promise<Record<string, unknown>> {
-    const { mod, effectiveInputs, ctx } = await this._prepareExecution(moduleId, inputs, context);
-    return this._executeWithMiddleware(mod, moduleId, effectiveInputs, ctx);
+    this._validateModuleId(moduleId);
+
+    const ctx = context != null ? context.child(moduleId) : Context.create(this).child(moduleId);
+    const pipeCtx: PipelineContext = {
+      moduleId,
+      inputs: inputs ?? {},
+      context: ctx,
+      module: null,
+      validatedInputs: null,
+      output: null,
+      validatedOutput: null,
+      stream: false,
+      outputStream: null,
+      strategy: this._strategy,
+      trace: null,
+      versionHint: versionHint ?? null,
+    };
+
+    try {
+      const [output, _trace] = await this._pipelineEngine.run(this._strategy, pipeCtx);
+      return (output ?? {}) as Record<string, unknown>;
+    } catch (exc) {
+      if (exc instanceof ExecutionCancelledError) throw exc;
+      // Pipeline errors propagate with their original types (ModuleNotFoundError, etc.)
+      // because builtin steps now throw directly.
+      const ctxObj = pipeCtx.context;
+      const wrapped = propagateError(exc as Error, moduleId, ctxObj);
+      const executedMw = pipeCtx.executedMiddlewares;
+      if (executedMw && executedMw.length > 0) {
+        const recovery = this._middlewareManager.executeOnError(
+          moduleId, pipeCtx.inputs, wrapped as Error, ctxObj, executedMw as Middleware[],
+        );
+        if (recovery !== null) return recovery;
+      }
+      if (exc instanceof MiddlewareChainError) {
+        throw new ModuleError('MODULE_EXECUTE_ERROR', String(exc), { moduleId });
+      }
+      throw wrapped;
+    }
   }
 
   /**
@@ -329,29 +349,23 @@ export class Executor {
     options?: { strategy?: ExecutionStrategy | null } | null,
   ): Promise<[Record<string, unknown>, PipelineTrace]> {
     const strategy = options?.strategy ?? this._strategy;
-    if (strategy === null) {
-      throw new InvalidInputError(
-        'callWithTrace requires a pipeline strategy. Set one on the Executor or pass via options.',
-      );
-    }
 
     const ctx = context ?? Context.create(this).child(moduleId);
-    const pipelineCtx = {
+    const pipelineCtx: PipelineContext = {
       moduleId,
       inputs: inputs ?? {},
       context: ctx,
-      module: null as unknown,
-      validatedInputs: null as Record<string, unknown> | null,
-      output: null as Record<string, unknown> | null,
-      validatedOutput: null as Record<string, unknown> | null,
+      module: null,
+      validatedInputs: null,
+      output: null,
+      validatedOutput: null,
       stream: false,
-      outputStream: null as AsyncGenerator | null,
+      outputStream: null,
       strategy,
-      trace: null as PipelineTrace | null,
+      trace: null,
     };
 
-    const engine = new PipelineEngine();
-    const [output, trace] = await engine.run(strategy, pipelineCtx);
+    const [output, trace] = await this._pipelineEngine.run(strategy, pipelineCtx);
     return [(output ?? {}) as Record<string, unknown>, trace];
   }
 
@@ -366,253 +380,120 @@ export class Executor {
    * validation/side-effects but its return value is not yielded since chunks were already
    * emitted. In the non-streaming fallback, after-middleware can transform the output.
    */
+  /**
+   * Streaming execution pipeline using split-pipeline design.
+   *
+   * Phase 1: Pipeline runs all steps with ctx.stream=true. BuiltinExecute detects
+   *   stream mode and sets ctx.outputStream if module has stream().
+   * Phase 2: Iterate stream, accumulate chunks and yield each.
+   * Phase 3: Run output_validation + middleware_after on accumulated output.
+   *
+   * If the module has no stream(), the pipeline executes normally and yields ctx.output.
+   */
   async *stream(
     moduleId: string,
     inputs?: Record<string, unknown> | null,
     context?: Context | null,
-    _versionHint?: string | null,
+    versionHint?: string | null,
   ): AsyncGenerator<Record<string, unknown>> {
-    const { mod, effectiveInputs, ctx } = await this._prepareExecution(moduleId, inputs, context);
-    yield* this._streamWithMiddleware(mod, moduleId, effectiveInputs, ctx);
-  }
+    this._validateModuleId(moduleId);
 
-  private async *_streamWithMiddleware(
-    mod: Record<string, unknown>,
-    moduleId: string,
-    inputs: Record<string, unknown>,
-    ctx: Context,
-  ): AsyncGenerator<Record<string, unknown>> {
-    let effectiveInputs = inputs;
-    let executedMiddlewares: Middleware[] = [];
+    const ctx = context != null ? context.child(moduleId) : Context.create(this).child(moduleId);
+    const pipeCtx: PipelineContext = {
+      moduleId,
+      inputs: inputs ?? {},
+      context: ctx,
+      module: null,
+      validatedInputs: null,
+      output: null,
+      validatedOutput: null,
+      stream: true,
+      outputStream: null,
+      strategy: this._strategy,
+      trace: null,
+      versionHint: versionHint ?? null,
+    };
 
+    // Phase 1: Run the full pipeline. BuiltinExecute detects ctx.stream=true.
     try {
-      try {
-        [effectiveInputs, executedMiddlewares] = this._middlewareManager.executeBefore(moduleId, effectiveInputs, ctx);
-      } catch (e) {
-        if (e instanceof MiddlewareChainError) {
-          executedMiddlewares = e.executedMiddlewares;
-          const recovery = this._middlewareManager.executeOnError(
-            moduleId, effectiveInputs, e.original, ctx, executedMiddlewares,
-          );
-          if (recovery !== null) {
-            yield recovery;
-            return;
-          }
-          executedMiddlewares = [];
-          throw e.original;
-        }
-        throw e;
-      }
-
-      // Cancel check before execution
-      if (ctx.cancelToken !== null) {
-        ctx.cancelToken.check();
-      }
-
-      const streamFn = mod['stream'] as
-        | ((inputs: Record<string, unknown>, context: Context) => AsyncGenerator<Record<string, unknown>>)
-        | undefined;
-
-      if (typeof streamFn === 'function') {
-        // Module has a stream() method: iterate and yield each chunk
-        let accumulated: Record<string, unknown> = {};
-        for await (const chunk of streamFn.call(mod, effectiveInputs, ctx)) {
-          accumulated = { ...accumulated, ...chunk };
-          yield chunk;
-        }
-
-        // Validate accumulated output against output schema
-        this._validateOutput(mod, accumulated);
-
-        // Run after-middleware on the accumulated result
-        this._middlewareManager.executeAfter(moduleId, effectiveInputs, accumulated, ctx);
-      } else {
-        // Fallback: execute normally and yield single chunk
-        let output = await this._executeWithTimeout(mod, moduleId, effectiveInputs, ctx);
-        this._validateOutput(mod, output);
-        output = this._middlewareManager.executeAfter(moduleId, effectiveInputs, output, ctx);
-        yield output;
-      }
+      await this._pipelineEngine.run(this._strategy, pipeCtx);
     } catch (exc) {
       if (exc instanceof ExecutionCancelledError) throw exc;
-      if (executedMiddlewares.length > 0) {
+      const ctxObj = pipeCtx.context;
+      const wrapped = propagateError(exc as Error, moduleId, ctxObj);
+      if (pipeCtx.executedMiddlewares && pipeCtx.executedMiddlewares.length > 0) {
         const recovery = this._middlewareManager.executeOnError(
-          moduleId, effectiveInputs, exc as Error, ctx, executedMiddlewares,
+          moduleId, pipeCtx.inputs, wrapped as Error, ctxObj, pipeCtx.executedMiddlewares as Middleware[],
         );
         if (recovery !== null) {
           yield recovery;
           return;
         }
       }
-      throw exc;
-    }
-  }
-
-  /**
-   * Shared pipeline: context -> global deadline -> safety -> lookup -> ACL -> approval -> validate.
-   */
-  private async _prepareExecution(
-    moduleId: string,
-    inputs?: Record<string, unknown> | null,
-    context?: Context | null,
-  ): Promise<{ mod: Record<string, unknown>; effectiveInputs: Record<string, unknown>; ctx: Context }> {
-    let effectiveInputs = inputs ?? {};
-    const ctx = this._createContext(moduleId, context);
-
-    // Set global deadline on root call only
-    if (!(CTX_GLOBAL_DEADLINE in ctx.data) && this._globalTimeout > 0) {
-      ctx.data[CTX_GLOBAL_DEADLINE] = Date.now() + this._globalTimeout;
+      throw wrapped;
     }
 
-    this._checkSafety(moduleId, ctx);
-
-    const mod = this._lookupModule(moduleId);
-    this._checkAcl(moduleId, ctx);
-
-    // Step 5 -- Approval Gate (strips internal keys like _approval_token)
-    effectiveInputs = await this._checkApproval(mod, moduleId, effectiveInputs, ctx);
-
-    effectiveInputs = this._validateInputs(mod, effectiveInputs, ctx);
-
-    return { mod, effectiveInputs, ctx };
-  }
-
-  private _createContext(moduleId: string, context?: Context | null): Context {
-    if (context == null) {
-      return Context.create(this).child(moduleId);
+    // If no outputStream, pipeline already executed normally — yield single result
+    if (pipeCtx.outputStream == null) {
+      yield (pipeCtx.output ?? {}) as Record<string, unknown>;
+      return;
     }
-    return context.child(moduleId);
-  }
 
-  private _lookupModule(moduleId: string): Record<string, unknown> {
-    const module = this._registry.get(moduleId);
-    if (module === null) {
-      throw new ModuleNotFoundError(moduleId);
-    }
-    return module as Record<string, unknown>;
-  }
-
-  private _checkAcl(moduleId: string, ctx: Context): void {
-    if (this._acl !== null) {
-      const allowed = this._acl.check(ctx.callerId, moduleId, ctx);
-      if (!allowed) {
-        throw new ACLDeniedError(ctx.callerId, moduleId);
-      }
-    }
-  }
-
-  private _validateInputs(
-    mod: Record<string, unknown>,
-    inputs: Record<string, unknown>,
-    ctx: Context,
-  ): Record<string, unknown> {
-    const inputSchema = this._resolveSchema(mod, 'inputSchema');
-    if (inputSchema == null) return inputs;
-
-    this._validateSchema(inputSchema, inputs, 'Input');
-    ctx.redactedInputs = redactSensitive(
-      inputs,
-      inputSchema as unknown as Record<string, unknown>,
-    );
-    return inputs;
-  }
-
-  private _resolveSchema(mod: Record<string, unknown>, key: string): TSchema | null {
-    const schema = mod[key] as TSchema | undefined;
-    if (schema == null) return null;
-    if (Kind in schema) return schema;
-    const converted = jsonSchemaToTypeBox(schema as unknown as Record<string, unknown>);
-    mod[key] = converted;
-    return converted;
-  }
-
-  private _validateSchema(
-    schema: TSchema,
-    data: Record<string, unknown>,
-    direction: string,
-  ): void {
-    if (Value.Check(schema, data)) return;
-
-    const errors: Array<Record<string, unknown>> = [];
-    for (const error of Value.Errors(schema, data)) {
-      errors.push({
-        field: error.path || '/',
-        code: String(error.type),
-        message: error.message,
-      });
-    }
-    throw new SchemaValidationError(`${direction} validation failed`, errors);
-  }
-
-  private async _executeWithMiddleware(
-    mod: Record<string, unknown>,
-    moduleId: string,
-    inputs: Record<string, unknown>,
-    ctx: Context,
-  ): Promise<Record<string, unknown>> {
-    let effectiveInputs = inputs;
-    let executedMiddlewares: Middleware[] = [];
-
+    // Phase 2: Iterate stream, accumulate chunks
+    const outputStream = pipeCtx.outputStream as AsyncGenerator<Record<string, unknown>>;
+    let accumulated: Record<string, unknown> = {};
     try {
-      try {
-        [effectiveInputs, executedMiddlewares] = this._middlewareManager.executeBefore(moduleId, effectiveInputs, ctx);
-      } catch (e) {
-        if (e instanceof MiddlewareChainError) {
-          executedMiddlewares = e.executedMiddlewares;
-          const recovery = this._middlewareManager.executeOnError(
-            moduleId, effectiveInputs, e.original, ctx, executedMiddlewares,
-          );
-          if (recovery !== null) return recovery;
-          executedMiddlewares = [];
-          throw e.original;
-        }
-        throw e;
+      for await (const chunk of outputStream) {
+        accumulated = { ...accumulated, ...chunk };
+        yield chunk;
       }
-
-      // Cancel check before execution
-      if (ctx.cancelToken !== null) {
-        ctx.cancelToken.check();
-      }
-
-      let output = await this._executeWithTimeout(mod, moduleId, effectiveInputs, ctx);
-
-      this._validateOutput(mod, output);
-
-      output = this._middlewareManager.executeAfter(moduleId, effectiveInputs, output, ctx);
-      return output;
     } catch (exc) {
       if (exc instanceof ExecutionCancelledError) throw exc;
-      if (executedMiddlewares.length > 0) {
+      const ctxObj = pipeCtx.context;
+      const wrapped = propagateError(exc as Error, moduleId, ctxObj);
+      if (pipeCtx.executedMiddlewares && pipeCtx.executedMiddlewares.length > 0) {
         const recovery = this._middlewareManager.executeOnError(
-          moduleId, effectiveInputs, exc as Error, ctx, executedMiddlewares,
+          moduleId, pipeCtx.inputs, wrapped as Error, ctxObj, pipeCtx.executedMiddlewares as Middleware[],
         );
-        if (recovery !== null) return recovery;
+        if (recovery !== null) {
+          yield recovery;
+          return;
+        }
       }
-      throw exc;
+      throw wrapped;
     }
-  }
 
-  private _validateOutput(mod: Record<string, unknown>, output: Record<string, unknown>): void {
-    const outputSchema = this._resolveSchema(mod, 'outputSchema');
-    if (outputSchema != null) {
-      this._validateSchema(outputSchema, output, 'Output');
+    // Phase 3: Output validation + middleware_after on accumulated result
+    pipeCtx.output = accumulated;
+    const postSteps = this._strategy.steps.filter(
+      (s) => s.name === 'output_validation' || s.name === 'middleware_after' || s.name === 'return_result',
+    );
+    if (postSteps.length > 0) {
+      const postStrategy = new ExecutionStrategy('post_stream', postSteps);
+      try {
+        await this._pipelineEngine.run(postStrategy, pipeCtx);
+      } catch {
+        // Post-stream validation errors are non-fatal for already-yielded chunks
+      }
     }
   }
 
   /**
-   * Non-destructive preflight check through Steps 1-6 of the pipeline.
-   * Returns a PreflightResult that is duck-type compatible with ValidationResult.
+   * Non-destructive preflight check using pipeline dry_run mode.
+   *
+   * Runs all pure steps (context creation, call chain guard, module lookup,
+   * ACL, input validation). Steps with pure=false (approval, middleware,
+   * execute) are automatically skipped. Returns a PreflightResult.
    */
-  validate(
+  async validate(
     moduleId: string,
     inputs?: Record<string, unknown> | null,
     context?: Context | null,
-  ): PreflightResult {
+  ): Promise<PreflightResult> {
     const effectiveInputs = inputs ?? {};
     const checks: PreflightCheckResult[] = [];
-    let requiresApproval = false;
 
-    // Check 1: module_id format
+    // Check 0: module_id format (before pipeline)
     if (!MODULE_ID_PATTERN.test(moduleId)) {
       checks.push({
         check: 'module_id', passed: false,
@@ -622,100 +503,119 @@ export class Executor {
     }
     checks.push({ check: 'module_id', passed: true });
 
-    // Check 2: module lookup
-    const module = this._registry.get(moduleId);
-    if (module === null) {
-      checks.push({
-        check: 'module_lookup', passed: false,
-        error: { code: 'MODULE_NOT_FOUND', message: `Module not found: ${moduleId}` },
-      });
-      return createPreflightResult(checks);
-    }
-    checks.push({ check: 'module_lookup', passed: true });
-    const mod = module as Record<string, unknown>;
+    // Run pipeline in dry_run mode — pure=false steps are skipped
+    const pipeCtx: PipelineContext = {
+      moduleId,
+      inputs: effectiveInputs,
+      context: context ?? Context.create(this).child(moduleId),
+      module: null,
+      validatedInputs: null,
+      output: null,
+      validatedOutput: null,
+      stream: false,
+      outputStream: null,
+      strategy: this._strategy,
+      trace: null,
+      dryRun: true,
+    };
 
-    // Check 3: call chain safety
-    const ctx = this._createContext(moduleId, context);
+    let trace: PipelineTrace | null = null;
     try {
-      this._checkSafety(moduleId, ctx);
-      checks.push({ check: 'call_chain', passed: true });
+      const [, t] = await this._pipelineEngine.run(this._strategy, pipeCtx);
+      trace = t;
     } catch (e) {
-      const err = e instanceof ModuleError
-        ? { code: e.code, message: e.message }
-        : { code: 'CALL_CHAIN_ERROR', message: String(e) };
-      checks.push({ check: 'call_chain', passed: false, error: err });
-    }
-
-    // Check 4: ACL
-    if (this._acl !== null) {
-      const allowed = this._acl.check(ctx.callerId, moduleId, ctx);
-      if (!allowed) {
-        checks.push({
-          check: 'acl', passed: false,
-          error: { code: 'ACL_DENIED', message: `Access denied: ${ctx.callerId} -> ${moduleId}` },
-        });
+      // Step raised a domain error (ModuleNotFoundError, ACLDeniedError, etc.)
+      if (e instanceof PipelineAbortError) {
+        trace = e.pipelineTrace;
       } else {
-        checks.push({ check: 'acl', passed: true });
+        const errorDict = (e instanceof ModuleError)
+          ? { code: e.code, message: e.message }
+          : { code: (e as Error).constructor?.name ?? 'Error', message: String(e) };
+        const code = (e instanceof ModuleError) ? e.code : (e as Error).constructor?.name ?? 'Error';
+
+        let checkName: string;
+        if (code === 'MODULE_NOT_FOUND') checkName = 'module_lookup';
+        else if (code === 'ACL_DENIED') checkName = 'acl';
+        else if (code === 'SCHEMA_VALIDATION_ERROR' || code === 'INVALID_INPUT') checkName = 'schema';
+        else if (code === 'CALL_DEPTH_EXCEEDED' || code === 'CIRCULAR_CALL' || code === 'CALL_FREQUENCY_EXCEEDED') checkName = 'call_chain';
+        else checkName = 'unknown';
+
+        checks.push({ check: checkName, passed: false, error: errorDict });
       }
-    } else {
-      checks.push({ check: 'acl', passed: true });
     }
 
-    // Check 5: approval detection (report only, no handler invocation)
-    if (this._needsApproval(mod)) {
-      requiresApproval = true;
+    // Convert pipeline trace to PreflightResult checks
+    if (trace !== null) {
+      checks.push(...this._traceToChecks(trace));
     }
-    checks.push({ check: 'approval', passed: true });
 
-    // Check 6: input schema validation
-    const inputSchema = mod['inputSchema'] as TSchema | undefined;
-    if (inputSchema != null) {
-      if (Value.Check(inputSchema, effectiveInputs)) {
-        checks.push({ check: 'schema', passed: true });
-      } else {
-        const errors: Array<Record<string, unknown>> = [];
-        for (const error of Value.Errors(inputSchema, effectiveInputs)) {
-          errors.push({
-            field: error.path || '/',
-            code: String(error.type),
-            message: error.message,
+    // Detect requires_approval
+    let requiresApproval = false;
+    if (pipeCtx.module != null) {
+      requiresApproval = this._needsApproval(pipeCtx.module as Record<string, unknown>);
+    }
+
+    // Module-level preflight (optional)
+    if (pipeCtx.module != null) {
+      const mod = pipeCtx.module as Record<string, unknown>;
+      const modWithPreflight = mod as { preflight?: Module['preflight'] };
+      if (typeof modWithPreflight.preflight === 'function') {
+        try {
+          const preflightWarnings = modWithPreflight.preflight(effectiveInputs, pipeCtx.context);
+          if (Array.isArray(preflightWarnings) && preflightWarnings.length > 0) {
+            checks.push({ check: 'module_preflight', passed: true, warnings: preflightWarnings });
+          } else {
+            checks.push({ check: 'module_preflight', passed: true });
+          }
+        } catch (exc: unknown) {
+          const excName = exc instanceof Error ? exc.constructor.name : 'Error';
+          const excMsg = exc instanceof Error ? exc.message : String(exc);
+          checks.push({
+            check: 'module_preflight',
+            passed: true,
+            warnings: [`preflight() raised ${excName}: ${excMsg}`],
           });
         }
-        checks.push({
-          check: 'schema', passed: false,
-          error: { code: 'SCHEMA_VALIDATION_ERROR', errors },
-        });
-      }
-    } else {
-      checks.push({ check: 'schema', passed: true });
-    }
-
-    // Check 7: module-level preflight (optional)
-    const modWithPreflight = mod as { preflight?: Module['preflight'] };
-    if (typeof modWithPreflight.preflight === 'function') {
-      try {
-        const preflightWarnings = modWithPreflight.preflight(effectiveInputs, ctx);
-        if (Array.isArray(preflightWarnings) && preflightWarnings.length > 0) {
-          checks.push({ check: 'module_preflight', passed: true, warnings: preflightWarnings });
-        } else {
-          checks.push({ check: 'module_preflight', passed: true });
-        }
-      } catch (exc: unknown) {
-        const excName = exc instanceof Error ? exc.constructor.name : 'Error';
-        const excMsg = exc instanceof Error ? exc.message : String(exc);
-        checks.push({
-          check: 'module_preflight',
-          passed: true,
-          warnings: [`preflight() raised ${excName}: ${excMsg}`],
-        });
       }
     }
 
     return createPreflightResult(checks, requiresApproval);
   }
 
-  private _checkSafety(moduleId: string, ctx: Context): void {
-    guardCallChain(moduleId, ctx.callChain, this._maxCallDepth, this._maxModuleRepeat);
+  /** Map pipeline step names to PreflightResult check names. */
+  private static readonly _STEP_TO_CHECK: Record<string, string> = {
+    context_creation: 'context',
+    call_chain_guard: 'call_chain',
+    module_lookup: 'module_lookup',
+    acl_check: 'acl',
+    approval_gate: 'approval',
+    middleware_before: 'middleware',
+    input_validation: 'schema',
+  };
+
+  /** Convert PipelineTrace steps to PreflightCheckResult list. */
+  private _traceToChecks(trace: PipelineTrace): PreflightCheckResult[] {
+    const checks: PreflightCheckResult[] = [];
+    for (const st of trace.steps) {
+      if (st.skipped) continue;
+      const checkName = Executor._STEP_TO_CHECK[st.name] ?? st.name;
+      const passed = st.result.action !== 'abort';
+      let error: Record<string, unknown> | undefined;
+      if (!passed && st.result.explanation) {
+        error = { code: `STEP_${st.name.toUpperCase()}_FAILED`, message: st.result.explanation };
+      }
+      checks.push({ check: checkName, passed, error });
+    }
+    return checks;
+  }
+
+  /** Validate module_id format at public entry points. */
+  private _validateModuleId(moduleId: string): void {
+    if (!moduleId || !MODULE_ID_PATTERN.test(moduleId)) {
+      throw new InvalidInputError(
+        `Invalid module ID: '${moduleId}'. Must match pattern: ${MODULE_ID_PATTERN.source}`,
+      );
+    }
   }
 
   /** Check if a module requires approval, handling both interface and dict annotations. */
@@ -723,155 +623,12 @@ export class Executor {
     const annotations = mod['annotations'];
     if (annotations == null) return false;
     if (typeof annotations !== 'object') return false;
-    // ModuleAnnotations interface (camelCase)
     if ('requiresApproval' in annotations) {
       return Boolean((annotations as ModuleAnnotations).requiresApproval);
     }
-    // Dict-form annotations (snake_case)
     if ('requires_approval' in annotations) {
       return Boolean((annotations as Record<string, unknown>)['requires_approval']);
     }
     return false;
-  }
-
-  /** Build an ApprovalRequest from module metadata. */
-  private _buildApprovalRequest(
-    mod: Record<string, unknown>,
-    moduleId: string,
-    inputs: Record<string, unknown>,
-    ctx: Context,
-  ): ApprovalRequest {
-    const annotations = mod['annotations'];
-    let ann: ModuleAnnotations;
-    if (annotations != null && typeof annotations === 'object' && 'requiresApproval' in annotations) {
-      ann = annotations as ModuleAnnotations;
-    } else if (annotations != null && typeof annotations === 'object') {
-      ann = dictToAnnotations(annotations as Record<string, unknown>);
-    } else {
-      ann = DEFAULT_ANNOTATIONS;
-    }
-
-    return createApprovalRequest({
-      moduleId,
-      arguments: inputs,
-      context: ctx,
-      annotations: ann,
-      description: (mod['description'] as string) ?? null,
-      tags: (mod['tags'] as string[]) ?? [],
-    });
-  }
-
-  /** Map an ApprovalResult status to the appropriate action or error. */
-  private _handleApprovalResult(result: ApprovalResult, moduleId: string): void {
-    if (result.status === 'approved') return;
-    if (result.status === 'rejected') {
-      throw new ApprovalDeniedError(result, moduleId);
-    }
-    if (result.status === 'timeout') {
-      throw new ApprovalTimeoutError(result, moduleId);
-    }
-    if (result.status === 'pending') {
-      throw new ApprovalPendingError(result, moduleId);
-    }
-    // Unknown status treated as denied
-    console.warn(`[apcore:executor] Unknown approval status '${result.status}' for module ${moduleId}, treating as denied`);
-    throw new ApprovalDeniedError(result, moduleId);
-  }
-
-  /** Emit an audit event for the approval decision (logging + span event). */
-  private _emitApprovalEvent(result: ApprovalResult, moduleId: string, ctx: Context): void {
-    console.warn(
-      `[apcore:executor] Approval decision: module=${moduleId} status=${result.status} approved_by=${result.approvedBy} reason=${result.reason}`,
-    );
-
-    const spansStack = ctx.data[CTX_TRACING_SPANS] as Array<{ events: Array<Record<string, unknown>> }> | undefined;
-    if (spansStack && spansStack.length > 0) {
-      spansStack[spansStack.length - 1].events.push({
-        name: 'approval_decision',
-        module_id: moduleId,
-        status: result.status,
-        approved_by: result.approvedBy ?? '',
-        reason: result.reason ?? '',
-        approval_id: result.approvalId ?? '',
-      });
-    }
-  }
-
-  /** Step 5: Approval gate. Returns inputs with internal keys stripped. */
-  private async _checkApproval(
-    mod: Record<string, unknown>,
-    moduleId: string,
-    inputs: Record<string, unknown>,
-    ctx: Context,
-  ): Promise<Record<string, unknown>> {
-    if (this._approvalHandler === null) return inputs;
-    if (!this._needsApproval(mod)) return inputs;
-
-    let result: ApprovalResult;
-    let cleanInputs = inputs;
-    if ('_approval_token' in inputs) {
-      const token = inputs['_approval_token'] as string;
-      const { _approval_token: _, ...rest } = inputs;
-      cleanInputs = rest;
-      result = await this._approvalHandler.checkApproval(token);
-    } else {
-      const request = this._buildApprovalRequest(mod, moduleId, inputs, ctx);
-      result = await this._approvalHandler.requestApproval(request);
-    }
-
-    this._emitApprovalEvent(result, moduleId, ctx);
-    this._handleApprovalResult(result, moduleId);
-    return cleanInputs;
-  }
-
-  private async _executeWithTimeout(
-    mod: Record<string, unknown>,
-    moduleId: string,
-    inputs: Record<string, unknown>,
-    ctx: Context,
-  ): Promise<Record<string, unknown>> {
-    let timeoutMs = this._defaultTimeout;
-
-    // Respect global deadline: use whichever is shorter
-    const globalDeadline = ctx.data[CTX_GLOBAL_DEADLINE] as number | undefined;
-    if (globalDeadline !== undefined) {
-      const remaining = globalDeadline - Date.now();
-      if (remaining <= 0) {
-        throw new ModuleTimeoutError(moduleId, 0);
-      }
-      if (timeoutMs === 0 || remaining < timeoutMs) {
-        timeoutMs = remaining;
-      }
-    }
-
-    if (timeoutMs < 0) {
-      throw new InvalidInputError(`Negative timeout: ${timeoutMs}ms`);
-    }
-
-    const executeFn = mod['execute'];
-    if (typeof executeFn !== 'function') {
-      throw new InvalidInputError(`Module '${moduleId}' has no execute method`);
-    }
-
-    const executionPromise = Promise.resolve(
-      (executeFn as (inputs: Record<string, unknown>, context: Context) => Promise<Record<string, unknown>> | Record<string, unknown>)
-        .call(mod, inputs, ctx),
-    );
-
-    if (timeoutMs === 0) {
-      console.warn('[apcore:executor] Timeout is 0, timeout limit disabled');
-      return executionPromise;
-    }
-
-    let timer: ReturnType<typeof setTimeout>;
-    const timeoutPromise = new Promise<never>((_, reject) => {
-      timer = setTimeout(() => {
-        reject(new ModuleTimeoutError(moduleId, timeoutMs));
-      }, timeoutMs);
-    });
-
-    return Promise.race([executionPromise, timeoutPromise]).finally(() => {
-      clearTimeout(timer);
-    });
   }
 }

@@ -128,11 +128,11 @@ export class APCore {
   /**
    * Non-destructive preflight check without execution.
    */
-  validate(
+  async validate(
     moduleId: string,
     inputs?: Record<string, unknown> | null,
     context?: Context | null,
-  ): PreflightResult {
+  ): Promise<PreflightResult> {
     return this.executor.validate(moduleId, inputs, context);
   }
 

@@ -448,56 +448,45 @@ describe('ApprovalGate stream()', () => {
 // ---------------------------------------------------------------------------
 
 describe('ApprovalAuditEvents', () => {
-  it('emits audit log on approved', async () => {
+  it('emits audit span event on approved', async () => {
     const registry = createTestRegistry();
     const executor = new Executor({ registry, approvalHandler: new AutoApproveHandler() });
-    const infoSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    try {
-      await executor.call('test.approval_required');
-      const approvalLogs = infoSpy.mock.calls.filter(
-        (args) => typeof args[0] === 'string' && args[0].includes('Approval decision'),
-      );
-      expect(approvalLogs).toHaveLength(1);
-      expect(approvalLogs[0][0]).toContain('status=approved');
-      expect(approvalLogs[0][0]).toContain('approved_by=auto');
-    } finally {
-      infoSpy.mockRestore();
-    }
+    // Set up tracing spans on context to capture approval event
+    const ctx = Context.create(executor).child('test.approval_required');
+    const spansStack = [{ events: [] as Record<string, unknown>[] }];
+    ctx.data['_apcore.mw.tracing.spans'] = spansStack;
+    await executor.call('test.approval_required', {}, ctx);
+    const approvalEvents = spansStack[0].events.filter(e => e['name'] === 'approval_decision');
+    expect(approvalEvents).toHaveLength(1);
+    expect(approvalEvents[0]['status']).toBe('approved');
+    expect(approvalEvents[0]['approved_by']).toBe('auto');
   });
 
-  it('emits audit log on denied', async () => {
+  it('emits audit span event on denied', async () => {
     const registry = createTestRegistry();
     const executor = new Executor({ registry, approvalHandler: new AlwaysDenyHandler() });
-    const infoSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    try {
-      await expect(executor.call('test.approval_required')).rejects.toThrow(ApprovalDeniedError);
-      const approvalLogs = infoSpy.mock.calls.filter(
-        (args) => typeof args[0] === 'string' && args[0].includes('Approval decision'),
-      );
-      expect(approvalLogs).toHaveLength(1);
-      expect(approvalLogs[0][0]).toContain('status=rejected');
-    } finally {
-      infoSpy.mockRestore();
-    }
+    const ctx = Context.create(executor).child('test.approval_required');
+    const spansStack = [{ events: [] as Record<string, unknown>[] }];
+    ctx.data['_apcore.mw.tracing.spans'] = spansStack;
+    await expect(executor.call('test.approval_required', {}, ctx)).rejects.toThrow(ApprovalDeniedError);
+    const approvalEvents = spansStack[0].events.filter(e => e['name'] === 'approval_decision');
+    expect(approvalEvents).toHaveLength(1);
+    expect(approvalEvents[0]['status']).toBe('rejected');
   });
 
-  it('emits audit log on pending', async () => {
+  it('emits audit span event on pending', async () => {
     const registry = createTestRegistry();
     const handler = new CallbackApprovalHandler(async () =>
       createApprovalResult({ status: 'pending', approvalId: 'tok-123' }),
     );
     const executor = new Executor({ registry, approvalHandler: handler });
-    const infoSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    try {
-      await expect(executor.call('test.approval_required')).rejects.toThrow(ApprovalPendingError);
-      const approvalLogs = infoSpy.mock.calls.filter(
-        (args) => typeof args[0] === 'string' && args[0].includes('Approval decision'),
-      );
-      expect(approvalLogs).toHaveLength(1);
-      expect(approvalLogs[0][0]).toContain('status=pending');
-    } finally {
-      infoSpy.mockRestore();
-    }
+    const ctx = Context.create(executor).child('test.approval_required');
+    const spansStack = [{ events: [] as Record<string, unknown>[] }];
+    ctx.data['_apcore.mw.tracing.spans'] = spansStack;
+    await expect(executor.call('test.approval_required', {}, ctx)).rejects.toThrow(ApprovalPendingError);
+    const approvalEvents = spansStack[0].events.filter(e => e['name'] === 'approval_decision');
+    expect(approvalEvents).toHaveLength(1);
+    expect(approvalEvents[0]['status']).toBe('pending');
   });
 
   it('does not emit audit log when gate is skipped', async () => {

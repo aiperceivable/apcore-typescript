@@ -102,10 +102,11 @@ function dictToAnnotations(dict: Record<string, unknown>): ModuleAnnotations {
 
 /** Creates or inherits execution Context and sets the global deadline. */
 export class BuiltinContextCreation implements Step {
-  readonly name = 'builtin.context_creation';
+  readonly name = 'context_creation';
   readonly description = 'Create or inherit execution context and set global deadline';
   readonly removable = false;
   readonly replaceable = false;
+  readonly pure = true;
 
   private _globalTimeout: number;
 
@@ -133,15 +134,16 @@ export class BuiltinContextCreation implements Step {
 }
 
 // ---------------------------------------------------------------------------
-// 2. BuiltinSafetyCheck
+// 2. BuiltinCallChainGuard
 // ---------------------------------------------------------------------------
 
 /** Validates call chain depth, repeat limits, and cancel token. */
-export class BuiltinSafetyCheck implements Step {
-  readonly name = 'builtin.safety_check';
+export class BuiltinCallChainGuard implements Step {
+  readonly name = 'call_chain_guard';
   readonly description = 'Call chain guard: depth, repeat limits, cancel token';
   readonly removable = true;
   readonly replaceable = true;
+  readonly pure = true;
 
   private _maxCallDepth: number;
   private _maxModuleRepeat: number;
@@ -157,35 +159,18 @@ export class BuiltinSafetyCheck implements Step {
   }
 
   async execute(ctx: PipelineContext): Promise<StepResult> {
-    // Check cancel token first
+    // Check cancel token first — throw directly for error type preservation
     if (ctx.context.cancelToken !== null) {
-      try {
-        ctx.context.cancelToken.check();
-      } catch (e) {
-        if (e instanceof ExecutionCancelledError) {
-          return {
-            action: 'abort',
-            explanation: `Execution cancelled: ${e.message}`,
-          };
-        }
-        throw e;
-      }
+      ctx.context.cancelToken.check();
     }
 
-    // Call chain safety guard
-    try {
-      guardCallChain(
-        ctx.moduleId,
-        ctx.context.callChain,
-        this._maxCallDepth,
-        this._maxModuleRepeat,
-      );
-    } catch (e) {
-      return {
-        action: 'abort',
-        explanation: e instanceof Error ? e.message : String(e),
-      };
-    }
+    // Call chain safety guard — throws CallDepthExceededError, CircularCallError, etc.
+    guardCallChain(
+      ctx.moduleId,
+      ctx.context.callChain,
+      this._maxCallDepth,
+      this._maxModuleRepeat,
+    );
 
     return { action: 'continue' };
   }
@@ -197,10 +182,11 @@ export class BuiltinSafetyCheck implements Step {
 
 /** Resolves the module from the registry and sets ctx.module. */
 export class BuiltinModuleLookup implements Step {
-  readonly name = 'builtin.module_lookup';
+  readonly name = 'module_lookup';
   readonly description = 'Resolve module from registry';
   readonly removable = false;
   readonly replaceable = false;
+  readonly pure = true;
 
   private _registry: Registry;
 
@@ -211,10 +197,7 @@ export class BuiltinModuleLookup implements Step {
   async execute(ctx: PipelineContext): Promise<StepResult> {
     const mod = this._registry.get(ctx.moduleId);
     if (mod === null) {
-      return {
-        action: 'abort',
-        explanation: `Module not found: ${ctx.moduleId}`,
-      };
+      throw new ModuleNotFoundError(ctx.moduleId);
     }
     ctx.module = mod;
     return { action: 'continue' };
@@ -227,14 +210,20 @@ export class BuiltinModuleLookup implements Step {
 
 /** Enforces access control via the ACL provider. */
 export class BuiltinACLCheck implements Step {
-  readonly name = 'builtin.acl_check';
+  readonly name = 'acl_check';
   readonly description = 'Access control list enforcement';
   readonly removable = true;
   readonly replaceable = true;
+  readonly pure = true;
 
   private _acl: ACL | null;
 
   constructor(acl: ACL | null) {
+    this._acl = acl;
+  }
+
+  /** Update the ACL provider at runtime. */
+  setAcl(acl: ACL): void {
     this._acl = acl;
   }
 
@@ -244,10 +233,7 @@ export class BuiltinACLCheck implements Step {
     }
     const allowed = this._acl.check(ctx.context.callerId, ctx.moduleId, ctx.context);
     if (!allowed) {
-      return {
-        action: 'abort',
-        explanation: `Access denied: ${ctx.context.callerId} -> ${ctx.moduleId}`,
-      };
+      throw new ACLDeniedError(ctx.context.callerId, ctx.moduleId);
     }
     return { action: 'continue' };
   }
@@ -259,14 +245,20 @@ export class BuiltinACLCheck implements Step {
 
 /** Handles approval flow for modules that require explicit approval. */
 export class BuiltinApprovalGate implements Step {
-  readonly name = 'builtin.approval_gate';
+  readonly name = 'approval_gate';
   readonly description = 'Approval handler flow';
   readonly removable = true;
   readonly replaceable = true;
+  readonly pure = false;
 
   private _handler: ApprovalHandler | null;
 
   constructor(handler: ApprovalHandler | null) {
+    this._handler = handler;
+  }
+
+  /** Update the approval handler at runtime. */
+  setApprovalHandler(handler: ApprovalHandler): void {
     this._handler = handler;
   }
 
@@ -331,24 +323,15 @@ export class BuiltinApprovalGate implements Step {
     }
 
     if (result.status === 'timeout') {
-      return {
-        action: 'abort',
-        explanation: `Approval timed out for module ${ctx.moduleId}`,
-      };
+      throw new ApprovalTimeoutError(result, ctx.moduleId);
     }
 
     if (result.status === 'pending') {
-      return {
-        action: 'abort',
-        explanation: `Approval pending for module ${ctx.moduleId}: ${result.approvalId ?? 'unknown'}`,
-      };
+      throw new ApprovalPendingError(result, ctx.moduleId);
     }
 
     // rejected or unknown
-    return {
-      action: 'abort',
-      explanation: `Approval denied for module ${ctx.moduleId}: ${result.reason ?? 'no reason'}`,
-    };
+    throw new ApprovalDeniedError(result, ctx.moduleId);
   }
 }
 
@@ -358,10 +341,11 @@ export class BuiltinApprovalGate implements Step {
 
 /** Validates inputs against module schema and redacts sensitive fields. */
 export class BuiltinInputValidation implements Step {
-  readonly name = 'builtin.input_validation';
+  readonly name = 'input_validation';
   readonly description = 'Schema validation and redaction for inputs';
   readonly removable = true;
   readonly replaceable = true;
+  readonly pure = true;
 
   async execute(ctx: PipelineContext): Promise<StepResult> {
     const mod = ctx.module as Record<string, unknown>;
@@ -371,17 +355,8 @@ export class BuiltinInputValidation implements Step {
       return { action: 'continue' };
     }
 
-    try {
-      validateSchema(inputSchema, ctx.inputs, 'Input');
-    } catch (e) {
-      if (e instanceof SchemaValidationError) {
-        return {
-          action: 'abort',
-          explanation: e.message,
-        };
-      }
-      throw e;
-    }
+    // Throws SchemaValidationError directly for error type preservation
+    validateSchema(inputSchema, ctx.inputs, 'Input');
 
     ctx.context.redactedInputs = redactSensitive(
       ctx.inputs,
@@ -398,10 +373,11 @@ export class BuiltinInputValidation implements Step {
 
 /** Executes before-middleware chain via MiddlewareManager. */
 export class BuiltinMiddlewareBefore implements Step {
-  readonly name = 'builtin.middleware_before';
+  readonly name = 'middleware_before';
   readonly description = 'Execute before-middleware chain';
   readonly removable = true;
   readonly replaceable = false;
+  readonly pure = false;
 
   private _middlewareManager: MiddlewareManager;
 
@@ -411,18 +387,25 @@ export class BuiltinMiddlewareBefore implements Step {
 
   async execute(ctx: PipelineContext): Promise<StepResult> {
     try {
-      const [effectiveInputs] = this._middlewareManager.executeBefore(
+      const [effectiveInputs, executedMiddlewares] = this._middlewareManager.executeBefore(
         ctx.moduleId,
         ctx.inputs,
         ctx.context,
       );
       ctx.inputs = effectiveInputs;
+      ctx.executedMiddlewares = executedMiddlewares;
     } catch (e) {
       if (e instanceof MiddlewareChainError) {
-        return {
-          action: 'abort',
-          explanation: `Middleware before-chain error: ${e.original.message}`,
-        };
+        ctx.executedMiddlewares = e.executedMiddlewares;
+        // Try on_error recovery
+        const recovery = this._middlewareManager.executeOnError(
+          ctx.moduleId, ctx.inputs, e.original, ctx.context, e.executedMiddlewares,
+        );
+        if (recovery !== null) {
+          ctx.output = recovery;
+          return { action: 'skip_to', skipTo: 'return_result' };
+        }
+        throw e.original;
       }
       throw e;
     }
@@ -436,10 +419,11 @@ export class BuiltinMiddlewareBefore implements Step {
 
 /** Executes the module with timeout enforcement. Sets ctx.output. */
 export class BuiltinExecute implements Step {
-  readonly name = 'builtin.execute';
+  readonly name = 'execute';
   readonly description = 'Execute module with timeout';
   readonly removable = false;
   readonly replaceable = true;
+  readonly pure = false;
 
   private _defaultTimeout: number;
 
@@ -454,19 +438,9 @@ export class BuiltinExecute implements Step {
   async execute(ctx: PipelineContext): Promise<StepResult> {
     const mod = ctx.module as Record<string, unknown>;
 
-    // Cancel check before execution
+    // Cancel check before execution — throw directly for error type preservation
     if (ctx.context.cancelToken !== null) {
-      try {
-        ctx.context.cancelToken.check();
-      } catch (e) {
-        if (e instanceof ExecutionCancelledError) {
-          return {
-            action: 'abort',
-            explanation: `Execution cancelled: ${e.message}`,
-          };
-        }
-        throw e;
-      }
+      ctx.context.cancelToken.check();
     }
 
     // Streaming path: store the generator on ctx.outputStream
@@ -487,10 +461,7 @@ export class BuiltinExecute implements Step {
     if (globalDeadline !== undefined) {
       const remaining = globalDeadline - Date.now();
       if (remaining <= 0) {
-        return {
-          action: 'abort',
-          explanation: `Module timed out: ${ctx.moduleId} (global deadline exceeded)`,
-        };
+        throw new ModuleTimeoutError(ctx.moduleId, 0);
       }
       if (timeoutMs === 0 || remaining < timeoutMs) {
         timeoutMs = remaining;
@@ -499,10 +470,7 @@ export class BuiltinExecute implements Step {
 
     const executeFn = mod['execute'];
     if (typeof executeFn !== 'function') {
-      return {
-        action: 'abort',
-        explanation: `Module '${ctx.moduleId}' has no execute method`,
-      };
+      throw new InvalidInputError(`Module '${ctx.moduleId}' has no execute method`);
     }
 
     const executionPromise = Promise.resolve(
@@ -510,28 +478,18 @@ export class BuiltinExecute implements Step {
         .call(mod, ctx.inputs, ctx.context),
     );
 
-    try {
-      if (timeoutMs === 0) {
-        ctx.output = await executionPromise;
-      } else {
-        let timer: ReturnType<typeof setTimeout>;
-        const timeoutPromise = new Promise<never>((_, reject) => {
-          timer = setTimeout(() => {
-            reject(new ModuleTimeoutError(ctx.moduleId, timeoutMs));
-          }, timeoutMs);
-        });
-        ctx.output = await Promise.race([executionPromise, timeoutPromise]).finally(() => {
-          clearTimeout(timer!);
-        });
-      }
-    } catch (e) {
-      if (e instanceof ModuleTimeoutError) {
-        return {
-          action: 'abort',
-          explanation: `Module timed out: ${ctx.moduleId} (${timeoutMs}ms)`,
-        };
-      }
-      throw e;
+    if (timeoutMs === 0) {
+      ctx.output = await executionPromise;
+    } else {
+      let timer: ReturnType<typeof setTimeout>;
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          reject(new ModuleTimeoutError(ctx.moduleId, timeoutMs));
+        }, timeoutMs);
+      });
+      ctx.output = await Promise.race([executionPromise, timeoutPromise]).finally(() => {
+        clearTimeout(timer!);
+      });
     }
 
     return { action: 'continue' };
@@ -544,14 +502,21 @@ export class BuiltinExecute implements Step {
 
 /** Validates output against module schema and redacts sensitive fields. */
 export class BuiltinOutputValidation implements Step {
-  readonly name = 'builtin.output_validation';
+  readonly name = 'output_validation';
   readonly description = 'Schema validation and redaction for output';
   readonly removable = true;
   readonly replaceable = true;
+  readonly pure = true;
 
   async execute(ctx: PipelineContext): Promise<StepResult> {
+    // Skip when no output is available: streaming (Phase 3 handles it),
+    // dry_run (execute step was skipped), etc.
+    if (ctx.output == null) {
+      return { action: 'continue' };
+    }
+
     const mod = ctx.module as Record<string, unknown>;
-    const output = ctx.output ?? {};
+    const output = ctx.output;
 
     const outputSchema = resolveSchema(mod, 'outputSchema');
     if (outputSchema == null) {
@@ -559,17 +524,8 @@ export class BuiltinOutputValidation implements Step {
       return { action: 'continue' };
     }
 
-    try {
-      validateSchema(outputSchema, output, 'Output');
-    } catch (e) {
-      if (e instanceof SchemaValidationError) {
-        return {
-          action: 'abort',
-          explanation: e.message,
-        };
-      }
-      throw e;
-    }
+    // Throws SchemaValidationError directly for error type preservation
+    validateSchema(outputSchema, output, 'Output');
 
     ctx.validatedOutput = output;
     return { action: 'continue' };
@@ -582,10 +538,11 @@ export class BuiltinOutputValidation implements Step {
 
 /** Executes after-middleware chain via MiddlewareManager. */
 export class BuiltinMiddlewareAfter implements Step {
-  readonly name = 'builtin.middleware_after';
+  readonly name = 'middleware_after';
   readonly description = 'Execute after-middleware chain';
   readonly removable = true;
   readonly replaceable = false;
+  readonly pure = false;
 
   private _middlewareManager: MiddlewareManager;
 
@@ -594,7 +551,12 @@ export class BuiltinMiddlewareAfter implements Step {
   }
 
   async execute(ctx: PipelineContext): Promise<StepResult> {
-    const output = ctx.output ?? {};
+    // Skip when no output is available (streaming Phase 1, dry_run, etc.)
+    if (ctx.output == null) {
+      return { action: 'continue' };
+    }
+
+    const output = ctx.output;
     const transformed = this._middlewareManager.executeAfter(
       ctx.moduleId,
       ctx.inputs,
@@ -612,10 +574,11 @@ export class BuiltinMiddlewareAfter implements Step {
 
 /** Finalizes the pipeline result. Output is already on ctx.output. */
 export class BuiltinReturnResult implements Step {
-  readonly name = 'builtin.return_result';
+  readonly name = 'return_result';
   readonly description = 'Finalize pipeline result';
   readonly removable = false;
   readonly replaceable = false;
+  readonly pure = true;
 
   async execute(_ctx: PipelineContext): Promise<StepResult> {
     // No-op: output is already on ctx.output from previous steps
@@ -639,12 +602,12 @@ export interface StandardStrategyDeps {
 export function buildStandardStrategy(deps: StandardStrategyDeps): ExecutionStrategy {
   return new ExecutionStrategy('standard', [
     new BuiltinContextCreation(deps.config),
-    new BuiltinSafetyCheck(deps.config),
+    new BuiltinCallChainGuard(deps.config),
     new BuiltinModuleLookup(deps.registry),
     new BuiltinACLCheck(deps.acl),
     new BuiltinApprovalGate(deps.approvalHandler),
-    new BuiltinInputValidation(),
     new BuiltinMiddlewareBefore(deps.middlewareManager),
+    new BuiltinInputValidation(),
     new BuiltinExecute(deps.config),
     new BuiltinOutputValidation(),
     new BuiltinMiddlewareAfter(deps.middlewareManager),
@@ -659,10 +622,10 @@ export function buildStandardStrategy(deps: StandardStrategyDeps): ExecutionStra
 export function buildInternalStrategy(deps: StandardStrategyDeps): ExecutionStrategy {
   return new ExecutionStrategy('internal', [
     new BuiltinContextCreation(deps.config),
-    new BuiltinSafetyCheck(deps.config),
+    new BuiltinCallChainGuard(deps.config),
     new BuiltinModuleLookup(deps.registry),
-    new BuiltinInputValidation(),
     new BuiltinMiddlewareBefore(deps.middlewareManager),
+    new BuiltinInputValidation(),
     new BuiltinExecute(deps.config),
     new BuiltinOutputValidation(),
     new BuiltinMiddlewareAfter(deps.middlewareManager),
@@ -690,11 +653,11 @@ export function buildTestingStrategy(deps: StandardStrategyDeps): ExecutionStrat
 export function buildPerformanceStrategy(deps: StandardStrategyDeps): ExecutionStrategy {
   return new ExecutionStrategy('performance', [
     new BuiltinContextCreation(deps.config),
-    new BuiltinSafetyCheck(deps.config),
+    new BuiltinCallChainGuard(deps.config),
     new BuiltinModuleLookup(deps.registry),
     new BuiltinACLCheck(deps.acl),
-    new BuiltinInputValidation(),
     new BuiltinMiddlewareBefore(deps.middlewareManager),
+    new BuiltinInputValidation(),
     new BuiltinExecute(deps.config),
     new BuiltinMiddlewareAfter(deps.middlewareManager),
     new BuiltinReturnResult(),

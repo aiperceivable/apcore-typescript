@@ -16,7 +16,7 @@ import { createApprovalResult } from '../src/approval.js';
 import type { ACL } from '../src/acl.js';
 import {
   BuiltinContextCreation,
-  BuiltinSafetyCheck,
+  BuiltinCallChainGuard,
   BuiltinModuleLookup,
   BuiltinACLCheck,
   BuiltinApprovalGate,
@@ -88,7 +88,7 @@ function makeMockApprovalHandler(result: ApprovalResult): ApprovalHandler {
 describe('BuiltinContextCreation', () => {
   it('has correct metadata', () => {
     const step = new BuiltinContextCreation(null);
-    expect(step.name).toBe('builtin.context_creation');
+    expect(step.name).toBe('context_creation');
     expect(step.removable).toBe(false);
     expect(step.replaceable).toBe(false);
   });
@@ -121,26 +121,26 @@ describe('BuiltinContextCreation', () => {
 });
 
 // ---------------------------------------------------------------------------
-// 2. BuiltinSafetyCheck
+// 2. BuiltinCallChainGuard
 // ---------------------------------------------------------------------------
 
-describe('BuiltinSafetyCheck', () => {
+describe('BuiltinCallChainGuard', () => {
   it('has correct metadata', () => {
-    const step = new BuiltinSafetyCheck(null);
-    expect(step.name).toBe('builtin.safety_check');
+    const step = new BuiltinCallChainGuard(null);
+    expect(step.name).toBe('call_chain_guard');
     expect(step.removable).toBe(true);
     expect(step.replaceable).toBe(true);
   });
 
   it('continues when call depth is within limits', async () => {
-    const step = new BuiltinSafetyCheck(null);
+    const step = new BuiltinCallChainGuard(null);
     const pctx = makePipelineContext();
     const result = await step.execute(pctx);
     expect(result.action).toBe('continue');
   });
 
-  it('aborts when max call depth exceeded', async () => {
-    const step = new BuiltinSafetyCheck(null);
+  it('throws CallDepthExceededError when max call depth exceeded', async () => {
+    const step = new BuiltinCallChainGuard(null);
     // Build a context with a call chain longer than 32
     const chain: string[] = [];
     for (let i = 0; i < 33; i++) {
@@ -148,20 +148,16 @@ describe('BuiltinSafetyCheck', () => {
     }
     const ctx = new Context('trace-id', null, chain, null);
     const pctx = makePipelineContext({ context: ctx, moduleId: 'mod32' });
-    const result = await step.execute(pctx);
-    expect(result.action).toBe('abort');
-    expect(result.explanation).toBeDefined();
+    await expect(step.execute(pctx)).rejects.toThrow();
   });
 
-  it('aborts when cancel token is cancelled', async () => {
-    const step = new BuiltinSafetyCheck(null);
+  it('throws ExecutionCancelledError when cancel token is cancelled', async () => {
+    const step = new BuiltinCallChainGuard(null);
     const cancelToken = new CancelToken();
     cancelToken.cancel();
     const ctx = new Context('trace-id', null, ['test.module'], null, null, null, {}, cancelToken);
     const pctx = makePipelineContext({ context: ctx });
-    const result = await step.execute(pctx);
-    expect(result.action).toBe('abort');
-    expect(result.explanation).toContain('cancelled');
+    await expect(step.execute(pctx)).rejects.toThrow();
   });
 });
 
@@ -173,7 +169,7 @@ describe('BuiltinModuleLookup', () => {
   it('has correct metadata', () => {
     const reg = makeRegistry();
     const step = new BuiltinModuleLookup(reg);
-    expect(step.name).toBe('builtin.module_lookup');
+    expect(step.name).toBe('module_lookup');
     expect(step.removable).toBe(false);
     expect(step.replaceable).toBe(false);
   });
@@ -188,13 +184,11 @@ describe('BuiltinModuleLookup', () => {
     expect(pctx.module).toBeDefined();
   });
 
-  it('aborts when module is not found', async () => {
+  it('throws ModuleNotFoundError when module is not found', async () => {
     const reg = makeRegistry();
     const step = new BuiltinModuleLookup(reg);
     const pctx = makePipelineContext({ moduleId: 'nonexistent.module' });
-    const result = await step.execute(pctx);
-    expect(result.action).toBe('abort');
-    expect(result.explanation).toContain('not found');
+    await expect(step.execute(pctx)).rejects.toThrow(/not found/i);
   });
 });
 
@@ -205,7 +199,7 @@ describe('BuiltinModuleLookup', () => {
 describe('BuiltinACLCheck', () => {
   it('has correct metadata', () => {
     const step = new BuiltinACLCheck(null);
-    expect(step.name).toBe('builtin.acl_check');
+    expect(step.name).toBe('acl_check');
     expect(step.removable).toBe(true);
     expect(step.replaceable).toBe(true);
   });
@@ -225,13 +219,11 @@ describe('BuiltinACLCheck', () => {
     expect(result.action).toBe('continue');
   });
 
-  it('aborts when access is denied', async () => {
+  it('throws ACLDeniedError when access is denied', async () => {
     const acl = makeMockACL(false);
     const step = new BuiltinACLCheck(acl);
     const pctx = makePipelineContext();
-    const result = await step.execute(pctx);
-    expect(result.action).toBe('abort');
-    expect(result.explanation).toContain('denied');
+    await expect(step.execute(pctx)).rejects.toThrow(/denied/i);
   });
 });
 
@@ -242,7 +234,7 @@ describe('BuiltinACLCheck', () => {
 describe('BuiltinApprovalGate', () => {
   it('has correct metadata', () => {
     const step = new BuiltinApprovalGate(null);
-    expect(step.name).toBe('builtin.approval_gate');
+    expect(step.name).toBe('approval_gate');
     expect(step.removable).toBe(true);
     expect(step.replaceable).toBe(true);
   });
@@ -273,34 +265,28 @@ describe('BuiltinApprovalGate', () => {
     expect(result.action).toBe('continue');
   });
 
-  it('aborts when rejected', async () => {
+  it('throws ApprovalDeniedError when rejected', async () => {
     const handler = makeMockApprovalHandler(createApprovalResult({ status: 'rejected', reason: 'not allowed' }));
     const step = new BuiltinApprovalGate(handler);
     const mod = makeModule({ annotations: { requiresApproval: true } });
     const pctx = makePipelineContext({ module: mod });
-    const result = await step.execute(pctx);
-    expect(result.action).toBe('abort');
-    expect(result.explanation).toContain('denied');
+    await expect(step.execute(pctx)).rejects.toThrow(/denied/i);
   });
 
-  it('aborts when timed out', async () => {
+  it('throws ApprovalTimeoutError when timed out', async () => {
     const handler = makeMockApprovalHandler(createApprovalResult({ status: 'timeout' }));
     const step = new BuiltinApprovalGate(handler);
     const mod = makeModule({ annotations: { requiresApproval: true } });
     const pctx = makePipelineContext({ module: mod });
-    const result = await step.execute(pctx);
-    expect(result.action).toBe('abort');
-    expect(result.explanation).toContain('timed out');
+    await expect(step.execute(pctx)).rejects.toThrow(/timed out/i);
   });
 
-  it('aborts when pending', async () => {
+  it('throws ApprovalPendingError when pending', async () => {
     const handler = makeMockApprovalHandler(createApprovalResult({ status: 'pending', approvalId: 'abc123' }));
     const step = new BuiltinApprovalGate(handler);
     const mod = makeModule({ annotations: { requiresApproval: true } });
     const pctx = makePipelineContext({ module: mod });
-    const result = await step.execute(pctx);
-    expect(result.action).toBe('abort');
-    expect(result.explanation).toContain('pending');
+    await expect(step.execute(pctx)).rejects.toThrow(/pending/i);
   });
 
   it('strips _approval_token from inputs and uses checkApproval', async () => {
@@ -325,7 +311,7 @@ describe('BuiltinApprovalGate', () => {
 describe('BuiltinInputValidation', () => {
   it('has correct metadata', () => {
     const step = new BuiltinInputValidation();
-    expect(step.name).toBe('builtin.input_validation');
+    expect(step.name).toBe('input_validation');
     expect(step.removable).toBe(true);
     expect(step.replaceable).toBe(true);
   });
@@ -354,7 +340,7 @@ describe('BuiltinInputValidation', () => {
     expect(pctx.validatedInputs).toEqual({ name: 'test' });
   });
 
-  it('aborts on schema validation failure', async () => {
+  it('throws SchemaValidationError on schema validation failure', async () => {
     const step = new BuiltinInputValidation();
     const mod = makeModule({
       inputSchema: {
@@ -364,9 +350,7 @@ describe('BuiltinInputValidation', () => {
       },
     });
     const pctx = makePipelineContext({ module: mod, inputs: {} });
-    const result = await step.execute(pctx);
-    expect(result.action).toBe('abort');
-    expect(result.explanation).toContain('validation failed');
+    await expect(step.execute(pctx)).rejects.toThrow(/validation failed/i);
   });
 
   it('redacts sensitive fields with _secret_ prefix convention', async () => {
@@ -401,7 +385,7 @@ describe('BuiltinMiddlewareBefore', () => {
   it('has correct metadata', () => {
     const mm = new MiddlewareManager();
     const step = new BuiltinMiddlewareBefore(mm);
-    expect(step.name).toBe('builtin.middleware_before');
+    expect(step.name).toBe('middleware_before');
     expect(step.removable).toBe(true);
     expect(step.replaceable).toBe(false);
   });
@@ -427,16 +411,14 @@ describe('BuiltinMiddlewareBefore', () => {
     expect(pctx.inputs).toEqual({ key: 'value', injected: true });
   });
 
-  it('aborts on middleware chain error', async () => {
+  it('throws original error on middleware chain error (no recovery)', async () => {
     const mm = new MiddlewareManager();
     mm.add(new BeforeMiddleware(() => {
       throw new Error('middleware boom');
     }));
     const step = new BuiltinMiddlewareBefore(mm);
     const pctx = makePipelineContext();
-    const result = await step.execute(pctx);
-    expect(result.action).toBe('abort');
-    expect(result.explanation).toContain('middleware boom');
+    await expect(step.execute(pctx)).rejects.toThrow('middleware boom');
   });
 });
 
@@ -447,7 +429,7 @@ describe('BuiltinMiddlewareBefore', () => {
 describe('BuiltinExecute', () => {
   it('has correct metadata', () => {
     const step = new BuiltinExecute(null);
-    expect(step.name).toBe('builtin.execute');
+    expect(step.name).toBe('execute');
     expect(step.removable).toBe(false);
     expect(step.replaceable).toBe(true);
   });
@@ -461,36 +443,30 @@ describe('BuiltinExecute', () => {
     expect(pctx.output).toEqual({ result: 'ok', x: 1 });
   });
 
-  it('aborts when module has no execute method', async () => {
+  it('throws InvalidInputError when module has no execute method', async () => {
     const step = new BuiltinExecute(null);
     const mod = { id: 'test.module' };
     const pctx = makePipelineContext({ module: mod });
-    const result = await step.execute(pctx);
-    expect(result.action).toBe('abort');
-    expect(result.explanation).toContain('no execute method');
+    await expect(step.execute(pctx)).rejects.toThrow(/no execute method/i);
   });
 
-  it('aborts on cancel token', async () => {
+  it('throws ExecutionCancelledError on cancel token', async () => {
     const step = new BuiltinExecute(null);
     const cancelToken = new CancelToken();
     cancelToken.cancel();
     const ctx = new Context('trace-id', null, ['test.module'], null, null, null, {}, cancelToken);
     const mod = makeModule();
     const pctx = makePipelineContext({ module: mod, context: ctx });
-    const result = await step.execute(pctx);
-    expect(result.action).toBe('abort');
-    expect(result.explanation).toContain('cancelled');
+    await expect(step.execute(pctx)).rejects.toThrow();
   });
 
-  it('aborts when global deadline exceeded', async () => {
+  it('throws ModuleTimeoutError when global deadline exceeded', async () => {
     const step = new BuiltinExecute(null);
     const ctx = Context.create(null).child('test.module');
     ctx.data[CTX_GLOBAL_DEADLINE] = Date.now() - 1000; // already past
     const mod = makeModule();
     const pctx = makePipelineContext({ module: mod, context: ctx });
-    const result = await step.execute(pctx);
-    expect(result.action).toBe('abort');
-    expect(result.explanation).toContain('global deadline');
+    await expect(step.execute(pctx)).rejects.toThrow(/timed out/i);
   });
 
   it('handles streaming mode by setting outputStream', async () => {
@@ -514,7 +490,7 @@ describe('BuiltinExecute', () => {
 describe('BuiltinOutputValidation', () => {
   it('has correct metadata', () => {
     const step = new BuiltinOutputValidation();
-    expect(step.name).toBe('builtin.output_validation');
+    expect(step.name).toBe('output_validation');
     expect(step.removable).toBe(true);
     expect(step.replaceable).toBe(true);
   });
@@ -543,7 +519,7 @@ describe('BuiltinOutputValidation', () => {
     expect(pctx.validatedOutput).toEqual({ result: 'ok' });
   });
 
-  it('aborts on output schema validation failure', async () => {
+  it('throws SchemaValidationError on output schema validation failure', async () => {
     const step = new BuiltinOutputValidation();
     const mod = makeModule({
       outputSchema: {
@@ -553,9 +529,7 @@ describe('BuiltinOutputValidation', () => {
       },
     });
     const pctx = makePipelineContext({ module: mod, output: {} });
-    const result = await step.execute(pctx);
-    expect(result.action).toBe('abort');
-    expect(result.explanation).toContain('validation failed');
+    await expect(step.execute(pctx)).rejects.toThrow(/validation failed/i);
   });
 });
 
@@ -567,7 +541,7 @@ describe('BuiltinMiddlewareAfter', () => {
   it('has correct metadata', () => {
     const mm = new MiddlewareManager();
     const step = new BuiltinMiddlewareAfter(mm);
-    expect(step.name).toBe('builtin.middleware_after');
+    expect(step.name).toBe('middleware_after');
     expect(step.removable).toBe(true);
     expect(step.replaceable).toBe(false);
   });
@@ -601,7 +575,7 @@ describe('BuiltinMiddlewareAfter', () => {
 describe('BuiltinReturnResult', () => {
   it('has correct metadata', () => {
     const step = new BuiltinReturnResult();
-    expect(step.name).toBe('builtin.return_result');
+    expect(step.name).toBe('return_result');
     expect(step.removable).toBe(false);
     expect(step.replaceable).toBe(false);
   });
@@ -647,17 +621,17 @@ describe('buildStandardStrategy', () => {
     });
     const names = strategy.stepNames();
     expect(names).toEqual([
-      'builtin.context_creation',
-      'builtin.safety_check',
-      'builtin.module_lookup',
-      'builtin.acl_check',
-      'builtin.approval_gate',
-      'builtin.input_validation',
-      'builtin.middleware_before',
-      'builtin.execute',
-      'builtin.output_validation',
-      'builtin.middleware_after',
-      'builtin.return_result',
+      'context_creation',
+      'call_chain_guard',
+      'module_lookup',
+      'acl_check',
+      'approval_gate',
+      'middleware_before',
+      'input_validation',
+      'execute',
+      'output_validation',
+      'middleware_after',
+      'return_result',
     ]);
   });
 
@@ -681,7 +655,7 @@ describe('buildStandardStrategy', () => {
     // replaceable=false: context_creation, module_lookup, middleware_before, middleware_after, return_result
     expect(steps[0].replaceable).toBe(false);  // context_creation
     expect(steps[2].replaceable).toBe(false);  // module_lookup
-    expect(steps[6].replaceable).toBe(false);  // middleware_before
+    expect(steps[5].replaceable).toBe(false);  // middleware_before (now index 5)
     expect(steps[9].replaceable).toBe(false);  // middleware_after
     expect(steps[10].replaceable).toBe(false); // return_result
   });

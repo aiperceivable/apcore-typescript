@@ -295,31 +295,31 @@ describe('APCore.stream()', () => {
 // ---------------------------------------------------------------------------
 
 describe('APCore.validate()', () => {
-  it('returns valid PreflightResult for correct inputs', () => {
+  it('returns valid PreflightResult for correct inputs', async () => {
     const client = new APCore();
     registerAdd(client);
 
-    const result = client.validate('math.add', { a: 1, b: 2 });
+    const result = await client.validate('math.add', { a: 1, b: 2 });
     expect(result.valid).toBe(true);
     expect(result.errors).toEqual([]);
     expect(result.requiresApproval).toBe(false);
     expect(result.checks.length).toBeGreaterThan(0);
   });
 
-  it('returns invalid PreflightResult for bad inputs', () => {
+  it('returns invalid PreflightResult for bad inputs', async () => {
     const client = new APCore();
     registerAdd(client);
 
-    const result = client.validate('math.add', { a: 'not_a_number' });
+    const result = await client.validate('math.add', { a: 'not_a_number' });
     expect(result.valid).toBe(false);
     expect(result.errors.length).toBeGreaterThan(0);
   });
 
-  it('returns invalid PreflightResult for unknown module', () => {
+  it('returns invalid PreflightResult for unknown module', async () => {
     const client = new APCore();
-    const result = client.validate('nonexistent.module', {});
+    const result = await client.validate('nonexistent.module', {});
     expect(result.valid).toBe(false);
-    expect(result.errors.some(e => e['code'] === 'MODULE_NOT_FOUND')).toBe(true);
+    expect(result.errors.some((e: Record<string, unknown>) => e['code'] === 'MODULE_NOT_FOUND')).toBe(true);
   });
 });
 

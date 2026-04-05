@@ -5,6 +5,7 @@
 import type { Context } from './context.js';
 import { ModuleError } from './errors.js';
 import type { ErrorOptions } from './errors.js';
+import { matchPattern } from './utils/pattern.js';
 
 // ---------------------------------------------------------------------------
 // Step interface
@@ -16,6 +17,15 @@ export interface Step {
   readonly description: string;
   readonly removable: boolean;
   readonly replaceable: boolean;
+
+  /** Glob patterns for module IDs this step applies to. null/undefined = all. */
+  readonly matchModules?: string[] | null;
+  /** True = step failure logs warning and continues. False = step failure aborts pipeline. */
+  readonly ignoreErrors?: boolean;
+  /** True = no side effects. Safe to run during validate() (dry_run mode). */
+  readonly pure?: boolean;
+  /** Per-step timeout in milliseconds. 0 = no per-step timeout. */
+  readonly timeoutMs?: number;
 
   execute(ctx: PipelineContext): Promise<StepResult>;
 }
@@ -50,6 +60,13 @@ export interface PipelineContext {
   outputStream?: AsyncGenerator | null;
   strategy?: ExecutionStrategy | null;
   trace?: PipelineTrace | null;
+
+  /** True during validate(). PipelineEngine skips steps with pure=false. */
+  dryRun?: boolean;
+  /** Passed through to module_lookup for version negotiation. */
+  versionHint?: string | null;
+  /** Tracks which middleware ran, enabling on_error recovery chain. */
+  executedMiddlewares?: unknown[];
 }
 
 // ---------------------------------------------------------------------------
@@ -63,6 +80,8 @@ export interface StepTrace {
   result: StepResult;
   skipped: boolean;
   decisionPoint: boolean;
+  /** Reason the step was skipped: "no_match", "dry_run", or "error_ignored". */
+  skipReason?: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -343,18 +362,108 @@ export class PipelineEngine {
     let idx = 0;
     while (idx < steps.length) {
       const step = steps[idx];
+
+      // Read declarations (optional fields, backward compat via ?? defaults)
+      const stepMatchModules = step.matchModules ?? null;
+      const stepIgnoreErrors = step.ignoreErrors ?? false;
+      const stepPure = step.pure ?? false;
+      const stepTimeoutMs = step.timeoutMs ?? 0;
+
+      // ① match_modules filter
+      if (stepMatchModules !== null) {
+        const matched = stepMatchModules.some((pattern) =>
+          matchPattern(pattern, ctx.moduleId),
+        );
+        if (!matched) {
+          trace.steps.push({
+            name: step.name,
+            durationMs: 0,
+            result: { action: 'continue' },
+            skipped: true,
+            decisionPoint: false,
+            skipReason: 'no_match',
+          });
+          idx += 1;
+          continue;
+        }
+      }
+
+      // ② dry_run filter: skip steps with side effects
+      if (ctx.dryRun && !stepPure) {
+        trace.steps.push({
+          name: step.name,
+          durationMs: 0,
+          result: { action: 'continue' },
+          skipped: true,
+          decisionPoint: false,
+          skipReason: 'dry_run',
+        });
+        idx += 1;
+        continue;
+      }
+
+      // ③ Execute with per-step timeout
       const stepStart = performance.now();
-      const result = await step.execute(ctx);
+      let result: StepResult;
+      try {
+        if (stepTimeoutMs > 0) {
+          let timer: ReturnType<typeof setTimeout>;
+          const timeoutPromise = new Promise<never>((_, reject) => {
+            timer = setTimeout(() => {
+              reject(new Error(`Step '${step.name}' timed out after ${stepTimeoutMs}ms`));
+            }, stepTimeoutMs);
+          });
+          result = await Promise.race([step.execute(ctx), timeoutPromise]).finally(() => {
+            clearTimeout(timer!);
+          });
+        } else {
+          result = await step.execute(ctx);
+        }
+      } catch (exc) {
+        const durationMs = performance.now() - stepStart;
+        // ④ ignore_errors: log and continue
+        if (stepIgnoreErrors) {
+          trace.steps.push({
+            name: step.name,
+            durationMs,
+            result: {
+              action: 'continue',
+              explanation: exc instanceof Error ? exc.message : String(exc),
+            },
+            skipped: false,
+            decisionPoint: false,
+            skipReason: 'error_ignored',
+          });
+          idx += 1;
+          continue;
+        }
+        // Not ignored: record and raise
+        trace.steps.push({
+          name: step.name,
+          durationMs,
+          result: {
+            action: 'abort',
+            explanation: exc instanceof Error ? exc.message : String(exc),
+          },
+          skipped: false,
+          decisionPoint: false,
+        });
+        trace.totalDurationMs = performance.now() - pipelineStart;
+        throw exc;
+      }
+
       const durationMs = performance.now() - stepStart;
 
+      // ⑤ Record trace
       trace.steps.push({
         name: step.name,
         durationMs,
         result,
         skipped: false,
-        decisionPoint: false,
+        decisionPoint: result.confidence != null,
       });
 
+      // ⑥ Handle abort / skip_to
       if (result.action === 'continue') {
         idx += 1;
       } else if (result.action === 'abort') {

@@ -193,7 +193,8 @@ describe('Error Propagation', () => {
     const snap = metrics.snapshot();
     const counters = snap['counters'] as Record<string, number>;
     expect(counters['apcore_module_calls_total|module_id=error.mod,status=error']).toBe(1);
-    expect(counters['apcore_module_errors_total|error_code=Error,module_id=error.mod']).toBe(1);
+    // Pipeline wraps raw Error as ModuleExecuteError via propagateError
+    expect(counters['apcore_module_errors_total|error_code=MODULE_EXECUTE_ERROR,module_id=error.mod']).toBe(1);
   });
 
   it('full observability stack captures error metrics and tracing', async () => {
@@ -224,7 +225,8 @@ describe('Error Propagation', () => {
     const spans = exporter.getSpans();
     expect(spans).toHaveLength(1);
     expect(spans[0].status).toBe('error');
-    expect(spans[0].attributes['error_code']).toBe('Error');
+    // Pipeline wraps raw Error as ModuleExecuteError
+    expect(spans[0].attributes['error_code']).toBe('MODULE_EXECUTE_ERROR');
   });
 
   it('SchemaValidationError includes field path, code, and message', async () => {

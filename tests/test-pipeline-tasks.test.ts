@@ -62,17 +62,18 @@ describe('Executor strategy option', () => {
     registry = makeRegistry();
   });
 
-  it('accepts null strategy and uses legacy path', async () => {
+  it('accepts null strategy and defaults to standard', async () => {
     const executor = new Executor({ registry, strategy: null });
-    expect(executor.currentStrategy).toBeNull();
-    // Legacy call still works
+    expect(executor.currentStrategy).not.toBeNull();
+    expect(executor.currentStrategy.name).toBe('standard');
     const result = await executor.call('test.greet', { name: 'Alice' });
     expect(result['greeting']).toBe('Hello, Alice!');
   });
 
-  it('accepts undefined strategy (default) and uses legacy path', async () => {
+  it('accepts undefined strategy (default) and uses standard', async () => {
     const executor = new Executor({ registry });
-    expect(executor.currentStrategy).toBeNull();
+    expect(executor.currentStrategy).not.toBeNull();
+    expect(executor.currentStrategy.name).toBe('standard');
     const result = await executor.call('test.greet', { name: 'Bob' });
     expect(result['greeting']).toBe('Hello, Bob!');
   });
@@ -147,21 +148,21 @@ describe('Preset strategy factories', () => {
     const strategy = buildStandardStrategy(deps);
     expect(strategy.name).toBe('standard');
     expect(strategy.steps.length).toBe(11);
-    expect(strategy.stepNames()).toContain('builtin.context_creation');
-    expect(strategy.stepNames()).toContain('builtin.acl_check');
-    expect(strategy.stepNames()).toContain('builtin.approval_gate');
-    expect(strategy.stepNames()).toContain('builtin.output_validation');
+    expect(strategy.stepNames()).toContain('context_creation');
+    expect(strategy.stepNames()).toContain('acl_check');
+    expect(strategy.stepNames()).toContain('approval_gate');
+    expect(strategy.stepNames()).toContain('output_validation');
   });
 
   it('buildInternalStrategy skips ACL and approval', () => {
     const strategy = buildInternalStrategy(deps);
     expect(strategy.name).toBe('internal');
-    expect(strategy.stepNames()).not.toContain('builtin.acl_check');
-    expect(strategy.stepNames()).not.toContain('builtin.approval_gate');
-    expect(strategy.stepNames()).toContain('builtin.context_creation');
-    expect(strategy.stepNames()).toContain('builtin.module_lookup');
-    expect(strategy.stepNames()).toContain('builtin.execute');
-    expect(strategy.stepNames()).toContain('builtin.return_result');
+    expect(strategy.stepNames()).not.toContain('acl_check');
+    expect(strategy.stepNames()).not.toContain('approval_gate');
+    expect(strategy.stepNames()).toContain('context_creation');
+    expect(strategy.stepNames()).toContain('module_lookup');
+    expect(strategy.stepNames()).toContain('execute');
+    expect(strategy.stepNames()).toContain('return_result');
   });
 
   it('buildTestingStrategy is minimal: 4 steps', () => {
@@ -169,21 +170,21 @@ describe('Preset strategy factories', () => {
     expect(strategy.name).toBe('testing');
     expect(strategy.steps.length).toBe(4);
     expect(strategy.stepNames()).toEqual([
-      'builtin.context_creation',
-      'builtin.module_lookup',
-      'builtin.execute',
-      'builtin.return_result',
+      'context_creation',
+      'module_lookup',
+      'execute',
+      'return_result',
     ]);
   });
 
   it('buildPerformanceStrategy skips approval and output validation', () => {
     const strategy = buildPerformanceStrategy(deps);
     expect(strategy.name).toBe('performance');
-    expect(strategy.stepNames()).not.toContain('builtin.approval_gate');
-    expect(strategy.stepNames()).not.toContain('builtin.output_validation');
-    expect(strategy.stepNames()).toContain('builtin.acl_check');
-    expect(strategy.stepNames()).toContain('builtin.input_validation');
-    expect(strategy.stepNames()).toContain('builtin.execute');
+    expect(strategy.stepNames()).not.toContain('approval_gate');
+    expect(strategy.stepNames()).not.toContain('output_validation');
+    expect(strategy.stepNames()).toContain('acl_check');
+    expect(strategy.stepNames()).toContain('input_validation');
+    expect(strategy.stepNames()).toContain('execute');
   });
 });
 
@@ -213,10 +214,10 @@ describe('Executor.callWithTrace', () => {
     const executor = new Executor({ registry, strategy: 'testing' });
     const [, trace] = await executor.callWithTrace('test.greet', {});
     const stepNames = trace.steps.map((s) => s.name);
-    expect(stepNames).toContain('builtin.context_creation');
-    expect(stepNames).toContain('builtin.module_lookup');
-    expect(stepNames).toContain('builtin.execute');
-    expect(stepNames).toContain('builtin.return_result');
+    expect(stepNames).toContain('context_creation');
+    expect(stepNames).toContain('module_lookup');
+    expect(stepNames).toContain('execute');
+    expect(stepNames).toContain('return_result');
     for (const step of trace.steps) {
       expect(step.durationMs).toBeGreaterThanOrEqual(0);
       expect(step.skipped).toBe(false);
@@ -233,10 +234,12 @@ describe('Executor.callWithTrace', () => {
     expect(trace.steps.length).toBe(11);
   });
 
-  it('throws InvalidInputError when no strategy is set', async () => {
+  it('uses default standard strategy when none explicitly set', async () => {
     const executor = new Executor({ registry });
-    await expect(executor.callWithTrace('test.greet', {}))
-      .rejects.toThrow(InvalidInputError);
+    // Now always has a strategy (defaults to standard)
+    const [output, trace] = await executor.callWithTrace('test.greet', {});
+    expect(output['greeting']).toBe('Hello, world!');
+    expect(trace.strategyName).toBe('standard');
   });
 
   it('works with null inputs', async () => {
@@ -278,17 +281,19 @@ describe('Executor introspection', () => {
     expect(info!.name).toBe('testing');
     expect(info!.stepCount).toBe(4);
     expect(info!.stepNames).toEqual([
-      'builtin.context_creation',
-      'builtin.module_lookup',
-      'builtin.execute',
-      'builtin.return_result',
+      'context_creation',
+      'module_lookup',
+      'execute',
+      'return_result',
     ]);
-    expect(info!.description).toContain('builtin.context_creation');
+    expect(info!.description).toContain('context_creation');
   });
 
-  it('describePipeline returns null when no strategy is set', () => {
+  it('describePipeline returns strategy info for default strategy', () => {
     const executor = new Executor({ registry });
-    expect(executor.describePipeline()).toBeNull();
+    const info = executor.describePipeline();
+    expect(info).not.toBeNull();
+    expect(info!.name).toBe('standard');
   });
 
   it('describePipeline accepts an explicit strategy argument', () => {
@@ -306,8 +311,9 @@ describe('Executor introspection', () => {
     expect(executor.currentStrategy!.name).toBe('standard');
   });
 
-  it('currentStrategy getter returns null for legacy mode', () => {
+  it('currentStrategy getter returns standard for default mode', () => {
     const executor = new Executor({ registry });
-    expect(executor.currentStrategy).toBeNull();
+    expect(executor.currentStrategy).not.toBeNull();
+    expect(executor.currentStrategy.name).toBe('standard');
   });
 });

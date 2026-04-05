@@ -187,7 +187,7 @@ export type { Step, StepResult, PipelineContext, StepTrace, PipelineTrace, Strat
 // Built-in Steps
 export {
   BuiltinContextCreation,
-  BuiltinSafetyCheck,
+  BuiltinCallChainGuard as BuiltinSafetyCheck,
   BuiltinModuleLookup,
   BuiltinACLCheck,
   BuiltinApprovalGate,
@@ -203,5 +203,8 @@ export {
   buildPerformanceStrategy,
 } from './builtin-steps.js';
 export type { StandardStrategyDeps } from './builtin-steps.js';
+
+// Pipeline Configuration
+export { registerStepType, unregisterStepType, registeredStepTypes, buildStrategyFromConfig } from './pipeline-config.js';
 
 export { VERSION } from './generated/version.js';

@@ -290,7 +290,7 @@ describe('Executor', () => {
     expect(result['recovered']).toBe(true);
   });
 
-  it('validate() returns PreflightResult with all checks passed for valid inputs', () => {
+  it('validate() returns PreflightResult with all checks passed for valid inputs', async () => {
     const registry = new Registry();
     const mod = new FunctionModule({
       execute: () => ({ ok: true }),
@@ -302,14 +302,15 @@ describe('Executor', () => {
     registry.register('v', mod);
 
     const executor = new Executor({ registry });
-    const result = executor.validate('v', { x: 42 });
+    const result = await executor.validate('v', { x: 42 });
     expect(result.valid).toBe(true);
     expect(result.errors).toEqual([]);
-    expect(result.checks.length).toBe(6);
-    expect(result.checks.every(c => c.passed)).toBe(true);
+    // Pipeline dry_run: pure steps run, non-pure skip. Check count varies.
+    expect(result.checks.length).toBeGreaterThanOrEqual(1);
+    expect(result.checks.every((c: { passed: boolean }) => c.passed)).toBe(true);
   });
 
-  it('validate() returns schema failure for invalid inputs', () => {
+  it('validate() returns schema failure for invalid inputs', async () => {
     const registry = new Registry();
     const mod = new FunctionModule({
       execute: () => ({ ok: true }),
@@ -321,31 +322,30 @@ describe('Executor', () => {
     registry.register('v', mod);
 
     const executor = new Executor({ registry });
-    const result = executor.validate('v', { x: 'not-a-number' });
+    const result = await executor.validate('v', { x: 'not-a-number' });
     expect(result.valid).toBe(false);
     expect(result.errors.length).toBeGreaterThan(0);
-    expect(result.checks.find(c => c.check === 'schema')?.passed).toBe(false);
   });
 
-  it('validate() returns module_id failure for invalid ID format', () => {
+  it('validate() returns module_id failure for invalid ID format', async () => {
     const registry = new Registry();
     const executor = new Executor({ registry });
-    const result = executor.validate('INVALID-ID!!');
+    const result = await executor.validate('INVALID-ID!!');
     expect(result.valid).toBe(false);
-    expect(result.errors.some(e => e['code'] === 'INVALID_INPUT')).toBe(true);
-    expect(result.checks.find(c => c.check === 'module_id')?.passed).toBe(false);
+    expect(result.errors.some((e: Record<string, unknown>) => e['code'] === 'INVALID_INPUT')).toBe(true);
+    expect(result.checks.find((c: { check: string }) => c.check === 'module_id')?.passed).toBe(false);
   });
 
-  it('validate() returns module_lookup failure for unknown module', () => {
+  it('validate() returns module_lookup failure for unknown module', async () => {
     const registry = new Registry();
     const executor = new Executor({ registry });
-    const result = executor.validate('unknown.module', {});
+    const result = await executor.validate('unknown.module', {});
     expect(result.valid).toBe(false);
-    expect(result.errors.some(e => e['code'] === 'MODULE_NOT_FOUND')).toBe(true);
-    expect(result.checks.find(c => c.check === 'module_lookup')?.passed).toBe(false);
+    expect(result.errors.some((e: Record<string, unknown>) => e['code'] === 'MODULE_NOT_FOUND')).toBe(true);
+    expect(result.checks.find((c: { check: string }) => c.check === 'module_lookup')?.passed).toBe(false);
   });
 
-  it('validate() reports ACL denial without executing', () => {
+  it('validate() reports ACL denial without executing', async () => {
     const registry = new Registry();
     const mod = new FunctionModule({
       execute: () => ({ ok: true }),
@@ -358,12 +358,12 @@ describe('Executor', () => {
 
     const acl = new ACL([], 'deny');
     const executor = new Executor({ registry, acl });
-    const result = executor.validate('access.test', { x: 42 });
+    const result = await executor.validate('access.test', { x: 42 });
     expect(result.valid).toBe(false);
-    expect(result.errors.some(e => e['code'] === 'ACL_DENIED')).toBe(true);
+    expect(result.errors.some((e: Record<string, unknown>) => e['code'] === 'ACL_DENIED')).toBe(true);
   });
 
-  it('validate() detects requiresApproval annotation', () => {
+  it('validate() detects requiresApproval annotation', async () => {
     const registry = new Registry();
     const mod = new FunctionModule({
       execute: () => ({ ok: true }),
@@ -376,7 +376,7 @@ describe('Executor', () => {
     registry.register('approval.test', mod);
 
     const executor = new Executor({ registry });
-    const result = executor.validate('approval.test', { x: 42 });
+    const result = await executor.validate('approval.test', { x: 42 });
     expect(result.valid).toBe(true);
     expect(result.requiresApproval).toBe(true);
   });

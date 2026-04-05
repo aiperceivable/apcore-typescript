@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.17.0] - 2026-04-05
+
+### Added
+
+- **Step Metadata**: Four optional fields on `Step` interface: `matchModules` (glob patterns), `ignoreErrors` (fault-tolerant), `pure` (safe for validate dry-run), `timeoutMs` (per-step timeout via `Promise.race`).
+- **YAML Pipeline Configuration**: `registerStepType()`, `unregisterStepType()`, `registeredStepTypes()`, `buildStrategyFromConfig()` in new `pipeline-config.ts` module.
+- **PipelineContext fields**: `dryRun`, `versionHint`, `executedMiddlewares`.
+- **StepTrace**: `skipReason` field.
+
+### Changed
+
+- **Step order**: `BuiltinMiddlewareBefore` now runs BEFORE `BuiltinInputValidation`. Middleware transforms are validated.
+- **Executor delegation**: `callAsync()`, `validate()`, and `stream()` fully delegate to `PipelineEngine.run()`. Removed inline step code.
+- **Renamed**: `safety_check` → `call_chain_guard`, `BuiltinSafetyCheck` → `BuiltinCallChainGuard`.
+- **Removed `builtin.` prefix**: All step names changed from `builtin.context_creation` to `context_creation`.
+- **`validate()` is now async**: Returns `Promise<PreflightResult>`.
+
+### Fixed
+
+- Middleware input transforms were never validated against schema.
+- `validate()` now uses pipeline dry-run mode — user-added `pure=true` steps automatically participate.
+
+---
+
 ## [0.16.0] - 2026-04-05
 
 ### Added
