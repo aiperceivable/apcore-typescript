@@ -29,6 +29,7 @@ import {
   buildInternalStrategy,
   buildTestingStrategy,
   buildPerformanceStrategy,
+  buildMinimalStrategy,
 } from './builtin-steps.js';
 import type { StandardStrategyDeps } from './builtin-steps.js';
 import { propagateError } from './utils/error-propagation.js';
@@ -163,6 +164,7 @@ export class Executor {
           internal: buildInternalStrategy,
           testing: buildTestingStrategy,
           performance: buildPerformanceStrategy,
+          minimal: buildMinimalStrategy,
         };
         const factory = builtinFactories[strategyOpt];
         if (factory !== undefined) {

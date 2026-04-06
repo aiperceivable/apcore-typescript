@@ -165,23 +165,27 @@ describe('Preset strategy factories', () => {
     expect(strategy.stepNames()).toContain('return_result');
   });
 
-  it('buildTestingStrategy is minimal: 4 steps', () => {
+  it('buildTestingStrategy removes acl, approval, and call chain guard (8 steps)', () => {
     const strategy = buildTestingStrategy(deps);
     expect(strategy.name).toBe('testing');
-    expect(strategy.steps.length).toBe(4);
+    expect(strategy.steps.length).toBe(8);
     expect(strategy.stepNames()).toEqual([
       'context_creation',
       'module_lookup',
+      'middleware_before',
+      'input_validation',
       'execute',
+      'output_validation',
+      'middleware_after',
       'return_result',
     ]);
   });
 
-  it('buildPerformanceStrategy skips approval and output validation', () => {
+  it('buildPerformanceStrategy skips middleware before and after', () => {
     const strategy = buildPerformanceStrategy(deps);
     expect(strategy.name).toBe('performance');
-    expect(strategy.stepNames()).not.toContain('approval_gate');
-    expect(strategy.stepNames()).not.toContain('output_validation');
+    expect(strategy.stepNames()).not.toContain('middleware_before');
+    expect(strategy.stepNames()).not.toContain('middleware_after');
     expect(strategy.stepNames()).toContain('acl_check');
     expect(strategy.stepNames()).toContain('input_validation');
     expect(strategy.stepNames()).toContain('execute');
@@ -279,11 +283,15 @@ describe('Executor introspection', () => {
     const info = executor.describePipeline();
     expect(info).not.toBeNull();
     expect(info!.name).toBe('testing');
-    expect(info!.stepCount).toBe(4);
+    expect(info!.stepCount).toBe(8);
     expect(info!.stepNames).toEqual([
       'context_creation',
       'module_lookup',
+      'middleware_before',
+      'input_validation',
       'execute',
+      'output_validation',
+      'middleware_after',
       'return_result',
     ]);
     expect(info!.description).toContain('context_creation');

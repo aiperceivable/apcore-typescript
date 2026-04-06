@@ -107,6 +107,7 @@ export class BuiltinContextCreation implements Step {
   readonly removable = false;
   readonly replaceable = false;
   readonly pure = true;
+  readonly provides = ['context'] as const;
 
   private _globalTimeout: number;
 
@@ -144,6 +145,7 @@ export class BuiltinCallChainGuard implements Step {
   readonly removable = true;
   readonly replaceable = true;
   readonly pure = true;
+  readonly requires = ['context'] as const;
 
   private _maxCallDepth: number;
   private _maxModuleRepeat: number;
@@ -187,6 +189,7 @@ export class BuiltinModuleLookup implements Step {
   readonly removable = false;
   readonly replaceable = false;
   readonly pure = true;
+  readonly provides = ['module'] as const;
 
   private _registry: Registry;
 
@@ -214,6 +217,7 @@ export class BuiltinACLCheck implements Step {
   readonly description = 'Access control list enforcement';
   readonly removable = true;
   readonly replaceable = true;
+  readonly requires = ['context', 'module'] as const;
   readonly pure = true;
 
   private _acl: ACL | null;
@@ -249,6 +253,7 @@ export class BuiltinApprovalGate implements Step {
   readonly description = 'Approval handler flow';
   readonly removable = true;
   readonly replaceable = true;
+  readonly requires = ['context', 'module'] as const;
   readonly pure = false;
 
   private _handler: ApprovalHandler | null;
@@ -346,6 +351,8 @@ export class BuiltinInputValidation implements Step {
   readonly removable = true;
   readonly replaceable = true;
   readonly pure = true;
+  readonly requires = ['module'] as const;
+  readonly provides = ['validated_inputs'] as const;
 
   async execute(ctx: PipelineContext): Promise<StepResult> {
     const mod = ctx.module as Record<string, unknown>;
@@ -423,6 +430,8 @@ export class BuiltinExecute implements Step {
   readonly description = 'Execute module with timeout';
   readonly removable = false;
   readonly replaceable = true;
+  readonly requires = ['module'] as const;
+  readonly provides = ['output'] as const;
   readonly pure = false;
 
   private _defaultTimeout: number;
@@ -505,6 +514,8 @@ export class BuiltinOutputValidation implements Step {
   readonly name = 'output_validation';
   readonly description = 'Schema validation and redaction for output';
   readonly removable = true;
+  readonly requires = ['module', 'output'] as const;
+  readonly provides = ['validated_output'] as const;
   readonly replaceable = true;
   readonly pure = true;
 
@@ -577,6 +588,7 @@ export class BuiltinReturnResult implements Step {
   readonly name = 'return_result';
   readonly description = 'Finalize pipeline result';
   readonly removable = false;
+  readonly requires = ['output'] as const;
   readonly replaceable = false;
   readonly pure = true;
 
@@ -634,21 +646,25 @@ export function buildInternalStrategy(deps: StandardStrategyDeps): ExecutionStra
 }
 
 /**
- * Build a testing strategy: minimal pipeline with only lookup, execute, and return.
- * No middleware, no validation, no ACL, no approval. Fast and predictable for tests.
+ * Build a testing strategy: standard minus ACL, approval, and call chain guard.
+ * Retains middleware and validation for correctness. Fast and predictable for tests.
  */
 export function buildTestingStrategy(deps: StandardStrategyDeps): ExecutionStrategy {
   return new ExecutionStrategy('testing', [
     new BuiltinContextCreation(deps.config),
     new BuiltinModuleLookup(deps.registry),
+    new BuiltinMiddlewareBefore(deps.middlewareManager),
+    new BuiltinInputValidation(),
     new BuiltinExecute(deps.config),
+    new BuiltinOutputValidation(),
+    new BuiltinMiddlewareAfter(deps.middlewareManager),
     new BuiltinReturnResult(),
   ]);
 }
 
 /**
- * Build a performance strategy: skips approval gate and output validation.
- * Retains ACL, input validation, and middleware for correctness where it matters.
+ * Build a performance strategy: skips middleware before/after for reduced overhead.
+ * Retains ACL, approval, and validation for correctness.
  */
 export function buildPerformanceStrategy(deps: StandardStrategyDeps): ExecutionStrategy {
   return new ExecutionStrategy('performance', [
@@ -656,10 +672,24 @@ export function buildPerformanceStrategy(deps: StandardStrategyDeps): ExecutionS
     new BuiltinCallChainGuard(deps.config),
     new BuiltinModuleLookup(deps.registry),
     new BuiltinACLCheck(deps.acl),
-    new BuiltinMiddlewareBefore(deps.middlewareManager),
+    new BuiltinApprovalGate(deps.approvalHandler),
     new BuiltinInputValidation(),
     new BuiltinExecute(deps.config),
-    new BuiltinMiddlewareAfter(deps.middlewareManager),
+    new BuiltinOutputValidation(),
+    new BuiltinReturnResult(),
+  ]);
+}
+
+/**
+ * Build a minimal strategy: context → lookup → execute → return only.
+ * No safety checks, no ACL, no approval, no validation, no middleware.
+ * Suitable for pre-validated internal hot paths. Use with caution.
+ */
+export function buildMinimalStrategy(deps: StandardStrategyDeps): ExecutionStrategy {
+  return new ExecutionStrategy('minimal', [
+    new BuiltinContextCreation(deps.config),
+    new BuiltinModuleLookup(deps.registry),
+    new BuiltinExecute(deps.config),
     new BuiltinReturnResult(),
   ]);
 }

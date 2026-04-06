@@ -27,6 +27,11 @@ export interface Step {
   /** Per-step timeout in milliseconds. 0 = no per-step timeout. */
   readonly timeoutMs?: number;
 
+  /** PipelineContext fields this step reads (e.g. "module", "context"). Advisory only. */
+  readonly requires?: readonly string[];
+  /** PipelineContext fields this step writes (e.g. "output", "validated_inputs"). Advisory only. */
+  readonly provides?: readonly string[];
+
   execute(ctx: PipelineContext): Promise<StepResult>;
 }
 
@@ -136,6 +141,25 @@ export class ExecutionStrategy {
         `Duplicate step names: ${[...dupes].join(', ')}`,
       );
     }
+    this._validateDependencies();
+  }
+
+  /** Warn if any step's requires are not provided by a preceding step. */
+  private _validateDependencies(): void {
+    const provided = new Set<string>();
+    for (const step of this._steps) {
+      const requires = step.requires ?? [];
+      for (const req of requires) {
+        if (!provided.has(req)) {
+          console.warn(
+            `[apcore:pipeline] Step '${step.name}' requires '${req}', but no preceding step provides it. This may cause runtime errors.`,
+          );
+        }
+      }
+      for (const p of step.provides ?? []) {
+        provided.add(p);
+      }
+    }
   }
 
   get steps(): readonly Step[] {
@@ -150,6 +174,7 @@ export class ExecutionStrategy {
     for (let i = 0; i < this._steps.length; i++) {
       if (this._steps[i].name === anchor) {
         this._steps.splice(i + 1, 0, step);
+        this._validateDependencies();
         return;
       }
     }
@@ -164,6 +189,7 @@ export class ExecutionStrategy {
     for (let i = 0; i < this._steps.length; i++) {
       if (this._steps[i].name === anchor) {
         this._steps.splice(i, 0, step);
+        this._validateDependencies();
         return;
       }
     }

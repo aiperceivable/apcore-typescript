@@ -201,6 +201,7 @@ export {
   buildInternalStrategy,
   buildTestingStrategy,
   buildPerformanceStrategy,
+  buildMinimalStrategy,
 } from './builtin-steps.js';
 export type { StandardStrategyDeps } from './builtin-steps.js';
 

@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.17.1] - 2026-04-06
+
+### Added
+
+- **`buildMinimalStrategy()`** — 4-step pipeline (context → lookup → execute → return) for pre-validated internal hot paths. Registered as `"minimal"` in Executor built-in factories.
+- **`requires` / `provides` on `Step` interface** — Optional advisory fields declaring step dependencies. `ExecutionStrategy` validates dependency chains at construction and insertion, emitting `console.warn` for unmet `requires`.
+
+### Fixed
+
+- **`buildTestingStrategy` aligned with Python/Rust** — Now removes `acl_check`, `approval_gate`, and `call_chain_guard` (8 steps) instead of stripping to 4 minimal steps. Cross-language strategy parity restored.
+- **`buildPerformanceStrategy` aligned with Python/Rust** — Now removes `middleware_before` and `middleware_after` instead of `approval_gate` and `output_validation`. Cross-language strategy parity restored.
+
+---
+
 ## [0.17.0] - 2026-04-05
 
 ### Added
