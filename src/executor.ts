@@ -106,10 +106,6 @@ export class Executor {
   private _acl: ACL | null;
   private _config: Config | null;
   private _approvalHandler: ApprovalHandler | null;
-  private _defaultTimeout: number;
-  private _globalTimeout: number;
-  private _maxCallDepth: number;
-  private _maxModuleRepeat: number;
   private _strategy: ExecutionStrategy;
   private _pipelineEngine: PipelineEngine;
 
@@ -134,18 +130,6 @@ export class Executor {
       for (const mw of options.middlewares) {
         this._middlewareManager.add(mw);
       }
-    }
-
-    if (this._config !== null) {
-      this._defaultTimeout = (this._config.get('executor.default_timeout') as number) ?? 30000;
-      this._globalTimeout = (this._config.get('executor.global_timeout') as number) ?? 60000;
-      this._maxCallDepth = (this._config.get('executor.max_call_depth') as number) ?? 32;
-      this._maxModuleRepeat = (this._config.get('executor.max_module_repeat') as number) ?? 3;
-    } else {
-      this._defaultTimeout = 30000;
-      this._globalTimeout = 60000;
-      this._maxCallDepth = 32;
-      this._maxModuleRepeat = 3;
     }
 
     // Resolve strategy option (default to standard)

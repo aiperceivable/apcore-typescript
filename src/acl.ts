@@ -14,7 +14,6 @@ import {
   OrHandler,
   NotHandler,
   arraysEqual,
-  deepEqual,
 } from './acl-handlers.js';
 
 // Lazy-load Node.js built-in modules for browser compatibility

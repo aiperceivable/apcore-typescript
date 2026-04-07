@@ -11,11 +11,10 @@ import { Kind } from '@sinclair/typebox';
 import { Value } from '@sinclair/typebox/value';
 import { jsonSchemaToTypeBox } from './schema/loader.js';
 import type { ACL } from './acl.js';
-import type { ApprovalHandler, ApprovalRequest, ApprovalResult } from './approval.js';
+import type { ApprovalHandler, ApprovalResult } from './approval.js';
 import { createApprovalRequest } from './approval.js';
 import type { Config } from './config.js';
 import { Context } from './context.js';
-import { ExecutionCancelledError } from './cancel.js';
 import {
   ACLDeniedError,
   ApprovalDeniedError,
@@ -26,7 +25,6 @@ import {
   ModuleTimeoutError,
   SchemaValidationError,
 } from './errors.js';
-import type { Middleware } from './middleware/index.js';
 import { MiddlewareChainError, MiddlewareManager } from './middleware/manager.js';
 import { guardCallChain } from './utils/call-chain.js';
 import type { ModuleAnnotations } from './module.js';

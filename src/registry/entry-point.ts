@@ -3,7 +3,6 @@
  */
 
 import { ModuleLoadError } from '../errors.js';
-import { validateModule } from './validation.js';
 
 export function snakeToPascal(name: string): string {
   if (!name) return '';

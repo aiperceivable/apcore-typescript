@@ -111,6 +111,27 @@ describe('annotationsFromJSON', () => {
     expect(ann.extra['new_field']).toBe('val');
   });
 
+  it('§4.4.1 rule 7: nested extra wins over top-level collision', () => {
+    const ann = annotationsFromJSON({
+      'mcp.category': 'LEGACY_VALUE',
+      extra: { 'mcp.category': 'CANONICAL_VALUE' },
+    });
+    expect(ann.extra['mcp.category']).toBe('CANONICAL_VALUE');
+  });
+
+  it('legacy flattened form still accepted', () => {
+    const ann = annotationsFromJSON({
+      readonly: true,
+      'mcp.category': 'tools',
+      'cli.approval_message': 'ok?',
+    });
+    expect(ann.readonly).toBe(true);
+    expect(ann.extra).toEqual({
+      'mcp.category': 'tools',
+      'cli.approval_message': 'ok?',
+    });
+  });
+
   it('missing fields use defaults', () => {
     const ann = annotationsFromJSON({});
     expect(ann.readonly).toBe(false);

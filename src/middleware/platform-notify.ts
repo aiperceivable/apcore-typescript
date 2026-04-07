@@ -9,7 +9,7 @@
  */
 
 import type { Context } from '../context.js';
-import type { EventEmitter, ApCoreEvent } from '../events/emitter.js';
+import type { EventEmitter } from '../events/emitter.js';
 import { createEvent } from '../events/emitter.js';
 import type { MetricsCollector } from '../observability/metrics.js';
 import { computeModuleErrorRate, estimateP99FromHistogram } from '../observability/metrics-utils.js';

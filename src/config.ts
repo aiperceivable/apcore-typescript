@@ -73,7 +73,15 @@ const CONSTRAINTS: Record<string, [(v: unknown) => boolean, string]> = {
   ],
 };
 
-/** Default configuration values for legacy mode. */
+/**
+ * Default configuration values for legacy mode.
+ *
+ * NOTE: `version` is the frozen baseline for legacy-mode configs (those that
+ * omit an explicit `version` field). It identifies the spec version whose
+ * semantics legacy mode parses against, NOT the current SDK version. Do not
+ * bump this with each spec MINOR — only when legacy-mode parsing semantics
+ * actually change.
+ */
 const DEFAULTS: Record<string, unknown> = {
   version: '0.16.0',
   extensions: {
@@ -455,11 +463,9 @@ export class Config {
   private _yamlPath: string | null = null;
   private _mode: 'legacy' | 'namespace' = 'legacy';
   private _mounts: Map<string, Record<string, unknown>> = new Map();
-  private _envStyle: EnvStyle;
 
-  constructor(data?: Record<string, unknown>, envStyle: EnvStyle = 'auto') {
+  constructor(data?: Record<string, unknown>, _envStyle: EnvStyle = 'auto') {
     this._data = data ?? {};
-    this._envStyle = envStyle;
   }
 
   // -------------------------------------------------------------------------

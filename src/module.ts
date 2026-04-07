@@ -88,8 +88,14 @@ export function annotationsToJSON(a: ModuleAnnotations): Record<string, unknown>
 }
 
 /**
- * Deserialize ModuleAnnotations from a snake_case JSON record.
- * Unknown keys are captured into extra.
+ * Deserialize ModuleAnnotations from a snake_case JSON record per
+ * PROTOCOL_SPEC §4.4.1 wire format.
+ *
+ * - Canonical extension data lives under a nested `extra` object.
+ * - Legacy top-level overflow keys (unknown keys at the annotations root) are
+ *   tolerated for backward compatibility and merged into `extra`.
+ * - When the same key appears in BOTH the nested `extra` AND as a top-level
+ *   overflow key, the nested value wins (§4.4.1 rule 7).
  */
 export function annotationsFromJSON(data: Record<string, unknown>): ModuleAnnotations {
   const explicitExtra = (data['extra'] as Record<string, unknown>) ?? {};
@@ -116,7 +122,8 @@ export function annotationsFromJSON(data: Record<string, unknown>): ModuleAnnota
     cacheKeyFields: (data['cache_key_fields'] as string[] | null) ?? null,
     paginated: (data['paginated'] as boolean) ?? false,
     paginationStyle: (data['pagination_style'] as string) ?? 'cursor',
-    extra: Object.freeze({ ...explicitExtra, ...overflow }),
+    // §4.4.1 rule 7: nested explicit `extra` wins over legacy top-level overflow.
+    extra: Object.freeze({ ...overflow, ...explicitExtra }),
   });
 }
 

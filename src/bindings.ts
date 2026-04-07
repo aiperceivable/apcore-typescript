@@ -17,7 +17,6 @@ import {
   BindingInvalidTargetError,
   BindingModuleNotFoundError,
   BindingNotCallableError,
-  BindingSchemaMissingError,
 } from './errors.js';
 import type { Registry } from './registry/registry.js';
 import { jsonSchemaToTypeBox } from './schema/loader.js';
