@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Type } from '@sinclair/typebox';
-import { Registry } from '../../src/registry/registry.js';
+import { Registry, MAX_MODULE_ID_LENGTH } from '../../src/registry/registry.js';
 import { FunctionModule } from '../../src/decorator.js';
 import { InvalidInputError, ModuleNotFoundError } from '../../src/errors.js';
 import { Config } from '../../src/config.js';
@@ -53,6 +53,101 @@ describe('Registry', () => {
     const registry = new Registry();
     registry.register('test.a', createMod('test.a'));
     expect(() => registry.register('test.a', createMod('test.a'))).toThrow(InvalidInputError);
+  });
+
+  it('MAX_MODULE_ID_LENGTH matches PROTOCOL_SPEC §2.7 (192)', () => {
+    // Bumped from 128 in spec 1.6.0-draft (2026-04-08) to accommodate
+    // Java/.NET deep-namespace FQN-derived IDs. Filesystem-safe:
+    // 192 + ".binding.yaml".length = 205 < 255-byte filename limit.
+    expect(MAX_MODULE_ID_LENGTH).toBe(192);
+  });
+
+  it('register accepts module ID at exactly MAX_MODULE_ID_LENGTH', () => {
+    const registry = new Registry();
+    // Pattern requires [a-z][a-z0-9_]* — pure 'a' run is valid.
+    const exactId = 'a'.repeat(MAX_MODULE_ID_LENGTH);
+    registry.register(exactId, createMod(exactId));
+    expect(registry.has(exactId)).toBe(true);
+  });
+
+  it('register rejects module ID exceeding MAX_MODULE_ID_LENGTH', () => {
+    const registry = new Registry();
+    const overlongId = 'a'.repeat(MAX_MODULE_ID_LENGTH + 1);
+    expect(() => registry.register(overlongId, createMod(overlongId))).toThrow(
+      /maximum length/,
+    );
+  });
+
+  // PROTOCOL_SPEC §2.7 EBNF compliance — parity with apcore-python and apcore-rust
+  it('register rejects invalid pattern (uppercase, hyphens, leading digit, etc.)', () => {
+    const registry = new Registry();
+    for (const badId of [
+      'INVALID-ID',
+      '1abc',
+      'Module',
+      'a..b',
+      '.leading',
+      'trailing.',
+      'has space',
+      'has!bang',
+    ]) {
+      expect(
+        () => registry.register(badId, createMod(badId)),
+        `pattern-invalid '${badId}' must throw`,
+      ).toThrow(/Invalid module ID|Must match pattern/);
+    }
+  });
+
+  it('register rejects reserved word in any segment, not just first', () => {
+    const registry = new Registry();
+    expect(() => registry.register('email.system', createMod('email.system'))).toThrow(
+      /reserved word/,
+    );
+    expect(() => registry.register('myapp.core.x', createMod('myapp.core.x'))).toThrow(
+      /reserved word/,
+    );
+  });
+
+  // registerInternal — bypasses ONLY reserved word check (parity with python/rust)
+  it('registerInternal accepts reserved first segment', () => {
+    const registry = new Registry();
+    expect(() => registry.registerInternal('system.health', createMod('system.health'))).not.toThrow();
+    expect(registry.has('system.health')).toBe(true);
+  });
+
+  it('registerInternal accepts reserved word in any segment', () => {
+    const registry = new Registry();
+    expect(() => registry.registerInternal('myapp.system.config', createMod('myapp.system.config'))).not.toThrow();
+  });
+
+  it('registerInternal still rejects empty ID', () => {
+    const registry = new Registry();
+    expect(() => registry.registerInternal('', createMod('x'))).toThrow(
+      /non-empty/,
+    );
+  });
+
+  it('registerInternal still rejects invalid pattern', () => {
+    const registry = new Registry();
+    expect(() => registry.registerInternal('INVALID-ID', createMod('INVALID-ID'))).toThrow(
+      /Invalid module ID|Must match pattern/,
+    );
+  });
+
+  it('registerInternal still rejects over-length ID', () => {
+    const registry = new Registry();
+    const overlongId = 'a'.repeat(MAX_MODULE_ID_LENGTH + 1);
+    expect(() => registry.registerInternal(overlongId, createMod(overlongId))).toThrow(
+      /maximum length/,
+    );
+  });
+
+  it('registerInternal rejects duplicate', () => {
+    const registry = new Registry();
+    registry.registerInternal('system.dup', createMod('system.dup'));
+    expect(() => registry.registerInternal('system.dup', createMod('system.dup'))).toThrow(
+      /already registered/,
+    );
   });
 
   it('unregister removes module', () => {

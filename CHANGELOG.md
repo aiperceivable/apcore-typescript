@@ -5,7 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.18.0] - 2026-04-07
+## [0.18.0] - 2026-04-08
+
+### Added
+
+- **Registry length boundary tests** — `tests/registry/test-registry.test.ts` now covers `MAX_MODULE_ID_LENGTH` constant equality, exact-length registration acceptance, and over-length rejection (parity with `apcore-python`'s `TestRegisterConstants`).
+- **8 new parity tests** in `tests/registry/test-registry.test.ts` covering: invalid pattern rejection (uppercase, hyphens, leading digit, etc.), reserved word in any segment rejection, `registerInternal` accepting reserved first segment, accepting reserved word in any segment, still rejecting empty, still rejecting invalid pattern, still rejecting over-length, and rejecting duplicate.
+
+### Changed
+
+- **`MAX_MODULE_ID_LENGTH` raised from 128 to 192** (`registry/registry.ts`). Tracks PROTOCOL_SPEC §2.7 EBNF constraint #1 — accommodates Java/.NET deep-namespace FQN-derived IDs while remaining filesystem-safe (`192 + ".binding.yaml".length = 205 < 255`-byte filename limit on ext4/xfs/NTFS/APFS/btrfs). Module IDs valid before this change remain valid; only the upper bound moved. **Forward-compatible relaxation:** older 0.17.x/0.18.x readers will reject IDs in the 129–192 range emitted by this version.
+- **`Registry.register()` and `Registry.registerInternal()` now share a private `validateModuleId()` helper** that runs validation in canonical order (empty → EBNF pattern → length → reserved word per-segment). Deduplicated 2 enforcement sites in the same file. Aligned cross-language with apcore-python and apcore-rust.
+- **Duplicate registration error message canonicalized** to `` `Module ID '${moduleId}' is already registered` `` (was `` `Module already exists: ${moduleId}` ``). Both `register()` and `registerInternal()` now emit the same message. Aligned with apcore-python and apcore-rust byte-for-byte.
+- **Helper error message style aligned with apcore-python / apcore-rust:**
+  - Empty error: `'module_id must be a non-empty string'` (was `'Module ID must be a non-empty string'` — now lowercase to match Python/Rust).
+  - Pattern error: single quotes around the offending ID (was double quotes).
+  - Pattern error format string: uses `${MODULE_ID_PATTERN.source}` (bare regex source) instead of `${MODULE_ID_PATTERN}` (which produced `/.../` slashes via `RegExp.toString()`).
 
 ### Fixed
 

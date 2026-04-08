@@ -73,13 +73,66 @@ export const MODULE_ID_PATTERN = /^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$/;
 
 /**
  * Maximum allowed length for a module ID.
+ *
+ * Per PROTOCOL_SPEC §2.7 EBNF constraint #1. 192 is filesystem-safe
+ * (192 + ".binding.yaml".length = 205 < 255-byte filename limit on
+ * ext4/xfs/NTFS/APFS/btrfs) and accommodates Java/.NET deep-namespace
+ * FQN-derived IDs. Bumped from 128 in spec 1.6.0-draft (2026-04-08).
  */
-export const MAX_MODULE_ID_LENGTH = 128;
+export const MAX_MODULE_ID_LENGTH = 192;
 
 /**
  * Reserved words that cannot appear as any segment of a module ID.
  */
 export const RESERVED_WORDS = new Set(['system', 'internal', 'core', 'apcore', 'plugin', 'schema', 'acl']);
+
+/**
+ * Validate a module ID against PROTOCOL_SPEC §2.7 in canonical order.
+ *
+ * Order: empty → pattern → length → reserved (per-segment).
+ * Duplicate detection is the caller's responsibility (it requires registry
+ * state).
+ *
+ * When `allowReserved` is true the per-segment reserved word check is
+ * skipped — used by `Registry.registerInternal` so sys modules can use the
+ * `system.*` prefix. All other validations (empty, pattern, length) still
+ * apply.
+ *
+ * Aligned with `apcore-python._validate_module_id` and
+ * `apcore::registry::registry::validate_module_id`.
+ *
+ * @internal
+ */
+function validateModuleId(moduleId: string, allowReserved: boolean): void {
+  // 1. empty check (message byte-aligned with apcore-python and apcore-rust)
+  if (!moduleId || typeof moduleId !== 'string') {
+    throw new InvalidInputError('module_id must be a non-empty string');
+  }
+
+  // 2. EBNF pattern check (message byte-aligned with apcore-python and apcore-rust:
+  // single quotes around the offending ID; bare regex source without /…/ delimiters)
+  if (!MODULE_ID_PATTERN.test(moduleId)) {
+    throw new InvalidInputError(
+      `Invalid module ID: '${moduleId}'. Must match pattern: ${MODULE_ID_PATTERN.source} (lowercase, digits, underscores, dots only; no hyphens)`,
+    );
+  }
+
+  // 3. length check
+  if (moduleId.length > MAX_MODULE_ID_LENGTH) {
+    throw new InvalidInputError(
+      `Module ID exceeds maximum length of ${MAX_MODULE_ID_LENGTH}: ${moduleId.length}`,
+    );
+  }
+
+  // 4. reserved word per-segment check (skipped for registerInternal)
+  if (!allowReserved) {
+    for (const segment of moduleId.split('.')) {
+      if (RESERVED_WORDS.has(segment)) {
+        throw new InvalidInputError(`Module ID contains reserved word: '${segment}'`);
+      }
+    }
+  }
+}
 
 /**
  * Interface for custom module discovery.
@@ -341,28 +394,18 @@ export class Registry {
     return count;
   }
 
+  /**
+   * Register a module.
+   *
+   * Validation order (PROTOCOL_SPEC §2.7, aligned with apcore-python and
+   * apcore-rust): empty → pattern → length → reserved (per-segment) →
+   * duplicate.
+   */
   register(moduleId: string, module: unknown): void {
-    if (!moduleId || typeof moduleId !== "string") {
-      throw new InvalidInputError("Module ID must be a non-empty string");
-    }
-    if (!MODULE_ID_PATTERN.test(moduleId)) {
-      throw new InvalidInputError(
-        `Invalid module ID: "${moduleId}". Must match pattern: ${MODULE_ID_PATTERN} (lowercase, digits, underscores, dots only; no hyphens)`,
-      );
-    }
-
-    const parts = moduleId.split('.');
-    for (const part of parts) {
-      if (RESERVED_WORDS.has(part)) {
-        throw new InvalidInputError(`Module ID contains reserved word: '${part}'`);
-      }
-    }
-    if (moduleId.length > MAX_MODULE_ID_LENGTH) {
-      throw new InvalidInputError(`Module ID exceeds maximum length of ${MAX_MODULE_ID_LENGTH}: ${moduleId.length}`);
-    }
+    validateModuleId(moduleId, false);
 
     if (this._modules.has(moduleId)) {
-      throw new InvalidInputError(`Module already exists: ${moduleId}`);
+      throw new InvalidInputError(`Module ID '${moduleId}' is already registered`);
     }
 
     this._modules.set(moduleId, module);
@@ -638,23 +681,19 @@ export class Registry {
   }
 
   /**
-   * Register a module bypassing reserved-word checks.
-   * Used exclusively by the sys-modules subsystem for system.* IDs.
+   * Register a sys/internal module that bypasses **only** the reserved word
+   * check. All other PROTOCOL_SPEC §2.7 validations (empty, EBNF pattern,
+   * length, duplicate) still apply.
+   *
+   * Used exclusively by the sys-modules subsystem for `system.*` IDs.
+   * Aligned with apcore-python `Registry.register_internal` and apcore-rust
+   * `Registry::register_internal`.
    */
   registerInternal(moduleId: string, module: unknown): void {
-    if (!moduleId || typeof moduleId !== "string") {
-      throw new InvalidInputError("Module ID must be a non-empty string");
-    }
-    if (!MODULE_ID_PATTERN.test(moduleId)) {
-      throw new InvalidInputError(
-        `Invalid module ID: "${moduleId}". Must match pattern: ${MODULE_ID_PATTERN}`,
-      );
-    }
-    if (moduleId.length > MAX_MODULE_ID_LENGTH) {
-      throw new InvalidInputError(`Module ID exceeds maximum length of ${MAX_MODULE_ID_LENGTH}: ${moduleId.length}`);
-    }
+    validateModuleId(moduleId, true);
+
     if (this._modules.has(moduleId)) {
-      throw new InvalidInputError(`Module already exists: ${moduleId}`);
+      throw new InvalidInputError(`Module ID '${moduleId}' is already registered`);
     }
 
     this._modules.set(moduleId, module);
