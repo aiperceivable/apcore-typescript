@@ -6,6 +6,7 @@
 
 import type { TSchema } from '@sinclair/typebox';
 import type { Context } from './context.js';
+import { InvalidInputError } from './errors.js';
 import type { ModuleAnnotations, ModuleExample } from './module.js';
 
 export function normalizeResult(result: unknown): Record<string, unknown> {
@@ -86,7 +87,21 @@ export function module(options: {
   execute: (inputs: Record<string, unknown>, context: Context) => Promise<Record<string, unknown>> | Record<string, unknown>;
   registry?: { register(moduleId: string, module: unknown): void } | null;
 }): FunctionModule {
-  const moduleId = options.id ?? makeAutoId('anonymous');
+  // Spec PROTOCOL_SPEC.md §5.11.6 mandates auto-generated module IDs follow
+  // the `{module_path}.{name}` form. JavaScript lacks runtime equivalents of
+  // Python's `__module__` / `__qualname__`, so the only spec-aligned options
+  // are: (a) require an explicit `id`, or (b) accept a hack like Error-stack
+  // parsing that would silently break under bundlers/minifiers. We choose (a)
+  // — matching apcore-rust which has never had auto-ID generation either.
+  // Previously this defaulted to the literal string 'anonymous', causing
+  // every id-less call to silently collide on the same module ID.
+  if (!options.id) {
+    throw new InvalidInputError(
+      "module() requires an explicit 'id' option per PROTOCOL_SPEC §5.11.6 — " +
+        'JavaScript cannot derive a canonical {module_path}.{name} at runtime',
+    );
+  }
+  const moduleId = options.id;
 
   const fm = new FunctionModule({
     execute: options.execute,

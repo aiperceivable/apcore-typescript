@@ -113,13 +113,18 @@ describe('module() factory', () => {
     expect(fm.description).toBe('Factory module');
   });
 
-  it('generates auto ID when not provided', () => {
-    const fm = module({
-      inputSchema,
-      outputSchema,
-      execute: () => ({}),
-    });
-    expect(fm.moduleId).toBe('anonymous');
+  it('throws InvalidInputError when id is not provided (spec §5.11.6)', () => {
+    // JavaScript cannot derive `{module_path}.{name}` at runtime, so module()
+    // requires an explicit id rather than silently colliding on a literal
+    // 'anonymous' default. Aligned with apcore-rust which has never had
+    // auto-ID generation.
+    expect(() =>
+      module({
+        inputSchema,
+        outputSchema,
+        execute: () => ({}),
+      }),
+    ).toThrow(/requires an explicit 'id' option/);
   });
 
   it('passes through optional fields', () => {

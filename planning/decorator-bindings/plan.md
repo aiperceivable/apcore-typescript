@@ -14,7 +14,7 @@ Implement the TypeScript module definition and YAML binding system for apcore, p
 
 - **makeAutoId()** (`decorator.ts`, ~7 lines) -- ID generation utility that lowercases a name string, replaces non-alphanumeric/non-dot/non-underscore characters with underscores, and prefixes digit-leading segments. Simpler than Python's `__module__`+`__qualname__` approach since TypeScript functions lack equivalent introspectable qualified names.
 
-- **module()** (`decorator.ts`, ~25 lines) -- Factory function that creates a `FunctionModule` from an options object. This is NOT a decorator (unlike Python's `@module`); it is a plain function call that returns a `FunctionModule`. Accepts optional `registry` for auto-registration. Generates an auto ID via `makeAutoId('anonymous')` when `id` is not provided.
+- **module()** (`decorator.ts`, ~25 lines) -- Factory function that creates a `FunctionModule` from an options object. This is NOT a decorator (unlike Python's `@module`); it is a plain function call that returns a `FunctionModule`. Accepts optional `registry` for auto-registration. **Requires an explicit `id` option** — throws `InvalidInputError` when `id` is missing. Per spec §5.11.6, auto-generated IDs must follow `{module_path}.{name}`, but JavaScript lacks runtime equivalents of Python's `__module__`/`__qualname__`, so the only spec-aligned options are (a) require an explicit `id` (chosen) or (b) accept stack-parsing hacks that silently break under bundlers/minifiers. Aligned with apcore-rust which has never had auto-ID generation either.
 
 - **BindingLoader** (`bindings.ts`, ~175 lines) -- YAML binding file loader that reads binding configuration, resolves `target` strings to callable functions via dynamic `import()`, builds schemas from JSON Schema definitions, and registers `FunctionModule` instances with a `Registry`. Supports target resolution for both exported functions (`module:funcName`) and class methods (`module:ClassName.methodName`). Schema resolution has three modes: inline `input_schema`/`output_schema`, external `schema_ref`, and permissive fallback.
 
@@ -25,7 +25,7 @@ Implement the TypeScript module definition and YAML binding system for apcore, p
 Module creation via `module()` factory:
 
 1. Caller provides options object with `execute`, `inputSchema`, `outputSchema`, and optional metadata
-2. `module()` resolves `moduleId` from `id` option or generates one via `makeAutoId('anonymous')`
+2. `module()` requires the `id` option; throws `InvalidInputError` if missing (spec §5.11.6)
 3. `module()` constructs a `FunctionModule` with all provided options
 4. If `registry` is provided, the module is registered via `registry.register()`
 5. `FunctionModule.execute()` calls the wrapped function and passes the result through `normalizeResult()`
