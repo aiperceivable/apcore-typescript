@@ -264,20 +264,25 @@ describe('AsyncTaskManager', () => {
 
   describe('double release fix', () => {
     it('does not corrupt concurrency counter when cancelling a queued task', async () => {
-      // Use maxConcurrent=1 so the second task queues behind the first
+      // Use maxConcurrent=1 so the second task queues behind the first.
+      // Delay/wait values are intentionally generous (500ms task / 700ms
+      // settle) so the PENDING assertion below is robust under heavy
+      // test-suite load — Node's setTimeout is best-effort and
+      // `wait(20)` cumulative can stretch well past 50ms when many
+      // test files run in parallel.
       const registry = createRegistry();
       const executor = new Executor({ registry });
       const mgr = new AsyncTaskManager(executor, 1);
 
-      // Submit a short task to fill the single slot
-      const firstId = mgr.submit('test.slow', { delay: 50 });
+      // Submit a long-enough task to fill the single slot
+      const firstId = mgr.submit('test.slow', { delay: 500 });
       await wait(10);
 
       // Submit a second task -- it will be waiting in the queue
-      const queuedId = mgr.submit('test.slow', { delay: 50 });
+      const queuedId = mgr.submit('test.slow', { delay: 500 });
       await wait(10);
 
-      // The queued task should still be PENDING
+      // The queued task should still be PENDING (firstId has ~480ms left)
       expect(mgr.getStatus(queuedId)!.status).toBe(TaskStatus.PENDING);
 
       // Cancel the queued task while it's waiting for a slot
@@ -286,7 +291,7 @@ describe('AsyncTaskManager', () => {
       // Wait for the first task to complete, which releases the slot
       // and wakes the cancelled queued task. The queued task should
       // see cancelled=true and return; finally releases the slot once.
-      await wait(200);
+      await wait(700);
 
       // The running count should be 0 (not negative from double release)
       const runningCount = (mgr as unknown as { _runningCount: number })._runningCount;
