@@ -505,6 +505,12 @@ export class Registry {
     const meta = this._moduleMeta.get(moduleId) ?? {};
     const mod = module as Record<string, unknown>;
 
+    // `meta` is populated by mergeModuleMetadata at registration time and
+    // already implements spec §4.13 (YAML > code > defaults, field-level
+    // merge for annotations). Read from it directly so YAML annotations
+    // and examples are honored. Falls back to `mod` only when meta has
+    // no 'annotations' key, which happens for the manual register() path
+    // that does not call mergeModuleMetadata.
     return {
       moduleId,
       name: ((meta['name'] as string) ?? (mod['name'] as string)) ?? null,
@@ -514,8 +520,14 @@ export class Registry {
       outputSchema: (mod['outputSchema'] as Record<string, unknown>) ?? {},
       version: ((meta['version'] as string) ?? (mod['version'] as string)) ?? '1.0.0',
       tags: (meta['tags'] as string[]) ?? (mod['tags'] as string[]) ?? [],
-      annotations: (mod['annotations'] as ModuleAnnotations) ?? null,
-      examples: (mod['examples'] as ModuleExample[]) ?? [],
+      annotations:
+        'annotations' in meta
+          ? ((meta['annotations'] as ModuleAnnotations | null) ?? null)
+          : ((mod['annotations'] as ModuleAnnotations) ?? null),
+      examples:
+        'examples' in meta
+          ? ((meta['examples'] as ModuleExample[]) ?? [])
+          : ((mod['examples'] as ModuleExample[]) ?? []),
       metadata: (meta['metadata'] as Record<string, unknown>) ?? {},
       sunsetDate: ((meta['sunsetDate'] as string) ?? (mod['sunsetDate'] as string)) ?? null,
     };

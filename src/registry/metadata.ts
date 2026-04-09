@@ -4,6 +4,8 @@
 
 import yaml from 'js-yaml';
 import { ConfigError, ConfigNotFoundError } from '../errors.js';
+import type { ModuleAnnotations, ModuleExample } from '../module.js';
+import { mergeAnnotations, mergeExamples } from '../schema/annotations.js';
 import type { DependencyInfo } from './types.js';
 
 // Lazy-load Node.js built-in modules for browser compatibility
@@ -57,21 +59,37 @@ export function mergeModuleMetadata(
   const codeName = (moduleObj['name'] as string) ?? null;
   const codeTags = (moduleObj['tags'] as string[]) ?? [];
   const codeVersion = (moduleObj['version'] as string) ?? '1.0.0';
-  const codeAnnotations = moduleObj['annotations'] ?? null;
-  const codeExamples = (moduleObj['examples'] as unknown[]) ?? [];
+  const codeAnnotations = (moduleObj['annotations'] as ModuleAnnotations | null | undefined) ?? null;
+  const codeExamples = (moduleObj['examples'] as ModuleExample[] | null | undefined) ?? null;
   const codeMetadata = (moduleObj['metadata'] as Record<string, unknown>) ?? {};
   const codeDocs = (moduleObj['documentation'] as string) ?? null;
 
   const yamlMetadata = (meta['metadata'] as Record<string, unknown>) ?? {};
   const mergedMetadata = { ...codeMetadata, ...yamlMetadata };
 
+  // Spec PROTOCOL_SPEC.md §4.13: annotations must be FIELD-LEVEL merged
+  // (YAML > code > defaults), not whole-replaced. The previous
+  // implementation passed `meta['annotations']` through verbatim, which
+  // silently dropped any code-set flag the YAML did not also set.
+  // Delegates to mergeAnnotations / mergeExamples in schema/annotations.ts.
+  const yamlAnnotations = meta['annotations'] as Record<string, unknown> | null | undefined;
+  let mergedAnnotations: ModuleAnnotations | null;
+  if (yamlAnnotations == null && codeAnnotations == null) {
+    mergedAnnotations = null;
+  } else {
+    mergedAnnotations = mergeAnnotations(yamlAnnotations, codeAnnotations);
+  }
+
+  const yamlExamples = meta['examples'] as Array<Record<string, unknown>> | null | undefined;
+  const mergedExamples = mergeExamples(yamlExamples, codeExamples);
+
   return {
     description: (meta['description'] as string) || codeDesc,
     name: (meta['name'] as string) || codeName,
     tags: meta['tags'] != null ? meta['tags'] : codeTags || [],
     version: (meta['version'] as string) || codeVersion,
-    annotations: meta['annotations'] != null ? meta['annotations'] : codeAnnotations,
-    examples: meta['examples'] != null ? meta['examples'] : codeExamples || [],
+    annotations: mergedAnnotations,
+    examples: mergedExamples,
     metadata: mergedMetadata,
     documentation: (meta['documentation'] as string) || codeDocs,
   };

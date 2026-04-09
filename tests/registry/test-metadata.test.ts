@@ -9,6 +9,8 @@ import {
   loadIdMap,
 } from '../../src/registry/metadata.js';
 import { ConfigError, ConfigNotFoundError } from '../../src/errors.js';
+import { createAnnotations } from '../../src/module.js';
+import type { ModuleAnnotations } from '../../src/module.js';
 
 describe('loadMetadata', () => {
   let tmpDir: string;
@@ -123,14 +125,12 @@ describe('parseDependencies', () => {
 });
 
 describe('mergeModuleMetadata', () => {
-  it('YAML values win over code values for all top-level fields', () => {
+  it('YAML values win over code values for scalar top-level fields', () => {
     const moduleObj = {
       description: 'code desc',
       name: 'code-name',
       tags: ['code-tag'],
       version: '1.0.0',
-      annotations: { codeAnnot: true },
-      examples: [{ code: 'code-example' }],
       documentation: 'code docs',
       metadata: { codeKey: 'codeVal' },
     };
@@ -139,8 +139,6 @@ describe('mergeModuleMetadata', () => {
       name: 'yaml-name',
       tags: ['yaml-tag'],
       version: '2.0.0',
-      annotations: { yamlAnnot: true },
-      examples: [{ code: 'yaml-example' }],
       documentation: 'yaml docs',
       metadata: { yamlKey: 'yamlVal' },
     };
@@ -149,8 +147,6 @@ describe('mergeModuleMetadata', () => {
     expect(result['name']).toBe('yaml-name');
     expect(result['tags']).toEqual(['yaml-tag']);
     expect(result['version']).toBe('2.0.0');
-    expect(result['annotations']).toEqual({ yamlAnnot: true });
-    expect(result['examples']).toEqual([{ code: 'yaml-example' }]);
     expect(result['documentation']).toBe('yaml docs');
   });
 
@@ -199,6 +195,78 @@ describe('mergeModuleMetadata', () => {
     const meta = { tags: [] };
     const result = mergeModuleMetadata(moduleObj, meta);
     expect(result['tags']).toEqual([]);
+  });
+
+  // ---------------------------------------------------------------------------
+  // PROTOCOL_SPEC.md §4.13 — Annotation Conflict Rules
+  //
+  // YAML annotations MUST be merged field-by-field over code annotations.
+  // A YAML override that flips one flag must NOT blow away unrelated flags
+  // set on the code-level annotations object. (Regression: prior to wiring
+  // schema.mergeAnnotations into mergeModuleMetadata, the YAML annotation
+  // dict was passed through verbatim, silently dropping every code-set
+  // flag the YAML did not also set.)
+  // ---------------------------------------------------------------------------
+
+  it('annotations are field-level merged per spec §4.13', () => {
+    const moduleObj = {
+      description: 'd',
+      annotations: createAnnotations({ readonly: true, idempotent: true }),
+    };
+    // YAML only overrides `destructive`; readonly/idempotent must survive.
+    const meta = { annotations: { destructive: true } };
+    const result = mergeModuleMetadata(moduleObj, meta);
+    const merged = result['annotations'] as ModuleAnnotations;
+    expect(merged).not.toBeNull();
+    expect(merged.destructive).toBe(true);
+    expect(merged.readonly).toBe(true);
+    expect(merged.idempotent).toBe(true);
+  });
+
+  it('YAML-only annotations are honored when no code annotations exist', () => {
+    const moduleObj = { description: 'd' };
+    const meta = { annotations: { readonly: true } };
+    const result = mergeModuleMetadata(moduleObj, meta);
+    const merged = result['annotations'] as ModuleAnnotations;
+    expect(merged).not.toBeNull();
+    expect(merged.readonly).toBe(true);
+  });
+
+  it('annotations are null when neither code nor YAML provide them', () => {
+    const moduleObj = { description: 'd' };
+    const meta: Record<string, unknown> = {};
+    const result = mergeModuleMetadata(moduleObj, meta);
+    expect(result['annotations']).toBeNull();
+  });
+
+  it('YAML examples take full priority over code examples per spec §4.13', () => {
+    const moduleObj = {
+      description: 'd',
+      examples: [{ title: 'from_code', inputs: {}, output: {} }],
+    };
+    const meta = {
+      examples: [{ title: 'from_yaml', inputs: { x: 1 }, output: { y: 2 } }],
+    };
+    const result = mergeModuleMetadata(moduleObj, meta);
+    const examples = result['examples'] as Array<Record<string, unknown>>;
+    expect(examples).toHaveLength(1);
+    expect(examples[0].title).toBe('from_yaml');
+    expect(examples[0].inputs).toEqual({ x: 1 });
+  });
+
+  it('unknown YAML annotation keys are silently dropped during merge', () => {
+    const moduleObj = {
+      description: 'd',
+      annotations: createAnnotations({ readonly: true }),
+    };
+    // `vendor.foo` is not a canonical ModuleAnnotations field — it must
+    // not appear on the merged result. Code-set readonly must survive.
+    const meta = { annotations: { 'vendor.foo': 'bar' } };
+    const result = mergeModuleMetadata(moduleObj, meta);
+    const merged = result['annotations'] as ModuleAnnotations;
+    expect(merged).not.toBeNull();
+    expect(merged.readonly).toBe(true);
+    expect((merged as unknown as Record<string, unknown>)['vendor.foo']).toBeUndefined();
   });
 });
 
