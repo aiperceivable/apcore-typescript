@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Spec §4.13 annotation merge — YAML annotations are no longer silently dropped at registration.** Two coupled bugs were repaired in `registry/metadata.ts:mergeModuleMetadata` and `registry/registry.ts:getDefinition`. The merge step was doing whole-replacement of the `annotations` field instead of the field-level merge mandated by §4.13 ("If YAML only defines `readonly: true`, other fields **must** retain values from code or defaults."), and `getDefinition` was reading directly from the module class object even when the merge result was available. The fix wires `mergeAnnotations` and `mergeExamples` from `schema/annotations.ts` (defined and unit-tested but never previously called from production) into the registry pipeline, and updates `getDefinition` to consume the merged metadata. **User-observable behavior change:** modules that supplied `annotations:` in their `*_meta.yaml` companion files were previously seeing those annotations silently ignored; they will now be honored. Modules that relied on the broken behavior should audit their meta files. Identical fix to `apcore-python` commit `9c0fde9`. Adds 5 regression tests covering field-level merge, YAML-only, neither-defined, examples-yaml-wins, and unknown-key-drop scenarios.
+
 ## [0.18.0] - 2026-04-08
 
 ### Added
