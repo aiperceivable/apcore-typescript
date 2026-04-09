@@ -5,11 +5,6 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
-### Fixed
-
-- **Spec §4.13 annotation merge — YAML annotations are no longer silently dropped at registration.** Two coupled bugs were repaired in `registry/metadata.ts:mergeModuleMetadata` and `registry/registry.ts:getDefinition`. The merge step was doing whole-replacement of the `annotations` field instead of the field-level merge mandated by §4.13 ("If YAML only defines `readonly: true`, other fields **must** retain values from code or defaults."), and `getDefinition` was reading directly from the module class object even when the merge result was available. The fix wires `mergeAnnotations` and `mergeExamples` from `schema/annotations.ts` (defined and unit-tested but never previously called from production) into the registry pipeline, and updates `getDefinition` to consume the merged metadata. **User-observable behavior change:** modules that supplied `annotations:` in their `*_meta.yaml` companion files were previously seeing those annotations silently ignored; they will now be honored. Modules that relied on the broken behavior should audit their meta files. Identical fix to `apcore-python` commit `9c0fde9`. Adds 5 regression tests covering field-level merge, YAML-only, neither-defined, examples-yaml-wins, and unknown-key-drop scenarios.
 
 ## [0.18.0] - 2026-04-08
 
@@ -20,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **ACL singular condition handler aliases removed** (`identity_type`, `role`, `call_depth`). Spec §6.1 only defines the plural forms (`identity_types`, `roles`, `max_call_depth`); the singular aliases were a cross-language divergence. Aligned with apcore-python (commit `2c204fb`) and apcore-rust (plural-only since initial implementation).
+- **`module()` factory now throws `InvalidInputError` when `id` is not provided**, per PROTOCOL_SPEC §5.11.6. JavaScript cannot derive `{module_path}.{name}` at runtime (unlike Python's `__module__`), so explicit `id` is required. Previously defaulted to `'anonymous'`. Aligned with apcore-rust which also requires explicit name.
 - **`MAX_MODULE_ID_LENGTH` raised from 128 to 192** (`registry/registry.ts`). Tracks PROTOCOL_SPEC §2.7 EBNF constraint #1 — accommodates Java/.NET deep-namespace FQN-derived IDs while remaining filesystem-safe (`192 + ".binding.yaml".length = 205 < 255`-byte filename limit on ext4/xfs/NTFS/APFS/btrfs). Module IDs valid before this change remain valid; only the upper bound moved. **Forward-compatible relaxation:** older 0.17.x/0.18.x readers will reject IDs in the 129–192 range emitted by this version.
 - **`Registry.register()` and `Registry.registerInternal()` now share a private `validateModuleId()` helper** that runs validation in canonical order (empty → EBNF pattern → length → reserved word per-segment). Deduplicated 2 enforcement sites in the same file. Aligned cross-language with apcore-python and apcore-rust.
 - **Duplicate registration error message canonicalized** to `` `Module ID '${moduleId}' is already registered` `` (was `` `Module already exists: ${moduleId}` ``). Both `register()` and `registerInternal()` now emit the same message. Aligned with apcore-python and apcore-rust byte-for-byte.
@@ -28,8 +25,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Pattern error: single quotes around the offending ID (was double quotes).
   - Pattern error format string: uses `${MODULE_ID_PATTERN.source}` (bare regex source) instead of `${MODULE_ID_PATTERN}` (which produced `/.../` slashes via `RegExp.toString()`).
 
+### Removed
+
+- **`FeatureNotImplementedError` and `DependencyNotFoundError`** — zero throw-sites across the codebase. Error codes `GENERAL_NOT_IMPLEMENTED` and `DEPENDENCY_NOT_FOUND` remain in `ErrorCodes` for use via the generic `ModuleError` constructor. Aligned with apcore-python (commit `91e951a`).
+
 ### Fixed
 
+- **Dead fallback in `getDefinition` dropped** (`registry.ts:516-530`). A `module.description ?? metadata.description` chain was unreachable because `module.description` is always set by the `Module` base class constructor. Removed the dead branch.
+- **Spec §4.13 annotation merge — YAML annotations are no longer silently dropped at registration.** Two coupled bugs were repaired in `registry/metadata.ts:mergeModuleMetadata` and `registry/registry.ts:getDefinition`. The merge step was doing whole-replacement of the `annotations` field instead of the field-level merge mandated by §4.13 ("If YAML only defines `readonly: true`, other fields **must** retain values from code or defaults."), and `getDefinition` was reading directly from the module class object even when the merge result was available. The fix wires `mergeAnnotations` and `mergeExamples` from `schema/annotations.ts` (defined and unit-tested but never previously called from production) into the registry pipeline, and updates `getDefinition` to consume the merged metadata. **User-observable behavior change:** modules that supplied `annotations:` in their `*_meta.yaml` companion files were previously seeing those annotations silently ignored; they will now be honored. Modules that relied on the broken behavior should audit their meta files. Identical fix to `apcore-python` commit `9c0fde9`. Adds 5 regression tests covering field-level merge, YAML-only, neither-defined, examples-yaml-wins, and unknown-key-drop scenarios.
 - **`annotationsFromJSON` precedence inversion** — Per PROTOCOL_SPEC §4.4.1 rule 7, when the same key appears both in a nested `extra` object and as a top-level overflow key, the **nested value now wins** (previously the spread order `{...explicitExtra, ...overflow}` made overflow win). Behavior change is observable only in the pathological case where an input contains both forms of the same key — no conformant producer emits this. Top-level overflow keys are still tolerated and merged into `extra` for backward compatibility.
 
 ## [0.17.1] - 2026-04-06
