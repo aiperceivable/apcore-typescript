@@ -399,11 +399,12 @@ export class ACL {
 // Auto-register built-in handlers at module load time
 // ---------------------------------------------------------------------------
 
+// Spec PROTOCOL_SPEC.md §6.1 defines only the plural forms
+// (`identity_types`, `roles`, `max_call_depth`). Singular aliases
+// were removed to align with Python (apcore-python commit 2c204fb)
+// and Rust (apcore-rust src/acl_handlers.rs).
 ACL.registerCondition('identity_types', new IdentityTypesHandler());
-ACL.registerCondition('identity_type', new IdentityTypesHandler());
 ACL.registerCondition('roles', new RolesHandler());
-ACL.registerCondition('role', new RolesHandler());
 ACL.registerCondition('max_call_depth', new MaxCallDepthHandler());
-ACL.registerCondition('call_depth', new MaxCallDepthHandler());
 ACL.registerCondition('$or', new OrHandler(ACL._evaluateConditions.bind(ACL)));
 ACL.registerCondition('$not', new NotHandler(ACL._evaluateConditions.bind(ACL)));
