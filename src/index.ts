@@ -75,8 +75,6 @@ export {
   BindingSchemaMissingError,
   BindingFileInvalidError,
   CircularDependencyError,
-  DependencyNotFoundError,
-  FeatureNotImplementedError,
   ModuleLoadError,
   ReloadFailedError,
   ModuleExecuteError,

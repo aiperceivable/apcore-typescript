@@ -549,44 +549,6 @@ export class CircularDependencyError extends ModuleError {
   }
 }
 
-export class DependencyNotFoundError extends ModuleError {
-  static override readonly DEFAULT_RETRYABLE: boolean | null = false;
-
-  constructor(moduleId: string, dependencyId: string, options?: ErrorOptions) {
-    super(
-      'DEPENDENCY_NOT_FOUND',
-      `Dependency '${dependencyId}' not found for module '${moduleId}'`,
-      { moduleId, dependencyId },
-      options?.cause,
-      options?.traceId,
-      options?.retryable,
-      options?.aiGuidance,
-      options?.userFixable,
-      options?.suggestion,
-    );
-    this.name = 'DependencyNotFoundError';
-  }
-}
-
-export class FeatureNotImplementedError extends ModuleError {
-  static override readonly DEFAULT_RETRYABLE: boolean | null = false;
-
-  constructor(message: string = 'Feature not implemented', options?: ErrorOptions) {
-    super(
-      'GENERAL_NOT_IMPLEMENTED',
-      message,
-      {},
-      options?.cause,
-      options?.traceId,
-      options?.retryable,
-      options?.aiGuidance,
-      options?.userFixable,
-      options?.suggestion,
-    );
-    this.name = 'FeatureNotImplementedError';
-  }
-}
-
 export class ModuleLoadError extends ModuleError {
   static override readonly DEFAULT_RETRYABLE: boolean | null = false;
 
