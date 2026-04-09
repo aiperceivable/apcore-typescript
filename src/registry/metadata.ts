@@ -86,6 +86,11 @@ export function mergeModuleMetadata(
   return {
     description: (meta['description'] as string) || codeDesc,
     name: (meta['name'] as string) || codeName,
+    // Tags use an explicit `!= null` check (not `||`) so a deliberately
+    // empty YAML list (`tags: []`) overrides code-set tags. The other
+    // scalar fields above use `||` because empty-string YAML is treated
+    // as "absent". Pinned by the "YAML empty array for tags overrides
+    // code tags" test in tests/registry/test-metadata.test.ts.
     tags: meta['tags'] != null ? meta['tags'] : codeTags || [],
     version: (meta['version'] as string) || codeVersion,
     annotations: mergedAnnotations,
