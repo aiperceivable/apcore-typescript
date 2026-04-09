@@ -7,6 +7,7 @@ import { Registry, MAX_MODULE_ID_LENGTH } from '../../src/registry/registry.js';
 import { FunctionModule } from '../../src/decorator.js';
 import { InvalidInputError, ModuleNotFoundError } from '../../src/errors.js';
 import { Config } from '../../src/config.js';
+import { createAnnotations } from '../../src/module.js';
 
 function createMod(id: string): FunctionModule {
   return new FunctionModule({
@@ -230,6 +231,34 @@ describe('Registry', () => {
   it('getDefinition returns null for unknown module', () => {
     const registry = new Registry();
     expect(registry.getDefinition('nonexistent')).toBeNull();
+  });
+
+  it('getDefinition reads annotations from merged metadata for manually-registered modules', () => {
+    // Pins the invariant that the manual register() path goes through
+    // mergeModuleMetadata, so getDefinition's `meta`-side reads always
+    // succeed. (Regression for code-forge:review warnings about a
+    // dead `mod['annotations']` fallback in getDefinition that the
+    // following cleanup commit removed.)
+    const annotations = createAnnotations({ readonly: true, idempotent: true });
+    const mod = new FunctionModule({
+      execute: () => ({ ok: true }),
+      moduleId: 'test.annotated',
+      inputSchema: Type.Object({}),
+      outputSchema: Type.Object({ ok: Type.Boolean() }),
+      description: 'annotated module',
+      annotations,
+    });
+    const registry = new Registry();
+    registry.register('test.annotated', mod);
+
+    const def = registry.getDefinition('test.annotated');
+    expect(def).not.toBeNull();
+    expect(def!.annotations).not.toBeNull();
+    expect(def!.annotations!.readonly).toBe(true);
+    expect(def!.annotations!.idempotent).toBe(true);
+    // destructive defaults to false; verify the merged result carries
+    // the full ModuleAnnotations shape, not a partial dict.
+    expect(def!.annotations!.destructive).toBe(false);
   });
 
   it('clearCache does not throw', () => {

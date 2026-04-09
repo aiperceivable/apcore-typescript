@@ -502,34 +502,28 @@ export class Registry {
   getDefinition(moduleId: string): ModuleDescriptor | null {
     const module = this._modules.get(moduleId);
     if (module == null) return null;
+    // INVARIANT: every registration site (`register`, `registerInternal`,
+    // `_discoverDefault`) populates `_moduleMeta` via `mergeModuleMetadata`,
+    // so `meta` always contains the full set of canonical keys including
+    // an `annotations` slot. Read fields directly from it. The schemas
+    // come straight from the module instance because they are not part
+    // of the merged metadata payload.
     const meta = this._moduleMeta.get(moduleId) ?? {};
     const mod = module as Record<string, unknown>;
 
-    // `meta` is populated by mergeModuleMetadata at registration time and
-    // already implements spec §4.13 (YAML > code > defaults, field-level
-    // merge for annotations). Read from it directly so YAML annotations
-    // and examples are honored. Falls back to `mod` only when meta has
-    // no 'annotations' key, which happens for the manual register() path
-    // that does not call mergeModuleMetadata.
     return {
       moduleId,
-      name: ((meta['name'] as string) ?? (mod['name'] as string)) ?? null,
-      description: ((meta['description'] as string) ?? (mod['description'] as string)) ?? '',
-      documentation: ((meta['documentation'] as string) ?? (mod['documentation'] as string)) ?? null,
+      name: (meta['name'] as string | null) ?? null,
+      description: (meta['description'] as string) ?? '',
+      documentation: (meta['documentation'] as string | null) ?? null,
       inputSchema: (mod['inputSchema'] as Record<string, unknown>) ?? {},
       outputSchema: (mod['outputSchema'] as Record<string, unknown>) ?? {},
-      version: ((meta['version'] as string) ?? (mod['version'] as string)) ?? '1.0.0',
-      tags: (meta['tags'] as string[]) ?? (mod['tags'] as string[]) ?? [],
-      annotations:
-        'annotations' in meta
-          ? ((meta['annotations'] as ModuleAnnotations | null) ?? null)
-          : ((mod['annotations'] as ModuleAnnotations) ?? null),
-      examples:
-        'examples' in meta
-          ? ((meta['examples'] as ModuleExample[]) ?? [])
-          : ((mod['examples'] as ModuleExample[]) ?? []),
+      version: (meta['version'] as string) ?? '1.0.0',
+      tags: (meta['tags'] as string[]) ?? [],
+      annotations: (meta['annotations'] as ModuleAnnotations | null) ?? null,
+      examples: (meta['examples'] as ModuleExample[]) ?? [],
       metadata: (meta['metadata'] as Record<string, unknown>) ?? {},
-      sunsetDate: ((meta['sunsetDate'] as string) ?? (mod['sunsetDate'] as string)) ?? null,
+      sunsetDate: (meta['sunsetDate'] as string | null) ?? null,
     };
   }
 
