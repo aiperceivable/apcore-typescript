@@ -18,8 +18,6 @@ import {
   ConfigError,
   InvalidInputError,
   InternalError,
-  FuncMissingTypeHintError,
-  FuncMissingReturnTypeError,
   BindingInvalidTargetError,
   BindingModuleNotFoundError,
   BindingCallableNotFoundError,
@@ -449,37 +447,6 @@ describe('Error subclasses with options (cause and traceId branches)', () => {
     expect(err.message).toBe('Invalid input');
   });
 
-  it('FuncMissingTypeHintError with cause and traceId', () => {
-    const err = new FuncMissingTypeHintError('myFunc', 'myParam', { cause, traceId });
-    expect(err.name).toBe('FuncMissingTypeHintError');
-    expect(err.code).toBe('FUNC_MISSING_TYPE_HINT');
-    expect(err.cause).toBe(cause);
-    expect(err.traceId).toBe(traceId);
-    expect(err.message).toContain('myParam');
-    expect(err.message).toContain('myFunc');
-  });
-
-  it('FuncMissingTypeHintError without options', () => {
-    const err = new FuncMissingTypeHintError('myFunc', 'myParam');
-    expect(err.cause).toBeUndefined();
-    expect(err.traceId).toBeUndefined();
-  });
-
-  it('FuncMissingReturnTypeError with cause and traceId', () => {
-    const err = new FuncMissingReturnTypeError('myFunc', { cause, traceId });
-    expect(err.name).toBe('FuncMissingReturnTypeError');
-    expect(err.code).toBe('FUNC_MISSING_RETURN_TYPE');
-    expect(err.cause).toBe(cause);
-    expect(err.traceId).toBe(traceId);
-    expect(err.message).toContain('myFunc');
-  });
-
-  it('FuncMissingReturnTypeError without options', () => {
-    const err = new FuncMissingReturnTypeError('myFunc');
-    expect(err.cause).toBeUndefined();
-    expect(err.traceId).toBeUndefined();
-  });
-
   it('BindingInvalidTargetError with cause and traceId', () => {
     const err = new BindingInvalidTargetError('bad:target', { cause, traceId });
     expect(err.cause).toBe(cause);
@@ -768,8 +735,6 @@ describe('AI Error Guidance Fields', () => {
       ['CircularCallError', () => new CircularCallError('m', ['m'])],
       ['CallFrequencyExceededError', () => new CallFrequencyExceededError('m', 4, 3, ['m'])],
       ['InvalidInputError', () => new InvalidInputError()],
-      ['FuncMissingTypeHintError', () => new FuncMissingTypeHintError('f', 'p')],
-      ['FuncMissingReturnTypeError', () => new FuncMissingReturnTypeError('f')],
       ['BindingInvalidTargetError', () => new BindingInvalidTargetError('t')],
       ['BindingModuleNotFoundError', () => new BindingModuleNotFoundError('m')],
       ['BindingCallableNotFoundError', () => new BindingCallableNotFoundError('c', 'm')],

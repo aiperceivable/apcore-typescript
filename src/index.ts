@@ -66,8 +66,6 @@ export {
   CircularCallError,
   CallFrequencyExceededError,
   InvalidInputError,
-  FuncMissingTypeHintError,
-  FuncMissingReturnTypeError,
   BindingInvalidTargetError,
   BindingModuleNotFoundError,
   BindingCallableNotFoundError,

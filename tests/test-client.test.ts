@@ -2,7 +2,10 @@
  * Unit tests for APCore client class.
  */
 
-import { describe, it, expect } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { describe, it, expect, vi } from 'vitest';
 import { Type } from '@sinclair/typebox';
 import { APCore } from '../src/client.js';
 import { Config } from '../src/config.js';
@@ -83,6 +86,38 @@ describe('APCore construction', () => {
     const config = new Config({ extensions: { root: '/tmp' } });
     const client = new APCore({ config });
     expect(client.config).toBe(config);
+  });
+
+  it('loads config from configPath', () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'apcore-test-'));
+    const configPath = path.join(tempDir, 'apcore.yaml');
+    fs.writeFileSync(configPath, 'extensions:\n  root: /custom/path\n');
+
+    try {
+      const client = new APCore({ configPath });
+      expect(client.config).toBeDefined();
+      expect(client.config?.get('extensions.root')).toBe('/custom/path');
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('throws if configPath is used in browser environment', () => {
+    const isBrowserSpy = vi.spyOn(Config, 'isBrowser').mockReturnValue(true);
+    try {
+      expect(() => new APCore({ configPath: 'apcore.yaml' })).toThrow(
+        "Option 'configPath' is not supported in browser environments. Use 'config' instead."
+      );
+    } finally {
+      isBrowserSpy.mockRestore();
+    }
+  });
+
+  it('throws if both config and configPath are provided', () => {
+    const config = Config.fromDefaults();
+    expect(() => new APCore({ config, configPath: 'apcore.yaml' })).toThrow(
+      "Options 'config' and 'configPath' are mutually exclusive."
+    );
   });
 });
 

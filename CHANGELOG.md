@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`APCore` constructor gains `configPath` option** — Ergonomic shorthand: `new APCore({ configPath: 'apcore.yaml' })` is equivalent to `const config = Config.load('apcore.yaml'); new APCore({ config })`. Mutually exclusive with `config`; providing both throws `TypeError`. Existing `config` usage is unchanged.
 - **Registry length boundary tests** — `tests/registry/test-registry.test.ts` now covers `MAX_MODULE_ID_LENGTH` constant equality, exact-length registration acceptance, and over-length rejection (parity with `apcore-python`'s `TestRegisterConstants`).
 - **8 new parity tests** in `tests/registry/test-registry.test.ts` covering: invalid pattern rejection (uppercase, hyphens, leading digit, etc.), reserved word in any segment rejection, `registerInternal` accepting reserved first segment, accepting reserved word in any segment, still rejecting empty, still rejecting invalid pattern, still rejecting over-length, and rejecting duplicate.
 

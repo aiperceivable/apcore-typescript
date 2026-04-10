@@ -378,44 +378,6 @@ export class InvalidInputError extends ModuleError {
   }
 }
 
-export class FuncMissingTypeHintError extends ModuleError {
-  static override readonly DEFAULT_RETRYABLE: boolean | null = false;
-
-  constructor(functionName: string, parameterName: string, options?: ErrorOptions) {
-    super(
-      'FUNC_MISSING_TYPE_HINT',
-      `Parameter '${parameterName}' in function '${functionName}' has no type annotation. Add a type annotation like '${parameterName}: string'.`,
-      { functionName, parameterName },
-      options?.cause,
-      options?.traceId,
-      options?.retryable,
-      options?.aiGuidance,
-      options?.userFixable,
-      options?.suggestion,
-    );
-    this.name = 'FuncMissingTypeHintError';
-  }
-}
-
-export class FuncMissingReturnTypeError extends ModuleError {
-  static override readonly DEFAULT_RETRYABLE: boolean | null = false;
-
-  constructor(functionName: string, options?: ErrorOptions) {
-    super(
-      'FUNC_MISSING_RETURN_TYPE',
-      `Function '${functionName}' has no return type annotation. Add a return type like ': Record<string, unknown>'.`,
-      { functionName },
-      options?.cause,
-      options?.traceId,
-      options?.retryable,
-      options?.aiGuidance,
-      options?.userFixable,
-      options?.suggestion,
-    );
-    this.name = 'FuncMissingReturnTypeError';
-  }
-}
-
 export class BindingInvalidTargetError extends ModuleError {
   static override readonly DEFAULT_RETRYABLE: boolean | null = false;
 

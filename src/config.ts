@@ -472,6 +472,11 @@ export class Config {
   // Static namespace registry methods
   // -------------------------------------------------------------------------
 
+  /** Returns true if the current environment is a browser (filesystem not available). */
+  static isBrowser(): boolean {
+    return _nodeFs === null;
+  }
+
   /**
    * Register a namespace globally.
    *
@@ -653,7 +658,13 @@ export class Config {
       const resolved = resolveNamespacePath(key);
       if (resolved === null) return defaultValue;
       const nsData = this._data[resolved.namespace];
-      if (nsData === undefined || nsData === null) return defaultValue;
+      if (nsData === undefined || nsData === null) {
+        // §9.9.1: Fallback to implicit "apcore" namespace if no registered namespace matches.
+        if (resolved.namespace !== 'apcore') {
+          return this.get(`apcore.${key}`, defaultValue);
+        }
+        return defaultValue;
+      }
       if (!resolved.subPath) return nsData;
       return getNested(nsData as Record<string, unknown>, resolved.subPath, defaultValue);
     }

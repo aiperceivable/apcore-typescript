@@ -3,7 +3,7 @@
  */
 
 import type { TSchema } from '@sinclair/typebox';
-import type { Config } from './config.js';
+import { Config } from './config.js';
 import type { Context } from './context.js';
 import { FunctionModule, module as createModule } from './decorator.js';
 import type { ApCoreEvent, EventSubscriber } from './events/emitter.js';
@@ -21,6 +21,11 @@ export interface APCoreOptions {
   executor?: Executor;
   config?: Config;
   metricsCollector?: MetricsCollector;
+  /**
+   * Path to a YAML configuration file.
+   * Mutually exclusive with `config`.
+   */
+  configPath?: string;
 }
 
 export interface ModuleOptions {
@@ -51,13 +56,28 @@ export class APCore {
   private _sysModulesContext: SysModulesContext = {};
 
   constructor(options?: APCoreOptions) {
+    if (options?.config !== undefined && options?.configPath !== undefined) {
+      throw new TypeError("Options 'config' and 'configPath' are mutually exclusive.");
+    }
+
     this.registry = options?.registry ?? new Registry();
-    this.config = options?.config ?? null;
+
+    if (options?.configPath !== undefined) {
+      if (Config.isBrowser()) {
+        throw new TypeError("Option 'configPath' is not supported in browser environments. Use 'config' instead.");
+      }
+      this.config = Config.load(options.configPath);
+    } else {
+      this.config = options?.config ?? null;
+    }
+
     this.metricsCollector = options?.metricsCollector ?? null;
-    this.executor = options?.executor ?? new Executor({
-      registry: this.registry,
-      config: this.config,
-    });
+    this.executor =
+      options?.executor ??
+      new Executor({
+        registry: this.registry,
+        config: this.config,
+      });
 
     // Auto-register sys modules if config is provided and enabled
     if (this.config) {
