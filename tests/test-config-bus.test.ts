@@ -317,7 +317,7 @@ describe('Config namespace defaults', () => {
     fs.writeFileSync(yamlPath, 'apcore:\n  version: "1.0.0"\n');
     const cfg = Config.load(yamlPath, { validate: false });
     const sys = cfg.namespace('sys_modules');
-    expect(sys['enabled']).toBe(true);
+    expect(sys['enabled']).toBe(false);
   });
 });
 

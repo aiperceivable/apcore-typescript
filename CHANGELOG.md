@@ -26,11 +26,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Pattern error: single quotes around the offending ID (was double quotes).
   - Pattern error format string: uses `${MODULE_ID_PATTERN.source}` (bare regex source) instead of `${MODULE_ID_PATTERN}` (which produced `/.../` slashes via `RegExp.toString()`).
 
+### Changed (cross-language sync)
+
+- **`Executor.listStrategies()` now returns `StrategyInfo[]` instead of `string[]`** — Provides step count, step names, and description alongside the strategy name. Aligned with apcore-python `list_strategies() -> list[StrategyInfo]` and apcore-rust `list_strategies() -> Vec<StrategyInfo>`.
+
 ### Removed
 
 - **`FeatureNotImplementedError` and `DependencyNotFoundError`** — zero throw-sites across the codebase. Error codes `GENERAL_NOT_IMPLEMENTED` and `DEPENDENCY_NOT_FOUND` remain in `ErrorCodes` for use via the generic `ModuleError` constructor. Aligned with apcore-python (commit `91e951a`).
 
 ### Fixed
+
+- **README Quick Start — missing `await` on `client.validate()` call.** `validate()` is async and returns `Promise<PreflightResult>`; the example assigned the Promise directly instead of awaiting it.
 
 - **Dead fallback in `getDefinition` dropped** (`registry.ts:516-530`). A `module.description ?? metadata.description` chain was unreachable because `module.description` is always set by the `Module` base class constructor. Removed the dead branch.
 - **Spec §4.13 annotation merge — YAML annotations are no longer silently dropped at registration.** Two coupled bugs were repaired in `registry/metadata.ts:mergeModuleMetadata` and `registry/registry.ts:getDefinition`. The merge step was doing whole-replacement of the `annotations` field instead of the field-level merge mandated by §4.13 ("If YAML only defines `readonly: true`, other fields **must** retain values from code or defaults."), and `getDefinition` was reading directly from the module class object even when the merge result was available. The fix wires `mergeAnnotations` and `mergeExamples` from `schema/annotations.ts` (defined and unit-tested but never previously called from production) into the registry pipeline, and updates `getDefinition` to consume the merged metadata. **User-observable behavior change:** modules that supplied `annotations:` in their `*_meta.yaml` companion files were previously seeing those annotations silently ignored; they will now be honored. Modules that relied on the broken behavior should audit their meta files. Identical fix to `apcore-python` commit `9c0fde9`. Adds 5 regression tests covering field-level merge, YAML-only, neither-defined, examples-yaml-wins, and unknown-key-drop scenarios.

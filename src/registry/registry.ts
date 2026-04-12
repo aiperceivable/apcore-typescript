@@ -3,6 +3,7 @@
  */
 
 import type { Config } from '../config.js';
+import { getDefault } from '../config.js';
 import { InvalidInputError, ModuleNotFoundError } from '../errors.js';
 import type { ModuleAnnotations, ModuleExample } from '../module.js';
 import { resolveDependencies } from './dependencies.js';
@@ -195,9 +196,9 @@ export class Registry {
       );
     } else if (config !== null) {
       const extRoot = config.get('extensions.root') as string | undefined;
-      this._extensionRoots = [{ root: extRoot ?? './extensions' }];
+      this._extensionRoots = [{ root: extRoot ?? getDefault('extensions.root') as string }];
     } else {
-      this._extensionRoots = [{ root: './extensions' }];
+      this._extensionRoots = [{ root: getDefault('extensions.root') as string }];
     }
 
     this._config = config;

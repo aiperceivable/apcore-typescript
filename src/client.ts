@@ -21,11 +21,6 @@ export interface APCoreOptions {
   executor?: Executor;
   config?: Config;
   metricsCollector?: MetricsCollector;
-  /**
-   * Path to a YAML configuration file.
-   * Mutually exclusive with `config`.
-   */
-  configPath?: string;
 }
 
 export interface ModuleOptions {
@@ -56,20 +51,8 @@ export class APCore {
   private _sysModulesContext: SysModulesContext = {};
 
   constructor(options?: APCoreOptions) {
-    if (options?.config !== undefined && options?.configPath !== undefined) {
-      throw new TypeError("Options 'config' and 'configPath' are mutually exclusive.");
-    }
-
     this.registry = options?.registry ?? new Registry();
-
-    if (options?.configPath !== undefined) {
-      if (Config.isBrowser()) {
-        throw new TypeError("Option 'configPath' is not supported in browser environments. Use 'config' instead.");
-      }
-      this.config = Config.load(options.configPath);
-    } else {
-      this.config = options?.config ?? null;
-    }
+    this.config = options?.config ?? null;
 
     this.metricsCollector = options?.metricsCollector ?? null;
     this.executor =
@@ -283,9 +266,9 @@ export class APCore {
   }
 
   private _requireSysModules(method: string): void {
-    if (!this._sysModulesContext.eventEmitter) {
+    if (!this._sysModulesContext || Object.keys(this._sysModulesContext).length === 0) {
       throw new Error(
-        `Cannot call ${method}(): sys_modules with events must be enabled in config.`,
+        `Cannot call ${method}(): sys_modules must be enabled in config.`,
       );
     }
   }

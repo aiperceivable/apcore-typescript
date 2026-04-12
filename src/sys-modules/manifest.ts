@@ -9,6 +9,28 @@ import { InvalidInputError, ModuleNotFoundError } from '../errors.js';
 export class ManifestModuleModule {
   readonly description = 'Full manifest for a registered module including source path';
   readonly annotations = { readonly: true, destructive: false, idempotent: true, requiresApproval: false, openWorld: false, streaming: false, cacheable: false, cacheTtl: 0, cacheKeyFields: null, paginated: false, paginationStyle: 'cursor' as const };
+  readonly inputSchema = {
+    type: 'object' as const,
+    properties: {
+      module_id: { type: 'string' as const, description: 'ID of the module to inspect' },
+    },
+    required: ['module_id'],
+  };
+  readonly outputSchema = {
+    type: 'object' as const,
+    properties: {
+      module_id: { type: 'string' as const, description: 'Module identifier' },
+      description: { type: 'string' as const, description: 'Module description' },
+      documentation: { description: 'Module documentation (Markdown)' },
+      source_path: { type: 'string' as const, description: 'Computed source file path' },
+      input_schema: { type: 'object' as const, description: 'Module input JSON Schema' },
+      output_schema: { type: 'object' as const, description: 'Module output JSON Schema' },
+      annotations: { type: 'object' as const, description: 'Module annotations' },
+      tags: { type: 'array' as const, description: 'Module tags' },
+      metadata: { type: 'object' as const, description: 'Additional metadata' },
+    },
+    required: ['module_id', 'description'],
+  };
 
   private readonly _registry: Registry;
   private readonly _config: Config | null;
@@ -58,6 +80,24 @@ export class ManifestModuleModule {
 export class ManifestFullModule {
   readonly description = 'Complete system manifest with filtering by prefix and tags';
   readonly annotations = { readonly: true, destructive: false, idempotent: true, requiresApproval: false, openWorld: false, streaming: false, cacheable: false, cacheTtl: 0, cacheKeyFields: null, paginated: false, paginationStyle: 'cursor' as const };
+  readonly inputSchema = {
+    type: 'object' as const,
+    properties: {
+      include_schemas: { type: 'boolean' as const, description: 'Whether to include input/output schemas', default: true },
+      include_source_paths: { type: 'boolean' as const, description: 'Whether to include source paths', default: true },
+      prefix: { type: 'string' as const, description: 'Filter modules by ID prefix' },
+      tags: { type: 'array' as const, items: { type: 'string' as const }, description: 'Filter modules by tags' },
+    },
+  };
+  readonly outputSchema = {
+    type: 'object' as const,
+    properties: {
+      project_name: { type: 'string' as const, description: 'Project name from config' },
+      module_count: { type: 'integer' as const, description: 'Number of modules returned' },
+      modules: { type: 'array' as const, description: 'Module manifest entries' },
+    },
+    required: ['project_name', 'module_count', 'modules'],
+  };
 
   private readonly _registry: Registry;
   private readonly _config: Config | null;

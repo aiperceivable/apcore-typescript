@@ -8,3 +8,5 @@ export { resolveEntryPoint } from './entry-point.js';
 export { loadMetadata, parseDependencies, mergeModuleMetadata, loadIdMap } from './metadata.js';
 export { getSchema } from './schema-export.js';
 export { VersionedStore, parseSemver, compareSemver, selectBestVersion } from './version.js';
+export { detectIdConflicts } from './conflicts.js';
+export type { ConflictResult, ConflictType, ConflictSeverity } from './conflicts.js';

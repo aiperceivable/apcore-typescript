@@ -77,9 +77,9 @@ export class Context<T = null> {
     let traceId: string;
     if (traceParent) {
       const h = traceParent.traceId;
-      traceId = `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
+      traceId = /^[0-9a-f]{32}$/.test(h) ? h : uuidv4().replace(/-/g, '');
     } else {
-      traceId = uuidv4();
+      traceId = uuidv4().replace(/-/g, '');
     }
     return new Context<S>(
       traceId,

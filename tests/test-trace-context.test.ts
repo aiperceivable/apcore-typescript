@@ -14,16 +14,14 @@ describe('TraceContext.inject()', () => {
     expect(headers.traceparent).toMatch(TRACEPARENT_RE);
   });
 
-  it('uses context traceId (dashes stripped)', () => {
+  it('uses context traceId (already 32-hex)', () => {
     const ctx = Context.create();
     const headers = TraceContext.inject(ctx);
     const parts = headers.traceparent.split('-');
-    const expectedHex = ctx.traceId.replace(/-/g, '');
-    // parts[1] is the trace_id field (but split by '-' means we need to
-    // reconstruct from parts 1..4 since the 32-hex is split by the overall format)
-    // Actually the format is: 00-<32hex>-<16hex>-<2hex>
+    // traceId is already 32-hex format, no dash stripping needed
+    // Format: 00-<32hex>-<16hex>-<2hex>
     // Splitting by '-' gives: ["00", <32hex>, <16hex>, <2hex>]
-    expect(parts[1]).toBe(expectedHex);
+    expect(parts[1]).toBe(ctx.traceId);
   });
 
   it('starts with version 00', () => {
@@ -188,8 +186,8 @@ describe('Round-trip: inject -> extract', () => {
     const parsed = TraceContext.extract(headers);
 
     expect(parsed).not.toBeNull();
-    const expectedHex = ctx.traceId.replace(/-/g, '');
-    expect(parsed!.traceId).toBe(expectedHex);
+    // traceId is already 32-hex format
+    expect(parsed!.traceId).toBe(ctx.traceId);
   });
 
   it('preserves parent_id through inject then extract', () => {
@@ -204,7 +202,7 @@ describe('Round-trip: inject -> extract', () => {
 });
 
 describe('Context.create() with traceParent', () => {
-  it('uses traceParent traceId converted to UUID format', () => {
+  it('uses traceParent traceId as 32-hex format', () => {
     const tp: TraceParent = {
       version: '00',
       traceId: '4bf92f3577b34da6a3ce929d0e0e4736',
@@ -212,10 +210,10 @@ describe('Context.create() with traceParent', () => {
       traceFlags: '01',
     };
     const ctx = Context.create(null, null, undefined, tp);
-    expect(ctx.traceId).toBe('4bf92f35-77b3-4da6-a3ce-929d0e0e4736');
+    expect(ctx.traceId).toBe('4bf92f3577b34da6a3ce929d0e0e4736');
   });
 
-  it('produces a valid UUID string from traceParent', () => {
+  it('produces a valid 32-hex string from traceParent', () => {
     const tp: TraceParent = {
       version: '00',
       traceId: '4bf92f3577b34da6a3ce929d0e0e4736',
@@ -223,14 +221,14 @@ describe('Context.create() with traceParent', () => {
       traceFlags: '01',
     };
     const ctx = Context.create(null, null, undefined, tp);
-    // Should match UUID format: 8-4-4-4-12
-    expect(ctx.traceId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+    // Should match 32-hex format
+    expect(ctx.traceId).toMatch(/^[0-9a-f]{32}$/);
   });
 
   it('still works without traceParent', () => {
     const ctx = Context.create();
     expect(ctx.traceId).toBeDefined();
-    expect(ctx.traceId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+    expect(ctx.traceId).toMatch(/^[0-9a-f]{32}$/);
   });
 
   it('generates unique traceIds without traceParent', () => {

@@ -27,6 +27,22 @@ export function classifyHealthStatus(
 export class HealthSummaryModule {
   readonly description = 'Aggregated health overview of all registered modules';
   readonly annotations = { readonly: true, destructive: false, idempotent: true, requiresApproval: false, openWorld: false, streaming: false, cacheable: false, cacheTtl: 0, cacheKeyFields: null, paginated: false, paginationStyle: 'cursor' as const };
+  readonly inputSchema = {
+    type: 'object' as const,
+    properties: {
+      error_rate_threshold: { type: 'number' as const, description: 'Error rate threshold for healthy status', default: 0.01 },
+      include_healthy: { type: 'boolean' as const, description: 'Whether to include healthy modules in output', default: true },
+    },
+  };
+  readonly outputSchema = {
+    type: 'object' as const,
+    properties: {
+      project: { type: 'object' as const, description: 'Project information' },
+      summary: { type: 'object' as const, description: 'Aggregated health counts by status' },
+      modules: { type: 'array' as const, description: 'Per-module health entries' },
+    },
+    required: ['project', 'summary', 'modules'],
+  };
 
   private readonly _registry: Registry;
   private readonly _metrics: MetricsCollector | null;
@@ -89,6 +105,28 @@ export class HealthSummaryModule {
 export class HealthModuleModule {
   readonly description = 'Detailed health information for a single module';
   readonly annotations = { readonly: true, destructive: false, idempotent: true, requiresApproval: false, openWorld: false, streaming: false, cacheable: false, cacheTtl: 0, cacheKeyFields: null, paginated: false, paginationStyle: 'cursor' as const };
+  readonly inputSchema = {
+    type: 'object' as const,
+    properties: {
+      module_id: { type: 'string' as const, description: 'ID of the module to inspect' },
+      error_limit: { type: 'integer' as const, description: 'Max number of recent errors to return', default: 10 },
+    },
+    required: ['module_id'],
+  };
+  readonly outputSchema = {
+    type: 'object' as const,
+    properties: {
+      module_id: { type: 'string' as const, description: 'Module identifier' },
+      status: { type: 'string' as const, description: 'Health status: healthy, degraded, error, or unknown' },
+      total_calls: { type: 'integer' as const, description: 'Total number of calls' },
+      error_count: { type: 'integer' as const, description: 'Total number of errors' },
+      error_rate: { type: 'number' as const, description: 'Error rate as a float (0.0-1.0)' },
+      avg_latency_ms: { type: 'number' as const, description: 'Average latency in milliseconds' },
+      p99_latency_ms: { type: 'number' as const, description: '99th percentile latency in milliseconds' },
+      recent_errors: { type: 'array' as const, description: 'Recent error entries' },
+    },
+    required: ['module_id', 'status', 'total_calls', 'error_count', 'error_rate', 'avg_latency_ms', 'p99_latency_ms', 'recent_errors'],
+  };
 
   private readonly _registry: Registry;
   private readonly _metrics: MetricsCollector | null;

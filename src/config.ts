@@ -117,7 +117,30 @@ const DEFAULTS: Record<string, unknown> = {
   project: {
     name: 'apcore',
   },
+  sys_modules: {
+    enabled: false,
+  },
+  stream: {
+    max_merge_depth: 32,
+  },
 };
+
+/**
+ * Single source of truth for default values.
+ * Components MUST use this instead of hardcoding defaults.
+ */
+export function getDefault(key: string, fallback?: unknown): unknown {
+  const parts = key.split('.');
+  let node: unknown = DEFAULTS;
+  for (const part of parts) {
+    if (node != null && typeof node === 'object' && part in (node as Record<string, unknown>)) {
+      node = (node as Record<string, unknown>)[part];
+    } else {
+      return fallback;
+    }
+  }
+  return node;
+}
 
 // ---------------------------------------------------------------------------
 // Namespace registry (module-level singletons)
@@ -925,7 +948,7 @@ Config.registerNamespace({
   name: 'sys_modules',
   envPrefix: 'APCORE_SYS',
   defaults: {
-    enabled: true,
+    enabled: false,
     health: { enabled: true },
     manifest: { enabled: true },
     usage: { enabled: true, retention_hours: 168, bucketing_strategy: 'hourly' },

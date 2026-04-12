@@ -58,6 +58,24 @@ export function checkModuleDisabled(moduleId: string): void {
 export class ToggleFeatureModule {
   readonly description = 'Disable or enable a module without unloading it';
   readonly annotations = { readonly: false, destructive: false, idempotent: true, requiresApproval: true, openWorld: false, streaming: false, cacheable: false, cacheTtl: 0, cacheKeyFields: null, paginated: false, paginationStyle: 'cursor' as const };
+  readonly inputSchema = {
+    type: 'object' as const,
+    properties: {
+      module_id: { type: 'string' as const, description: 'ID of the module to toggle' },
+      enabled: { type: 'boolean' as const, description: 'True to enable, false to disable' },
+      reason: { type: 'string' as const, description: 'Audit reason for the toggle' },
+    },
+    required: ['module_id', 'enabled', 'reason'],
+  };
+  readonly outputSchema = {
+    type: 'object' as const,
+    properties: {
+      success: { type: 'boolean' as const, description: 'Whether the toggle succeeded' },
+      module_id: { type: 'string' as const, description: 'ID of the toggled module' },
+      enabled: { type: 'boolean' as const, description: 'Current enabled state' },
+    },
+    required: ['success', 'module_id', 'enabled'],
+  };
 
   private readonly _registry: Registry;
   private readonly _emitter: EventEmitter;

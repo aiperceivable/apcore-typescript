@@ -14,6 +14,7 @@ import type { ACL } from './acl.js';
 import type { ApprovalHandler, ApprovalResult } from './approval.js';
 import { createApprovalRequest } from './approval.js';
 import type { Config } from './config.js';
+import { getDefault } from './config.js';
 import { Context } from './context.js';
 import {
   ACLDeniedError,
@@ -111,9 +112,9 @@ export class BuiltinContextCreation implements Step {
 
   constructor(config: Config | null) {
     if (config !== null) {
-      this._globalTimeout = (config.get('executor.global_timeout') as number) ?? 60000;
+      this._globalTimeout = (config.get('executor.global_timeout') as number) ?? getDefault('executor.global_timeout') as number;
     } else {
-      this._globalTimeout = 60000;
+      this._globalTimeout = getDefault('executor.global_timeout') as number;
     }
   }
 
@@ -150,11 +151,11 @@ export class BuiltinCallChainGuard implements Step {
 
   constructor(config: Config | null) {
     if (config !== null) {
-      this._maxCallDepth = (config.get('executor.max_call_depth') as number) ?? 32;
-      this._maxModuleRepeat = (config.get('executor.max_module_repeat') as number) ?? 3;
+      this._maxCallDepth = (config.get('executor.max_call_depth') as number) ?? getDefault('executor.max_call_depth') as number;
+      this._maxModuleRepeat = (config.get('executor.max_module_repeat') as number) ?? getDefault('executor.max_module_repeat') as number;
     } else {
-      this._maxCallDepth = 32;
-      this._maxModuleRepeat = 3;
+      this._maxCallDepth = getDefault('executor.max_call_depth') as number;
+      this._maxModuleRepeat = getDefault('executor.max_module_repeat') as number;
     }
   }
 
@@ -436,9 +437,9 @@ export class BuiltinExecute implements Step {
 
   constructor(config: Config | null) {
     if (config !== null) {
-      this._defaultTimeout = (config.get('executor.default_timeout') as number) ?? 30000;
+      this._defaultTimeout = (config.get('executor.default_timeout') as number) ?? getDefault('executor.default_timeout') as number;
     } else {
-      this._defaultTimeout = 30000;
+      this._defaultTimeout = getDefault('executor.default_timeout') as number;
     }
   }
 

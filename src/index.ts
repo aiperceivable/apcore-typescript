@@ -161,6 +161,10 @@ export { toStrictSchema, applyLlmDescriptions, stripExtensions } from './schema/
 // Registry types
 export type { ModuleDescriptor, DiscoveredModule, DependencyInfo } from './registry/types.js';
 
+// Registry conflicts
+export { detectIdConflicts } from './registry/conflicts.js';
+export type { ConflictResult, ConflictType, ConflictSeverity } from './registry/conflicts.js';
+
 // Observability
 export { TracingMiddleware, StdoutExporter, InMemoryExporter, OTLPExporter, createSpan } from './observability/tracing.js';
 export type { Span, SpanExporter } from './observability/tracing.js';

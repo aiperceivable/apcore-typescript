@@ -19,13 +19,12 @@ export class TraceContext {
   /**
    * Build a traceparent header dict from an apcore Context.
    *
-   * Converts `context.traceId` (UUID with dashes) to the 32-hex
-   * format required by the W3C traceparent spec. Uses the last span's
-   * `spanId` from the tracing stack if available, otherwise generates
-   * a random 16-hex parent id.
+   * Uses `context.traceId` (already 32-hex format) directly in the
+   * W3C traceparent header. Uses the last span's `spanId` from the
+   * tracing stack if available, otherwise generates a random 16-hex parent id.
    */
   static inject(context: Context): Record<string, string> {
-    const traceIdHex = context.traceId.replace(/-/g, '');
+    const traceIdHex = context.traceId; // already 32-hex format
 
     const spansStack = context.data['_apcore.mw.tracing.spans'] as Span[] | undefined;
     let parentId: string;

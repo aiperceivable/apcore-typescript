@@ -100,6 +100,35 @@ function redactSecretPrefix(data: Record<string, unknown>): void {
   }
 }
 
+const MAX_MERGE_DEPTH = 32;
+
+export function deepMergeChunk(
+  base: Record<string, unknown>,
+  overlay: Record<string, unknown>,
+  depth = 0,
+): void {
+  if (depth >= MAX_MERGE_DEPTH) return;
+  for (const [key, value] of Object.entries(overlay)) {
+    if (
+      key in base &&
+      base[key] != null &&
+      typeof base[key] === 'object' &&
+      !Array.isArray(base[key]) &&
+      value != null &&
+      typeof value === 'object' &&
+      !Array.isArray(value)
+    ) {
+      deepMergeChunk(
+        base[key] as Record<string, unknown>,
+        value as Record<string, unknown>,
+        depth + 1,
+      );
+    } else {
+      base[key] = value;
+    }
+  }
+}
+
 export class Executor {
   private _registry: Registry;
   private _middlewareManager: MiddlewareManager;
@@ -187,9 +216,9 @@ export class Executor {
     Executor._strategyRegistry.set(name, strategy);
   }
 
-  /** List all registered strategy names. */
-  static listStrategies(): string[] {
-    return [...Executor._strategyRegistry.keys()];
+  /** List info for all registered strategies. */
+  static listStrategies(): StrategyInfo[] {
+    return [...Executor._strategyRegistry.values()].map(s => s.info());
   }
 
   /** Describe the pipeline of the given strategy (or the executor's current strategy). */
@@ -427,10 +456,10 @@ export class Executor {
 
     // Phase 2: Iterate stream, accumulate chunks
     const outputStream = pipeCtx.outputStream as AsyncGenerator<Record<string, unknown>>;
-    let accumulated: Record<string, unknown> = {};
+    const accumulated: Record<string, unknown> = {};
     try {
       for await (const chunk of outputStream) {
-        accumulated = { ...accumulated, ...chunk };
+        deepMergeChunk(accumulated, chunk as Record<string, unknown>);
         yield chunk;
       }
     } catch (exc) {

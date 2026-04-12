@@ -42,6 +42,22 @@ function padHourlyDistribution(buckets: HourlyBucket[]): Record<string, unknown>
 export class UsageSummaryModule {
   readonly description = 'All modules usage overview with trend detection';
   readonly annotations = { readonly: true, destructive: false, idempotent: true, requiresApproval: false, openWorld: false, streaming: false, cacheable: false, cacheTtl: 0, cacheKeyFields: null, paginated: false, paginationStyle: 'cursor' as const };
+  readonly inputSchema = {
+    type: 'object' as const,
+    properties: {
+      period: { type: 'string' as const, description: 'Time period for usage data', default: '24h' },
+    },
+  };
+  readonly outputSchema = {
+    type: 'object' as const,
+    properties: {
+      period: { type: 'string' as const, description: 'Requested time period' },
+      total_calls: { type: 'integer' as const, description: 'Total calls across all modules' },
+      total_errors: { type: 'integer' as const, description: 'Total errors across all modules' },
+      modules: { type: 'array' as const, description: 'Per-module usage entries' },
+    },
+    required: ['period', 'total_calls', 'total_errors', 'modules'],
+  };
 
   private readonly _collector: UsageCollector;
 
@@ -76,6 +92,29 @@ export class UsageSummaryModule {
 export class UsageModuleModule {
   readonly description = 'Detailed usage statistics for a single module';
   readonly annotations = { readonly: true, destructive: false, idempotent: true, requiresApproval: false, openWorld: false, streaming: false, cacheable: false, cacheTtl: 0, cacheKeyFields: null, paginated: false, paginationStyle: 'cursor' as const };
+  readonly inputSchema = {
+    type: 'object' as const,
+    properties: {
+      module_id: { type: 'string' as const, description: 'ID of the module to inspect' },
+      period: { type: 'string' as const, description: 'Time period for usage data', default: '24h' },
+    },
+    required: ['module_id'],
+  };
+  readonly outputSchema = {
+    type: 'object' as const,
+    properties: {
+      module_id: { type: 'string' as const, description: 'Module identifier' },
+      period: { type: 'string' as const, description: 'Requested time period' },
+      call_count: { type: 'integer' as const, description: 'Total calls in the period' },
+      error_count: { type: 'integer' as const, description: 'Total errors in the period' },
+      avg_latency_ms: { type: 'number' as const, description: 'Average latency in milliseconds' },
+      p99_latency_ms: { type: 'number' as const, description: '99th percentile latency in milliseconds' },
+      trend: { type: 'string' as const, description: 'Usage trend indicator' },
+      callers: { type: 'array' as const, description: 'Per-caller usage breakdown' },
+      hourly_distribution: { type: 'array' as const, description: 'Hourly call/error distribution' },
+    },
+    required: ['module_id', 'period', 'call_count', 'error_count', 'avg_latency_ms', 'p99_latency_ms', 'trend', 'callers', 'hourly_distribution'],
+  };
 
   private readonly _registry: Registry;
   private readonly _collector: UsageCollector;

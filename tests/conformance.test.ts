@@ -34,6 +34,7 @@ import {
 } from '../src/errors.js';
 import { jsonSchemaToTypeBox } from '../src/schema/loader.js';
 import { SchemaValidator } from '../src/schema/validator.js';
+import { deepMergeChunk } from '../src/executor.js';
 
 // ---------------------------------------------------------------------------
 // Fixture discovery
@@ -65,8 +66,15 @@ function findFixturesRoot(): string {
 
 const FIXTURES_ROOT = findFixturesRoot();
 
+const SCHEMAS_ROOT = path.resolve(FIXTURES_ROOT, '..', '..', 'schemas');
+
 function loadFixture(name: string): any {
   const fullPath = path.join(FIXTURES_ROOT, `${name}.json`);
+  return JSON.parse(fs.readFileSync(fullPath, 'utf-8'));
+}
+
+function loadSchema(name: string): Record<string, unknown> {
+  const fullPath = path.join(SCHEMAS_ROOT, `${name}.schema.json`);
   return JSON.parse(fs.readFileSync(fullPath, 'utf-8'));
 }
 
@@ -421,6 +429,91 @@ describe('apcore Conformance Suite (TypeScript)', () => {
           if (expectedValid) {
             throw e;
           }
+        }
+      });
+    });
+  });
+
+  // --- 11. Config Defaults ---
+  const configDefaultsFixture = loadFixture('config_defaults');
+  describe('Config Defaults Conformance', () => {
+    configDefaultsFixture.test_cases.forEach((tc: any) => {
+      it(tc.id, () => {
+        const config = Config.fromDefaults();
+        const result = config.get(tc.key);
+        expect(result).toEqual(tc.expected);
+      });
+    });
+  });
+
+  // --- 12. Stream Aggregation (deep merge) ---
+  const streamAggFixture = loadFixture('stream_aggregation');
+  describe('Stream Aggregation Conformance', () => {
+    streamAggFixture.test_cases.forEach((tc: any) => {
+      it(tc.id, () => {
+        if (tc.chunks.length === 0) {
+          expect(tc.expected).toBeNull();
+          return;
+        }
+        const accumulated: Record<string, unknown> = {};
+        for (const chunk of tc.chunks) {
+          deepMergeChunk(accumulated, chunk);
+        }
+        expect(accumulated).toEqual(tc.expected);
+      });
+    });
+  });
+
+  // --- 13. Defaults Schema Conformance ---
+  describe('Defaults Schema Conformance', () => {
+    const schema = loadSchema('defaults');
+
+    function extractDefaults(
+      props: Record<string, any>,
+      prefix = '',
+    ): Array<[string, unknown]> {
+      const results: Array<[string, unknown]> = [];
+      for (const [key, prop] of Object.entries(props)) {
+        const dotPath = prefix ? `${prefix}.${key}` : key;
+        if ('default' in prop) {
+          results.push([dotPath, prop.default]);
+        }
+        if (prop.type === 'object' && prop.properties) {
+          results.push(...extractDefaults(prop.properties, dotPath));
+        }
+      }
+      return results;
+    }
+
+    const defaults = extractDefaults((schema as any).properties ?? {});
+
+    defaults.forEach(([dotPath, expected]) => {
+      it(`default: ${dotPath}`, () => {
+        const config = Config.fromDefaults();
+        const actual = config.get(dotPath as string);
+        expect(actual).toEqual(expected);
+      });
+    });
+  });
+
+  // --- 14. Sys Module Output Schema Conformance ---
+  describe('Sys Module Output Schema Conformance', () => {
+    const cases = [
+      { schema: 'sys-control-update-config', required: ['success', 'key', 'old_value', 'new_value'] },
+      { schema: 'sys-control-reload-module', required: ['success', 'module_id'] },
+      { schema: 'sys-control-toggle-feature', required: ['success', 'module_id', 'enabled'] },
+      { schema: 'sys-health-summary', required: ['project', 'summary', 'modules'] },
+      { schema: 'sys-health-module', required: ['module_id', 'status', 'total_calls', 'error_count', 'error_rate'] },
+      { schema: 'sys-manifest-module', required: ['module_id', 'description'] },
+      { schema: 'sys-manifest-full', required: ['project_name', 'module_count', 'modules'] },
+    ];
+
+    cases.forEach(({ schema: name, required }) => {
+      it(`${name} schema matches spec`, () => {
+        const specSchema = loadSchema(name) as any;
+        expect(new Set(specSchema.required)).toEqual(new Set(required));
+        for (const key of required) {
+          expect(specSchema.properties).toHaveProperty(key);
         }
       });
     });

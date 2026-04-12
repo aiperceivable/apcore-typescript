@@ -22,6 +22,25 @@ function isSensitiveKey(key: string): boolean {
 export class UpdateConfigModule {
   readonly description = 'Update a runtime configuration value by dot-path key';
   readonly annotations = { readonly: false, destructive: false, idempotent: true, requiresApproval: true, openWorld: false, streaming: false, cacheable: false, cacheTtl: 0, cacheKeyFields: null, paginated: false, paginationStyle: 'cursor' as const };
+  readonly inputSchema = {
+    type: 'object' as const,
+    properties: {
+      key: { type: 'string' as const, description: 'Dot-path config key' },
+      value: { description: 'New value' },
+      reason: { type: 'string' as const, description: 'Audit reason' },
+    },
+    required: ['key', 'value', 'reason'],
+  };
+  readonly outputSchema = {
+    type: 'object' as const,
+    properties: {
+      success: { type: 'boolean' as const, description: 'Whether the update succeeded' },
+      key: { type: 'string' as const, description: 'Updated config key' },
+      old_value: { description: 'Previous value (redacted for sensitive keys)' },
+      new_value: { description: 'New value (redacted for sensitive keys)' },
+    },
+    required: ['success', 'key', 'old_value', 'new_value'],
+  };
 
   private readonly _config: Config;
   private readonly _emitter: EventEmitter;
@@ -71,6 +90,25 @@ export class UpdateConfigModule {
 export class ReloadModuleModule {
   readonly description = 'Hot-reload a module by safe unregister and re-discover';
   readonly annotations = { readonly: false, destructive: false, idempotent: true, requiresApproval: true, openWorld: false, streaming: false, cacheable: false, cacheTtl: 0, cacheKeyFields: null, paginated: false, paginationStyle: 'cursor' as const };
+  readonly inputSchema = {
+    type: 'object' as const,
+    properties: {
+      module_id: { type: 'string' as const, description: 'ID of the module to reload' },
+      reason: { type: 'string' as const, description: 'Audit reason for the reload' },
+    },
+    required: ['module_id', 'reason'],
+  };
+  readonly outputSchema = {
+    type: 'object' as const,
+    properties: {
+      success: { type: 'boolean' as const, description: 'Whether the reload succeeded' },
+      module_id: { type: 'string' as const, description: 'ID of the reloaded module' },
+      previous_version: { type: 'string' as const, description: 'Version before reload' },
+      new_version: { type: 'string' as const, description: 'Version after reload' },
+      reload_duration_ms: { type: 'number' as const, description: 'Reload duration in milliseconds' },
+    },
+    required: ['success', 'module_id', 'previous_version', 'new_version', 'reload_duration_ms'],
+  };
 
   private readonly _registry: Registry;
   private readonly _emitter: EventEmitter;

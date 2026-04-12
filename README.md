@@ -71,7 +71,7 @@ client.module({
 const result = await client.call('math.add', { a: 10, b: 5 });
 // => { sum: 15 }
 
-const preflight = client.validate('math.add', { a: 10, b: 5 });
+const preflight = await client.validate('math.add', { a: 10, b: 5 });
 // => { valid: true, checks: [...], requiresApproval: false, errors: [] }
 ```
 
