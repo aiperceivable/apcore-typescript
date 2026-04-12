@@ -119,16 +119,16 @@ export class SchemaLoader {
     if (cached) return cached;
 
     const strategyMap: Record<string, SchemaStrategy> = {
-      yaml_first: SchemaStrategy.YamlFirst,
-      native_first: SchemaStrategy.NativeFirst,
-      yaml_only: SchemaStrategy.YamlOnly,
+      yaml_first: SchemaStrategy.YAML_FIRST,
+      native_first: SchemaStrategy.NATIVE_FIRST,
+      yaml_only: SchemaStrategy.YAML_ONLY,
     };
     const rawStrategy = this._config.get('schema.strategy', 'yaml_first') as string;
-    const strategy = strategyMap[rawStrategy] ?? SchemaStrategy.YamlFirst;
+    const strategy = strategyMap[rawStrategy] ?? SchemaStrategy.YAML_FIRST;
 
     let result: [ResolvedSchema, ResolvedSchema] | null = null;
 
-    if (strategy === SchemaStrategy.YamlFirst) {
+    if (strategy === SchemaStrategy.YAML_FIRST) {
       try {
         result = this._loadAndResolve(moduleId);
       } catch (e) {
@@ -138,13 +138,13 @@ export class SchemaLoader {
           throw e;
         }
       }
-    } else if (strategy === SchemaStrategy.NativeFirst) {
+    } else if (strategy === SchemaStrategy.NATIVE_FIRST) {
       if (nativeInputSchema && nativeOutputSchema) {
         result = this._wrapNative(moduleId, nativeInputSchema, nativeOutputSchema);
       } else {
         result = this._loadAndResolve(moduleId);
       }
-    } else if (strategy === SchemaStrategy.YamlOnly) {
+    } else if (strategy === SchemaStrategy.YAML_ONLY) {
       result = this._loadAndResolve(moduleId);
     }
 

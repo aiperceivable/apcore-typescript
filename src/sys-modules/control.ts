@@ -45,11 +45,7 @@ export class UpdateConfigModule {
     const safeOld = isSensitive ? '***' : oldValue;
     const safeNew = isSensitive ? '***' : value;
 
-    // Emit canonical event first, then legacy alias for transition period
     this._emitter.emit(createEvent('apcore.config.updated', 'system.control.update_config', 'info', {
-      key, old_value: safeOld, new_value: safeNew,
-    }));
-    this._emitter.emit(createEvent('config_changed', 'system.control.update_config', 'info', {
       key, old_value: safeOld, new_value: safeNew,
     }));
 
@@ -135,12 +131,7 @@ export class ReloadModuleModule {
     const elapsedMs = performance.now() - start;
     const newVersion = String(reloadedObj['version'] ?? '1.0.0');
 
-    // Emit canonical event first, then legacy alias for transition period
     this._emitter.emit(createEvent('apcore.module.reloaded', moduleId, 'info', {
-      previous_version: previousVersion,
-      new_version: newVersion,
-    }));
-    this._emitter.emit(createEvent('config_changed', moduleId, 'info', {
       previous_version: previousVersion,
       new_version: newVersion,
     }));

@@ -227,14 +227,16 @@ New error codes added in v0.15.0:
 
 ### Event Type Canonical Names
 
-apcore 0.15.0 resolves two event-type collisions. Canonical dot-namespaced names should be used in new code; legacy short-form names remain emitted as aliases during the transition period.
+apcore 0.15.0 resolved two event-type collisions in favor of dot-namespaced canonical
+names. The legacy short-form aliases (`module_health_changed`, `config_changed`) were
+emitted during the 0.15.x transition and have been removed as of 0.18.0.
 
-| Legacy name (alias) | Canonical name | Meaning |
-|---------------------|----------------|---------|
-| `"module_health_changed"` | `"apcore.module.toggled"` | Module enabled/disabled toggle |
-| `"module_health_changed"` | `"apcore.health.recovered"` | Error-rate recovery after spike |
-| `"config_changed"` | `"apcore.config.updated"` | Config key updated at runtime |
-| `"config_changed"` | `"apcore.module.reloaded"` | Module reloaded from disk |
+| Event name | Meaning |
+|------------|---------|
+| `"apcore.module.toggled"` | Module enabled/disabled toggle |
+| `"apcore.health.recovered"` | Error-rate recovery after spike |
+| `"apcore.config.updated"` | Config key updated at runtime |
+| `"apcore.module.reloaded"` | Module reloaded from disk |
 
 Naming convention: `apcore.*` is reserved for core events. Adapter packages use their own prefix (`apcore-mcp.*`, `apcore-a2a.*`, `apcore-cli.*`).
 

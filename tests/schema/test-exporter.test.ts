@@ -215,19 +215,19 @@ describe('SchemaExporter', () => {
 
     it('dispatches to OpenAI profile', () => {
       const sd = makeSchemaDef();
-      const result = exporter.export(sd, ExportProfile.OpenAI);
+      const result = exporter.export(sd, ExportProfile.OPENAI);
       expect(result['type']).toBe('function');
     });
 
     it('dispatches to Anthropic profile', () => {
       const sd = makeSchemaDef();
-      const result = exporter.export(sd, ExportProfile.Anthropic);
+      const result = exporter.export(sd, ExportProfile.ANTHROPIC);
       expect(result['input_schema']).toBeDefined();
     });
 
     it('dispatches to Generic profile', () => {
       const sd = makeSchemaDef();
-      const result = exporter.export(sd, ExportProfile.Generic);
+      const result = exporter.export(sd, ExportProfile.GENERIC);
       expect(result['module_id']).toBe('test.module');
     });
   });

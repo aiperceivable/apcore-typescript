@@ -43,23 +43,6 @@ export interface AuditEntry {
   readonly traceId: string | null;
 }
 
-/** Convert an AuditEntry to a snake_case object for cross-language JSON consistency. */
-export function serializeAuditEntry(entry: AuditEntry): Record<string, unknown> {
-  return {
-    timestamp: entry.timestamp,
-    caller_id: entry.callerId,
-    target_id: entry.targetId,
-    decision: entry.decision,
-    reason: entry.reason,
-    matched_rule: entry.matchedRule,
-    matched_rule_index: entry.matchedRuleIndex,
-    identity_type: entry.identityType,
-    roles: [...entry.roles],
-    call_depth: entry.callDepth,
-    trace_id: entry.traceId,
-  };
-}
-
 export type AuditLogger = (entry: AuditEntry) => void;
 
 function parseAclRule(rawRule: unknown, index: number): ACLRule {

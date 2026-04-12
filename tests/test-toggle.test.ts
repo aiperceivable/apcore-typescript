@@ -182,20 +182,16 @@ describe('ToggleFeatureModule', () => {
     expect(toggleState.isDisabled('test.dummy')).toBe(false);
   });
 
-  it('emits apcore.module.toggled and module_health_changed events with only enabled in data', () => {
+  it('emits apcore.module.toggled event with only enabled in data', () => {
     // W-12: event payload carries only { enabled } — reason stays in the module return value only.
     toggle.execute({ module_id: 'test.dummy', enabled: false, reason: 'shutting down' }, null);
 
-    // Canonical event (apcore.module.toggled) is emitted first, legacy alias second
-    expect(capturedEvents).toHaveLength(2);
+    expect(capturedEvents).toHaveLength(1);
     const canonicalEvent = capturedEvents[0];
     expect(canonicalEvent.eventType).toBe('apcore.module.toggled');
     expect(canonicalEvent.moduleId).toBe('test.dummy');
     expect(canonicalEvent.severity).toBe('info');
     expect(canonicalEvent.data).toEqual({ enabled: false });
-    const legacyEvent = capturedEvents[1];
-    expect(legacyEvent.eventType).toBe('module_health_changed');
-    expect(legacyEvent.moduleId).toBe('test.dummy');
   });
 
   it('returns success result with module_id and enabled (no reason per spec)', () => {

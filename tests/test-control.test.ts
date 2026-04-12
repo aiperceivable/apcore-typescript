@@ -127,13 +127,10 @@ describe('UpdateConfigModule', () => {
       config.set('api.token', 'old_token');
       mod.execute({ key: 'api.token', value: 'new_token', reason: 'rotate' }, null);
 
-      // Canonical event (apcore.config.updated) first, legacy alias (config_changed) second
-      expect(events).toHaveLength(2);
-      // Both events should carry redacted values
+      expect(events).toHaveLength(1);
+      expect(events[0].eventType).toBe('apcore.config.updated');
       expect(events[0].data['old_value']).toBe('***');
       expect(events[0].data['new_value']).toBe('***');
-      expect(events[1].data['old_value']).toBe('***');
-      expect(events[1].data['new_value']).toBe('***');
     });
 
     it('does not redact non-sensitive keys', () => {
@@ -177,22 +174,19 @@ describe('UpdateConfigModule', () => {
   });
 
   describe('event emission', () => {
-    it('emits config_changed event with correct data', () => {
+    it('emits apcore.config.updated event with correct data', () => {
       const events: ApCoreEvent[] = [];
       emitter.subscribe({ onEvent: (e) => { events.push(e); } });
 
       mod.execute({ key: 'some.name', value: 'updated', reason: 'test' }, null);
 
-      // Canonical event (apcore.config.updated) first, legacy alias (config_changed) second
-      expect(events).toHaveLength(2);
+      expect(events).toHaveLength(1);
       expect(events[0].eventType).toBe('apcore.config.updated');
       expect(events[0].moduleId).toBe('system.control.update_config');
       expect(events[0].severity).toBe('info');
       expect(events[0].data['key']).toBe('some.name');
       expect(events[0].data['old_value']).toBe('value');
       expect(events[0].data['new_value']).toBe('updated');
-      expect(events[1].eventType).toBe('config_changed');
-      expect(events[1].moduleId).toBe('system.control.update_config');
     });
   });
 });
@@ -348,7 +342,7 @@ describe('ReloadModuleModule', () => {
       expect(result.new_version).toBe('1.0.0');
     });
 
-    it('emits config_changed event on successful reload', async () => {
+    it('emits apcore.module.reloaded event on successful reload', async () => {
       const events: ApCoreEvent[] = [];
       emitter.subscribe({ onEvent: (e) => { events.push(e); } });
 
@@ -363,13 +357,13 @@ describe('ReloadModuleModule', () => {
 
       await mod.execute({ module_id: 'system.test_mod', reason: 'upgrade' }, null);
 
-      // Filter for config_changed events (registry also emits register/unregister via callbacks)
-      const configEvents = events.filter((e) => e.eventType === 'config_changed');
-      expect(configEvents).toHaveLength(1);
-      expect(configEvents[0].moduleId).toBe('system.test_mod');
-      expect(configEvents[0].severity).toBe('info');
-      expect(configEvents[0].data['previous_version']).toBe('1.0.0');
-      expect(configEvents[0].data['new_version']).toBe('2.0.0');
+      // Filter for canonical reload events (registry also emits register/unregister via callbacks)
+      const reloadEvents = events.filter((e) => e.eventType === 'apcore.module.reloaded');
+      expect(reloadEvents).toHaveLength(1);
+      expect(reloadEvents[0].moduleId).toBe('system.test_mod');
+      expect(reloadEvents[0].severity).toBe('info');
+      expect(reloadEvents[0].data['previous_version']).toBe('1.0.0');
+      expect(reloadEvents[0].data['new_version']).toBe('2.0.0');
     });
   });
 

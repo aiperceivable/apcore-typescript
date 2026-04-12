@@ -4,6 +4,7 @@ export type { ModuleDescriptor, DiscoveredModule, DependencyInfo } from './types
 export { validateModule } from './validation.js';
 export { resolveDependencies } from './dependencies.js';
 export { scanExtensions, scanMultiRoot } from './scanner.js';
-export { resolveEntryPoint, snakeToPascal } from './entry-point.js';
+export { resolveEntryPoint } from './entry-point.js';
 export { loadMetadata, parseDependencies, mergeModuleMetadata, loadIdMap } from './metadata.js';
-export { getSchema, exportSchema, getAllSchemas, exportAllSchemas } from './schema-export.js';
+export { getSchema } from './schema-export.js';
+export { VersionedStore, parseSemver, compareSemver, selectBestVersion } from './version.js';

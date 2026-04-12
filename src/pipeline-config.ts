@@ -52,11 +52,6 @@ export function registeredStepTypes(): string[] {
   return [..._stepTypeRegistry.keys()];
 }
 
-/** Clear registry (for testing only). */
-export function _resetRegistry(): void {
-  _stepTypeRegistry.clear();
-}
-
 // ---------------------------------------------------------------------------
 // Step resolution
 // ---------------------------------------------------------------------------

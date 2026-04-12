@@ -24,6 +24,9 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
+    "lint": "biome lint src tests",
+    "lint:fix": "biome lint --write src tests",
+    "format": "biome format --write src tests",
     "prepublishOnly": "pnpm run build"
   },
   "engines": {
@@ -56,15 +59,15 @@
   "dependencies": {
     "@sinclair/typebox": "^0.34.0",
     "js-yaml": "^4.1.0",
-    "uuid": "^9.0.0"
+    "uuid": "^11.0.0"
   },
   "devDependencies": {
+    "@biomejs/biome": "^1.9.4",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^20.0.0",
-    "@types/uuid": "^9.0.0",
-    "@vitest/coverage-v8": "^2.0.0",
+    "@vitest/coverage-v8": "^3.0.0",
     "apdev-js": "^0.2.4",
     "typescript": "^5.5.0",
-    "vitest": "^2.0.0"
+    "vitest": "^3.0.0"
   }
 }

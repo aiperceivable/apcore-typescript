@@ -97,7 +97,7 @@ export { Middleware, MiddlewareManager, MiddlewareChainError, BeforeMiddleware, 
 export type { RetryConfig } from './middleware/index.js';
 
 // Decorator
-export { module, FunctionModule, normalizeResult, makeAutoId } from './decorator.js';
+export { module, FunctionModule } from './decorator.js';
 
 // Extensions
 export { ExtensionManager } from './extensions.js';
@@ -183,7 +183,7 @@ export type { Step, StepResult, PipelineContext, StepTrace, PipelineTrace, Strat
 // Built-in Steps
 export {
   BuiltinContextCreation,
-  BuiltinCallChainGuard as BuiltinSafetyCheck,
+  BuiltinCallChainGuard,
   BuiltinModuleLookup,
   BuiltinACLCheck,
   BuiltinApprovalGate,

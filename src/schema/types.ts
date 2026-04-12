@@ -6,16 +6,16 @@ import type { TSchema } from '@sinclair/typebox';
 import { SchemaValidationError } from '../errors.js';
 
 export enum SchemaStrategy {
-  YamlFirst = 'yaml_first',
-  NativeFirst = 'native_first',
-  YamlOnly = 'yaml_only',
+  YAML_FIRST = 'yaml_first',
+  NATIVE_FIRST = 'native_first',
+  YAML_ONLY = 'yaml_only',
 }
 
 export enum ExportProfile {
   MCP = 'mcp',
-  OpenAI = 'openai',
-  Anthropic = 'anthropic',
-  Generic = 'generic',
+  OPENAI = 'openai',
+  ANTHROPIC = 'anthropic',
+  GENERIC = 'generic',
 }
 
 export interface SchemaDefinition {

@@ -82,7 +82,7 @@ describe('PlatformNotifyMiddleware', () => {
     expect(errorEvents).toHaveLength(1);
   });
 
-  it('emits module_health_changed when error rate recovers below threshold * 0.5', () => {
+  it('emits apcore.health.recovered when error rate recovers below threshold * 0.5', () => {
     const emitter = new EventEmitter();
     const events: ApCoreEvent[] = [];
     emitter.subscribe({ onEvent: (e) => { events.push(e); } });
@@ -105,7 +105,7 @@ describe('PlatformNotifyMiddleware', () => {
     // Recovery check happens in after()
     mw.after('mod.a', {}, {}, ctx);
 
-    const recoveryEvents = events.filter(e => e.eventType === 'module_health_changed');
+    const recoveryEvents = events.filter(e => e.eventType === 'apcore.health.recovered');
     expect(recoveryEvents).toHaveLength(1);
     expect(recoveryEvents[0].data['status']).toBe('recovered');
   });

@@ -3,7 +3,7 @@
  *
  * Implements system.control.toggle_feature as defined in PROTOCOL_SPEC.md:
  * - Error code: MODULE_DISABLED (HTTP 403)
- * - Canonical event: apcore.module.toggled (legacy alias: module_health_changed)
+ * - Canonical event: apcore.module.toggled
  * - See spec sections: "Error Codes" and "Canonical Event Types"
  */
 
@@ -79,11 +79,9 @@ export class ToggleFeatureModule {
     } else {
       this._toggleState.disable(moduleId);
     }
-    // Emit canonical event first, then legacy alias for transition period.
     // W-12: Event payload carries only { enabled } to match Python reference implementation.
     // `reason` is returned in the module output but not emitted in the event.
     this._emitter.emit(createEvent('apcore.module.toggled', moduleId, 'info', { enabled }));
-    this._emitter.emit(createEvent('module_health_changed', moduleId, 'info', { enabled }));
     return { success: true, module_id: moduleId, enabled };
   }
 

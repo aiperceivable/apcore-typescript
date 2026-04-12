@@ -18,10 +18,10 @@ export class SchemaExporter {
     if (profile === ExportProfile.MCP) {
       return this.exportMcp(schemaDef, annotations, name);
     }
-    if (profile === ExportProfile.OpenAI) {
+    if (profile === ExportProfile.OPENAI) {
       return this.exportOpenai(schemaDef);
     }
-    if (profile === ExportProfile.Anthropic) {
+    if (profile === ExportProfile.ANTHROPIC) {
       return this.exportAnthropic(schemaDef, examples);
     }
     return this.exportGeneric(schemaDef);

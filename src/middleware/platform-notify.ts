@@ -4,7 +4,7 @@
  * Monitors error rates and latency, emits threshold events with hysteresis.
  * Emits error_threshold_exceeded when a module's error rate crosses the
  * configured threshold, latency_threshold_exceeded when p99 latency
- * exceeds the limit, and module_health_changed when a previously alerted
+ * exceeds the limit, and apcore.health.recovered when a previously alerted
  * module recovers below threshold * 0.5.
  */
 
@@ -112,15 +112,8 @@ export class PlatformNotifyMiddleware extends Middleware {
 
     const errorRate = this._computeErrorRate(moduleId);
     if (errorRate < this._errorRateThreshold * 0.5) {
-      // Emit canonical event first, then legacy alias for transition period
       this._emitter.emit(createEvent(
         'apcore.health.recovered',
-        moduleId,
-        'info',
-        { status: 'recovered', error_rate: errorRate },
-      ));
-      this._emitter.emit(createEvent(
-        'module_health_changed',
         moduleId,
         'info',
         { status: 'recovered', error_rate: errorRate },
