@@ -322,6 +322,32 @@ describe('exportSchema with profile', () => {
   });
 });
 
+describe('Registry.exportSchema method', () => {
+  it('delegates to the standalone exportSchema function', () => {
+    const mod = createModule('method.test');
+    const registry = makeRegistry(['method.test', mod]);
+
+    const methodResult = JSON.parse(registry.exportSchema('method.test'));
+    const standaloneResult = JSON.parse(exportSchema(registry, 'method.test'));
+    expect(methodResult).toEqual(standaloneResult);
+  });
+
+  it('supports strict mode', () => {
+    const mod = createModule('method.strict');
+    const registry = makeRegistry(['method.strict', mod]);
+
+    const methodResult = JSON.parse(registry.exportSchema('method.strict', true));
+    const standaloneResult = JSON.parse(exportSchema(registry, 'method.strict', 'json', true));
+    expect(methodResult).toEqual(standaloneResult);
+    expect((methodResult['input_schema'] as Record<string, unknown>)['additionalProperties']).toBe(false);
+  });
+
+  it('throws ModuleNotFoundError for unregistered module', () => {
+    const registry = new Registry();
+    expect(() => registry.exportSchema('no.such.module')).toThrow(ModuleNotFoundError);
+  });
+});
+
 describe('truncateDescription edge cases', () => {
   it('returns the full string when there is no dot-space or newline', () => {
     const mod = createModule('no.boundary', {

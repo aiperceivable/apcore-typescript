@@ -9,6 +9,7 @@ import type { ModuleAnnotations, ModuleExample } from '../module.js';
 import { resolveDependencies } from './dependencies.js';
 import { resolveEntryPoint } from './entry-point.js';
 import { mergeModuleMetadata, parseDependencies } from './metadata.js';
+import { exportSchema as exportSchemaFn } from './schema-export.js';
 import type { DependencyInfo, ModuleDescriptor } from './types.js';
 import { validateModule } from './validation.js';
 
@@ -718,6 +719,21 @@ export class Registry {
     }
 
     this._triggerEvent(REGISTRY_EVENTS.REGISTER, moduleId, module);
+  }
+
+  /**
+   * Export the JSON Schema for a registered module.
+   *
+   * Delegates to the standalone {@link exportSchemaFn} function in
+   * `schema-export.ts`. Provided as a convenience method so that callers
+   * do not need to import the standalone function separately — aligned
+   * with the Python and Rust SDKs where `exportSchema` lives on Registry.
+   */
+  exportSchema(
+    moduleId: string,
+    strict: boolean = false,
+  ): string {
+    return exportSchemaFn(this, moduleId, 'json', strict);
   }
 
   clearCache(): void {
