@@ -9,7 +9,9 @@ import type { ModuleAnnotations, ModuleExample } from '../module.js';
 import { resolveDependencies } from './dependencies.js';
 import { resolveEntryPoint } from './entry-point.js';
 import { mergeModuleMetadata, parseDependencies } from './metadata.js';
-import { exportSchema as exportSchemaFn } from './schema-export.js';
+import { getSchema, exportSchema as exportSchemaFn } from './schema-export.js';
+import { toStrictSchema } from '../schema/strict.js';
+import { deepCopy } from '../utils/index.js';
 import type { DependencyInfo, ModuleDescriptor } from './types.js';
 import { validateModule } from './validation.js';
 
@@ -724,16 +726,25 @@ export class Registry {
   /**
    * Export the JSON Schema for a registered module.
    *
-   * Delegates to the standalone {@link exportSchemaFn} function in
-   * `schema-export.ts`. Provided as a convenience method so that callers
-   * do not need to import the standalone function separately — aligned
-   * with the Python and Rust SDKs where `exportSchema` lives on Registry.
+   * Returns the schema as a plain object (`Record<string, unknown> | null`),
+   * matching Python's `dict | None` and Rust's `Option<Value>` return types.
+   * Returns `null` if the module is not registered.
+   * Use the standalone `exportSchema` function from `schema-export.ts` for
+   * serialized (JSON/YAML) output.
    */
   exportSchema(
     moduleId: string,
     strict: boolean = false,
-  ): string {
-    return exportSchemaFn(this, moduleId, 'json', strict);
+  ): Record<string, unknown> | null {
+    const schema = getSchema(this, moduleId);
+    if (schema === null) return null;
+    if (strict) {
+      const result = deepCopy(schema) as Record<string, unknown>;
+      result['input_schema'] = toStrictSchema(result['input_schema'] as Record<string, unknown>);
+      result['output_schema'] = toStrictSchema(result['output_schema'] as Record<string, unknown>);
+      return result;
+    }
+    return schema;
   }
 
   clearCache(): void {

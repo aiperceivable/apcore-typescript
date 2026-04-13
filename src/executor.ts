@@ -221,11 +221,9 @@ export class Executor {
     return [...Executor._strategyRegistry.values()].map(s => s.info());
   }
 
-  /** Describe the pipeline of the given strategy (or the executor's current strategy). */
-  describePipeline(strategy?: ExecutionStrategy | null): StrategyInfo | null {
-    const target = strategy ?? this._strategy;
-    if (target === null) return null;
-    return target.info();
+  /** Describe the pipeline of the executor's current strategy. */
+  describePipeline(): StrategyInfo {
+    return this._strategy.info();
   }
 
   /** Get the current execution strategy. */

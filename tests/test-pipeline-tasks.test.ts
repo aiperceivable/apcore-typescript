@@ -305,13 +305,13 @@ describe('Executor introspection', () => {
     expect(info!.name).toBe('standard');
   });
 
-  it('describePipeline accepts an explicit strategy argument', () => {
-    const executor = new Executor({ registry });
+  it('describePipeline returns info for the current strategy', () => {
     const deps = makeDeps(registry);
     const strategy = buildInternalStrategy(deps);
-    const info = executor.describePipeline(strategy);
+    const executor = new Executor({ registry, strategy });
+    const info = executor.describePipeline();
     expect(info).not.toBeNull();
-    expect(info!.name).toBe('internal');
+    expect(info.name).toBe('internal');
   });
 
   it('currentStrategy getter returns the configured strategy', () => {

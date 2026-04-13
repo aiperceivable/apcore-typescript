@@ -323,28 +323,28 @@ describe('exportSchema with profile', () => {
 });
 
 describe('Registry.exportSchema method', () => {
-  it('delegates to the standalone exportSchema function', () => {
+  it('returns a plain object matching the standalone getSchema result', () => {
     const mod = createModule('method.test');
     const registry = makeRegistry(['method.test', mod]);
 
-    const methodResult = JSON.parse(registry.exportSchema('method.test'));
+    const methodResult = registry.exportSchema('method.test');
     const standaloneResult = JSON.parse(exportSchema(registry, 'method.test'));
-    expect(methodResult).toEqual(standaloneResult);
+    expect(JSON.parse(JSON.stringify(methodResult))).toEqual(standaloneResult);
   });
 
   it('supports strict mode', () => {
     const mod = createModule('method.strict');
     const registry = makeRegistry(['method.strict', mod]);
 
-    const methodResult = JSON.parse(registry.exportSchema('method.strict', true));
+    const methodResult = registry.exportSchema('method.strict', true);
     const standaloneResult = JSON.parse(exportSchema(registry, 'method.strict', 'json', true));
     expect(methodResult).toEqual(standaloneResult);
-    expect((methodResult['input_schema'] as Record<string, unknown>)['additionalProperties']).toBe(false);
+    expect((methodResult!['input_schema'] as Record<string, unknown>)['additionalProperties']).toBe(false);
   });
 
-  it('throws ModuleNotFoundError for unregistered module', () => {
+  it('returns null for unregistered module', () => {
     const registry = new Registry();
-    expect(() => registry.exportSchema('no.such.module')).toThrow(ModuleNotFoundError);
+    expect(registry.exportSchema('no.such.module')).toBeNull();
   });
 });
 
