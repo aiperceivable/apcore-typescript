@@ -72,14 +72,15 @@ export class EventEmitter {
 
   /**
    * Wait for all pending async event deliveries to complete.
+   * @param timeoutMs - Maximum milliseconds to wait. 0 means wait indefinitely.
    */
-  async flush(maxRounds: number = 10): Promise<void> {
-    for (let round = 0; round < maxRounds; round++) {
+  async flush(timeoutMs: number = 0): Promise<void> {
+    const deadline = timeoutMs > 0 ? Date.now() + timeoutMs : Infinity;
+    while (this._pending.length > 0) {
+      if (Date.now() >= deadline) return;
       const pending = [...this._pending];
       this._pending = [];
-      if (pending.length === 0) return;
       await Promise.allSettled(pending);
-      if (this._pending.length === 0) return;
     }
   }
 }

@@ -424,3 +424,46 @@ describe('Executor', () => {
     expect(executor.middlewares).toHaveLength(0);
   });
 });
+
+describe('Executor.fromRegistry', () => {
+  it('creates an executor with the given registry', () => {
+    const registry = new Registry();
+    const executor = Executor.fromRegistry(registry);
+    expect(executor.registry).toBe(registry);
+  });
+
+  it('creates a functional executor that can call registered modules', async () => {
+    const registry = new Registry();
+    const module = createSimpleModule('greet');
+    registry.register('greet', module);
+
+    const executor = Executor.fromRegistry(registry);
+    const result = await executor.call('greet', { name: 'World' });
+    expect(result).toEqual({ greeting: 'Hello, World!' });
+  });
+
+  it('accepts optional middleware list', () => {
+    const registry = new Registry();
+    const mw = new Middleware();
+    const executor = Executor.fromRegistry(registry, [mw]);
+    expect(executor.middlewares).toHaveLength(1);
+    expect(executor.middlewares[0]).toBe(mw);
+  });
+
+  it('accepts optional ACL', async () => {
+    const registry = new Registry();
+    const module = createSimpleModule('secure.mod');
+    registry.register('secure.mod', module);
+
+    const acl = new ACL([], 'deny');
+    const executor = Executor.fromRegistry(registry, null, acl);
+
+    await expect(executor.call('secure.mod', {})).rejects.toBeInstanceOf(ACLDeniedError);
+  });
+
+  it('returns an Executor instance (not a subclass)', () => {
+    const registry = new Registry();
+    const executor = Executor.fromRegistry(registry);
+    expect(executor).toBeInstanceOf(Executor);
+  });
+});

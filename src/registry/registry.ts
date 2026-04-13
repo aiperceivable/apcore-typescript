@@ -584,6 +584,24 @@ export class Registry {
     this._callbacks.get(event)!.push(callback);
   }
 
+  off(event: string, callback: EventCallback): boolean {
+    const validEvents = Object.values(REGISTRY_EVENTS) as string[];
+    if (!validEvents.includes(event)) {
+      throw new InvalidInputError(
+        `Invalid event: ${event}. Must be one of: ${validEvents.map((e) => `'${e}'`).join(', ')}`,
+      );
+    }
+    const callbacks = this._callbacks.get(event)!;
+    const idx = callbacks.indexOf(callback);
+    if (idx === -1) return false;
+    callbacks.splice(idx, 1);
+    return true;
+  }
+
+  async reload(): Promise<number> {
+    return this.discover();
+  }
+
   private _triggerEvent(event: string, moduleId: string, module: unknown): void {
     const callbacks = this._callbacks.get(event) ?? [];
     for (const cb of callbacks) {
