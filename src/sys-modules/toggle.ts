@@ -37,11 +37,11 @@ export class ToggleState {
 }
 
 /** Default global toggle state. */
-export const defaultToggleState = new ToggleState();
+export const DEFAULT_TOGGLE_STATE = new ToggleState();
 
 /** Check if a module is disabled using the default toggle state. */
 export function isModuleDisabled(moduleId: string): boolean {
-  return defaultToggleState.isDisabled(moduleId);
+  return DEFAULT_TOGGLE_STATE.isDisabled(moduleId);
 }
 
 /** Throw ModuleDisabledError if the module is disabled. */
@@ -84,7 +84,7 @@ export class ToggleFeatureModule {
   constructor(registry: Registry, eventEmitter: EventEmitter, toggleState?: ToggleState) {
     this._registry = registry;
     this._emitter = eventEmitter;
-    this._toggleState = toggleState ?? defaultToggleState;
+    this._toggleState = toggleState ?? DEFAULT_TOGGLE_STATE;
   }
 
   execute(inputs: Record<string, unknown>, _context: unknown): Record<string, unknown> {

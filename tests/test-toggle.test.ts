@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
   ToggleState,
-  defaultToggleState,
+  DEFAULT_TOGGLE_STATE,
   isModuleDisabled,
   checkModuleDisabled,
   ToggleFeatureModule,
@@ -57,40 +57,40 @@ describe('ToggleState', () => {
   });
 });
 
-describe('defaultToggleState', () => {
+describe('DEFAULT_TOGGLE_STATE', () => {
   afterEach(() => {
-    defaultToggleState.clear();
+    DEFAULT_TOGGLE_STATE.clear();
   });
 
   it('is an instance of ToggleState', () => {
-    expect(defaultToggleState).toBeInstanceOf(ToggleState);
+    expect(DEFAULT_TOGGLE_STATE).toBeInstanceOf(ToggleState);
   });
 });
 
 describe('isModuleDisabled', () => {
   afterEach(() => {
-    defaultToggleState.clear();
+    DEFAULT_TOGGLE_STATE.clear();
   });
 
   it('returns false when module is not disabled', () => {
     expect(isModuleDisabled('some.module')).toBe(false);
   });
 
-  it('delegates to defaultToggleState', () => {
-    defaultToggleState.disable('some.module');
+  it('delegates to DEFAULT_TOGGLE_STATE', () => {
+    DEFAULT_TOGGLE_STATE.disable('some.module');
     expect(isModuleDisabled('some.module')).toBe(true);
   });
 
   it('returns false after module is re-enabled', () => {
-    defaultToggleState.disable('some.module');
-    defaultToggleState.enable('some.module');
+    DEFAULT_TOGGLE_STATE.disable('some.module');
+    DEFAULT_TOGGLE_STATE.enable('some.module');
     expect(isModuleDisabled('some.module')).toBe(false);
   });
 });
 
 describe('checkModuleDisabled', () => {
   afterEach(() => {
-    defaultToggleState.clear();
+    DEFAULT_TOGGLE_STATE.clear();
   });
 
   it('does nothing when module is not disabled', () => {
@@ -98,7 +98,7 @@ describe('checkModuleDisabled', () => {
   });
 
   it('throws ModuleDisabledError when module is disabled', () => {
-    defaultToggleState.disable('bad.module');
+    DEFAULT_TOGGLE_STATE.disable('bad.module');
     expect(() => checkModuleDisabled('bad.module')).toThrow(ModuleDisabledError);
   });
 });
@@ -128,7 +128,7 @@ describe('ToggleFeatureModule', () => {
   });
 
   afterEach(() => {
-    defaultToggleState.clear();
+    DEFAULT_TOGGLE_STATE.clear();
   });
 
   describe('input validation', () => {
