@@ -87,7 +87,7 @@ export class UpdateConfigModule {
   }
 }
 
-export class ReloadModuleModule {
+export class ReloadModule {
   readonly description = 'Hot-reload a module by safe unregister and re-discover';
   readonly annotations = { readonly: false, destructive: false, idempotent: true, requiresApproval: true, openWorld: false, streaming: false, cacheable: false, cacheTtl: 0, cacheKeyFields: null, paginated: false, paginationStyle: 'cursor' as const };
   readonly inputSchema = {

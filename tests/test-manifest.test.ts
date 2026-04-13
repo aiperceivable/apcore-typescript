@@ -3,7 +3,7 @@ import { Type } from '@sinclair/typebox';
 import { Registry } from '../src/registry/registry.js';
 import { Config } from '../src/config.js';
 import { InvalidInputError, ModuleNotFoundError } from '../src/errors.js';
-import { ManifestModuleModule, ManifestFullModule } from '../src/sys-modules/manifest.js';
+import { ManifestModule, ManifestFullModule } from '../src/sys-modules/manifest.js';
 
 /** Dummy module with all manifest-relevant properties. */
 function createDummyModule(overrides: Record<string, unknown> = {}): Record<string, unknown> {
@@ -29,7 +29,7 @@ function createConfigWithSourceRoot(): Config {
   return new Config({ project: { name: 'test', source_root: '/src' } });
 }
 
-describe('ManifestModuleModule', () => {
+describe('ManifestModule', () => {
   let registry: Registry;
 
   beforeEach(() => {
@@ -41,22 +41,22 @@ describe('ManifestModuleModule', () => {
   });
 
   it('throws InvalidInputError when module_id is missing', () => {
-    const manifest = new ManifestModuleModule(registry);
+    const manifest = new ManifestModule(registry);
     expect(() => manifest.execute({}, null)).toThrow(InvalidInputError);
   });
 
   it('throws InvalidInputError when module_id is empty string', () => {
-    const manifest = new ManifestModuleModule(registry);
+    const manifest = new ManifestModule(registry);
     expect(() => manifest.execute({ module_id: '' }, null)).toThrow(InvalidInputError);
   });
 
   it('throws InvalidInputError when module_id is not a string', () => {
-    const manifest = new ManifestModuleModule(registry);
+    const manifest = new ManifestModule(registry);
     expect(() => manifest.execute({ module_id: 42 }, null)).toThrow(InvalidInputError);
   });
 
   it('throws ModuleNotFoundError for unknown module', () => {
-    const manifest = new ManifestModuleModule(registry);
+    const manifest = new ManifestModule(registry);
     expect(() => manifest.execute({ module_id: 'system.nonexistent' }, null)).toThrow(
       ModuleNotFoundError,
     );
@@ -84,7 +84,7 @@ describe('ManifestModuleModule', () => {
       }),
     );
 
-    const manifest = new ManifestModuleModule(registry);
+    const manifest = new ManifestModule(registry);
     const result = manifest.execute({ module_id: 'system.detailed' }, null);
 
     expect(result['module_id']).toBe('system.detailed');
@@ -98,14 +98,14 @@ describe('ManifestModuleModule', () => {
 
   it('includes source_path when config has project.source_root', () => {
     const config = createConfigWithSourceRoot();
-    const manifest = new ManifestModuleModule(registry, config);
+    const manifest = new ManifestModule(registry, config);
     const result = manifest.execute({ module_id: 'system.test_mod' }, null);
 
     expect(result['source_path']).toBe('/src/system/test_mod.ts');
   });
 
   it('source_path is null when no config is provided', () => {
-    const manifest = new ManifestModuleModule(registry);
+    const manifest = new ManifestModule(registry);
     const result = manifest.execute({ module_id: 'system.test_mod' }, null);
 
     expect(result['source_path']).toBeNull();
@@ -113,7 +113,7 @@ describe('ManifestModuleModule', () => {
 
   it('source_path is null when config has no project.source_root', () => {
     const config = new Config({ project: { name: 'test' } });
-    const manifest = new ManifestModuleModule(registry, config);
+    const manifest = new ManifestModule(registry, config);
     const result = manifest.execute({ module_id: 'system.test_mod' }, null);
 
     expect(result['source_path']).toBeNull();
@@ -122,7 +122,7 @@ describe('ManifestModuleModule', () => {
   it('converts dots in module_id to path separators for source_path', () => {
     const config = createConfigWithSourceRoot();
     registry.registerInternal('system.sub.deep_mod', createDummyModule());
-    const manifest = new ManifestModuleModule(registry, config);
+    const manifest = new ManifestModule(registry, config);
     const result = manifest.execute({ module_id: 'system.sub.deep_mod' }, null);
 
     expect(result['source_path']).toBe('/src/system/sub/deep_mod.ts');

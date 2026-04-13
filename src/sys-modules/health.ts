@@ -102,7 +102,7 @@ export class HealthSummaryModule {
   }
 }
 
-export class HealthModuleModule {
+export class HealthModule {
   readonly description = 'Detailed health information for a single module';
   readonly annotations = { readonly: true, destructive: false, idempotent: true, requiresApproval: false, openWorld: false, streaming: false, cacheable: false, cacheTtl: 0, cacheKeyFields: null, paginated: false, paginationStyle: 'cursor' as const };
   readonly inputSchema = {

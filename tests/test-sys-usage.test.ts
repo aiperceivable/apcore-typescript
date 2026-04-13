@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { UsageCollector } from '../src/observability/usage.js';
-import { UsageSummaryModule, UsageModuleModule } from '../src/sys-modules/usage.js';
+import { UsageSummaryModule, UsageModule } from '../src/sys-modules/usage.js';
 import { Registry } from '../src/registry/registry.js';
 import { InvalidInputError, ModuleNotFoundError } from '../src/errors.js';
 
@@ -17,13 +17,13 @@ function createCollectorWithData(): UsageCollector {
   return collector;
 }
 
-describe('computeP99 (via UsageModuleModule)', () => {
+describe('computeP99 (via UsageModule)', () => {
   it('returns 0 for empty latencies', () => {
     const registry = createRegistry();
     const collector = new UsageCollector();
     // Register the module but record no usage data
     registry.registerInternal('test.empty', { description: 'empty module', execute: () => ({}) });
-    const mod = new UsageModuleModule(registry, collector);
+    const mod = new UsageModule(registry, collector);
 
     const result = mod.execute({ module_id: 'test.empty' }, {});
     expect(result['p99_latency_ms']).toBe(0);
@@ -35,7 +35,7 @@ describe('computeP99 (via UsageModuleModule)', () => {
     registry.registerInternal('test.single', { description: 'single', execute: () => ({}) });
     collector.record('test.single', 'c1', 42, true);
 
-    const mod = new UsageModuleModule(registry, collector);
+    const mod = new UsageModule(registry, collector);
     const result = mod.execute({ module_id: 'test.single' }, {});
     expect(result['p99_latency_ms']).toBe(42);
   });
@@ -49,21 +49,21 @@ describe('computeP99 (via UsageModuleModule)', () => {
       collector.record('test.many', 'c1', i, true);
     }
 
-    const mod = new UsageModuleModule(registry, collector);
+    const mod = new UsageModule(registry, collector);
     const result = mod.execute({ module_id: 'test.many' }, {});
     // p99 index = ceil(0.99 * 100) - 1 = 98, sorted[98] = 99
     expect(result['p99_latency_ms']).toBe(99);
   });
 });
 
-describe('padHourlyDistribution (via UsageModuleModule)', () => {
+describe('padHourlyDistribution (via UsageModule)', () => {
   it('pads missing hours with zeros', () => {
     const registry = createRegistry();
     const collector = new UsageCollector();
     registry.registerInternal('test.pad', { description: 'pad test', execute: () => ({}) });
     collector.record('test.pad', 'c1', 10, true);
 
-    const mod = new UsageModuleModule(registry, collector);
+    const mod = new UsageModule(registry, collector);
     const result = mod.execute({ module_id: 'test.pad' }, {});
     const hourly = result['hourly_distribution'] as Array<Record<string, unknown>>;
 
@@ -90,7 +90,7 @@ describe('padHourlyDistribution (via UsageModuleModule)', () => {
     collector.record('test.existing', 'c1', 10, true);
     collector.record('test.existing', 'c1', 20, false);
 
-    const mod = new UsageModuleModule(registry, collector);
+    const mod = new UsageModule(registry, collector);
     const result = mod.execute({ module_id: 'test.existing' }, {});
     const hourly = result['hourly_distribution'] as Array<Record<string, unknown>>;
 
@@ -144,11 +144,11 @@ describe('UsageSummaryModule', () => {
   });
 });
 
-describe('UsageModuleModule', () => {
+describe('UsageModule', () => {
   it('throws InvalidInputError when module_id is missing', () => {
     const registry = createRegistry();
     const collector = new UsageCollector();
-    const mod = new UsageModuleModule(registry, collector);
+    const mod = new UsageModule(registry, collector);
 
     expect(() => mod.execute({}, {})).toThrow(InvalidInputError);
   });
@@ -156,7 +156,7 @@ describe('UsageModuleModule', () => {
   it('throws InvalidInputError when module_id is empty string', () => {
     const registry = createRegistry();
     const collector = new UsageCollector();
-    const mod = new UsageModuleModule(registry, collector);
+    const mod = new UsageModule(registry, collector);
 
     expect(() => mod.execute({ module_id: '' }, {})).toThrow(InvalidInputError);
   });
@@ -164,7 +164,7 @@ describe('UsageModuleModule', () => {
   it('throws ModuleNotFoundError for unknown module', () => {
     const registry = createRegistry();
     const collector = new UsageCollector();
-    const mod = new UsageModuleModule(registry, collector);
+    const mod = new UsageModule(registry, collector);
 
     expect(() => mod.execute({ module_id: 'no.such.module' }, {})).toThrow(ModuleNotFoundError);
   });
@@ -178,7 +178,7 @@ describe('UsageModuleModule', () => {
     collector.record('test.detail', 'caller1', 100, true);
     collector.record('test.detail', 'caller2', 200, false);
 
-    const mod = new UsageModuleModule(registry, collector);
+    const mod = new UsageModule(registry, collector);
     const result = mod.execute({ module_id: 'test.detail' }, {});
 
     expect(result).toHaveProperty('module_id', 'test.detail');
@@ -212,7 +212,7 @@ describe('UsageModuleModule', () => {
     registry.registerInternal('test.period', { description: 'period', execute: () => ({}) });
     collector.record('test.period', 'c1', 10, true);
 
-    const mod = new UsageModuleModule(registry, collector);
+    const mod = new UsageModule(registry, collector);
     const result = mod.execute({ module_id: 'test.period', period: '1h' }, {});
 
     expect(result['period']).toBe('1h');

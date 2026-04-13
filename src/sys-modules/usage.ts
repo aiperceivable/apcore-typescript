@@ -89,7 +89,7 @@ export class UsageSummaryModule {
   }
 }
 
-export class UsageModuleModule {
+export class UsageModule {
   readonly description = 'Detailed usage statistics for a single module';
   readonly annotations = { readonly: true, destructive: false, idempotent: true, requiresApproval: false, openWorld: false, streaming: false, cacheable: false, cacheTtl: 0, cacheKeyFields: null, paginated: false, paginationStyle: 'cursor' as const };
   readonly inputSchema = {

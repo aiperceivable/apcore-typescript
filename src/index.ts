@@ -93,7 +93,7 @@ export { ACL } from './acl.js';
 export type { ACLRule, AuditEntry, AuditLogger } from './acl.js';
 
 // Middleware
-export { Middleware, MiddlewareManager, MiddlewareChainError, BeforeMiddleware, AfterMiddleware, LoggingMiddleware, RetryMiddleware, CTX_RETRY_COUNT_PREFIX, CTX_RETRY_DELAY_PREFIX, ErrorHistoryMiddleware, PlatformNotifyMiddleware } from './middleware/index.js';
+export { Middleware, MiddlewareManager, MiddlewareChainError, BeforeMiddleware, AfterMiddleware, LoggingMiddleware, RetryMiddleware, ErrorHistoryMiddleware, PlatformNotifyMiddleware } from './middleware/index.js';
 export type { RetryConfig } from './middleware/index.js';
 
 // Decorator
@@ -115,18 +115,18 @@ export {
   resetSubscriberRegistry,
   ToggleState,
   ToggleFeatureModule,
-  defaultToggleState,
+  DEFAULT_TOGGLE_STATE,
   isModuleDisabled,
   checkModuleDisabled,
   HealthSummaryModule,
-  HealthModuleModule,
+  HealthModule,
   classifyHealthStatus,
-  ManifestModuleModule,
+  ManifestModule,
   ManifestFullModule,
   UpdateConfigModule,
-  ReloadModuleModule,
+  ReloadModule,
   UsageSummaryModule,
-  UsageModuleModule,
+  UsageModule,
 } from './sys-modules/index.js';
 export type { SysModulesContext } from './sys-modules/index.js';
 
@@ -156,7 +156,7 @@ export { SchemaExporter } from './schema/exporter.js';
 export { SchemaStrategy, ExportProfile } from './schema/types.js';
 export type { SchemaDefinition, ResolvedSchema, SchemaValidationErrorDetail, SchemaValidationResult } from './schema/types.js';
 export { RefResolver } from './schema/ref-resolver.js';
-export { toStrictSchema, applyLlmDescriptions, stripExtensions } from './schema/strict.js';
+export { toStrictSchema } from './schema/strict.js';
 
 // Registry types
 export type { ModuleDescriptor, DiscoveredModule, DependencyInfo } from './registry/types.js';
@@ -172,7 +172,7 @@ export { MetricsCollector, MetricsMiddleware } from './observability/metrics.js'
 export { ContextLogger, ObsLoggingMiddleware } from './observability/context-logger.js';
 export { ErrorHistory } from './observability/error-history.js';
 export type { ErrorEntry } from './observability/error-history.js';
-export { UsageCollector, UsageMiddleware, bucketKey } from './observability/usage.js';
+export { UsageCollector, UsageMiddleware } from './observability/usage.js';
 export { computeModuleErrorRate, estimateP99FromHistogram, matchesModuleId, METRIC_CALLS_TOTAL, METRIC_DURATION_SECONDS } from './observability/metrics-utils.js';
 export type { UsageRecord, CallerUsageSummary, HourlyBucket, ModuleUsageSummary, ModuleUsageDetail } from './observability/usage.js';
 

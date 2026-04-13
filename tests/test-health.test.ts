@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { classifyHealthStatus, HealthSummaryModule, HealthModuleModule } from '../src/sys-modules/health.js';
+import { classifyHealthStatus, HealthSummaryModule, HealthModule } from '../src/sys-modules/health.js';
 import { Registry } from '../src/registry/registry.js';
 import { MetricsCollector } from '../src/observability/metrics.js';
 import { ErrorHistory } from '../src/observability/error-history.js';
@@ -165,11 +165,11 @@ describe('HealthSummaryModule', () => {
   });
 });
 
-describe('HealthModuleModule', () => {
+describe('HealthModule', () => {
   it('throws InvalidInputError when module_id is missing', () => {
     const registry = makeRegistry('mod.a');
     const errorHistory = new ErrorHistory();
-    const mod = new HealthModuleModule(registry, null, errorHistory);
+    const mod = new HealthModule(registry, null, errorHistory);
 
     expect(() => mod.execute({}, null)).toThrow(InvalidInputError);
   });
@@ -177,7 +177,7 @@ describe('HealthModuleModule', () => {
   it('throws ModuleNotFoundError for unknown module', () => {
     const registry = makeRegistry('mod.a');
     const errorHistory = new ErrorHistory();
-    const mod = new HealthModuleModule(registry, null, errorHistory);
+    const mod = new HealthModule(registry, null, errorHistory);
 
     expect(() => mod.execute({ module_id: 'mod.nonexistent' }, null)).toThrow(ModuleNotFoundError);
   });
@@ -198,7 +198,7 @@ describe('HealthModuleModule', () => {
     metrics.observeDuration('mod.a', 0.05);
     metrics.observeDuration('mod.a', 0.15);
 
-    const mod = new HealthModuleModule(registry, metrics, errorHistory);
+    const mod = new HealthModule(registry, metrics, errorHistory);
     const result = mod.execute({ module_id: 'mod.a' }, null);
 
     expect(result['module_id']).toBe('mod.a');
@@ -221,7 +221,7 @@ describe('HealthModuleModule', () => {
     errorHistory.record('mod.a', new ModuleError('ERR_ONE', 'first error', {}, undefined, undefined, undefined, 'guidance one'));
     errorHistory.record('mod.a', new ModuleError('ERR_TWO', 'second error'));
 
-    const mod = new HealthModuleModule(registry, metrics, errorHistory);
+    const mod = new HealthModule(registry, metrics, errorHistory);
     const result = mod.execute({ module_id: 'mod.a' }, null);
 
     const recentErrors = result['recent_errors'] as Record<string, unknown>[];
@@ -237,7 +237,7 @@ describe('HealthModuleModule', () => {
     const registry = makeRegistry('mod.a');
     const errorHistory = new ErrorHistory();
 
-    const mod = new HealthModuleModule(registry, null, errorHistory);
+    const mod = new HealthModule(registry, null, errorHistory);
     const result = mod.execute({ module_id: 'mod.a' }, null);
 
     expect(result['total_calls']).toBe(0);

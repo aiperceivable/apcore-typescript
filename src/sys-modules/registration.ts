@@ -13,11 +13,11 @@ import type { EventSubscriber } from '../events/emitter.js';
 import { EventEmitter, createEvent } from '../events/emitter.js';
 import { WebhookSubscriber, A2ASubscriber } from '../events/subscribers.js';
 import { PlatformNotifyMiddleware } from '../middleware/platform-notify.js';
-import { HealthSummaryModule, HealthModuleModule } from './health.js';
-import { ManifestFullModule, ManifestModuleModule } from './manifest.js';
+import { HealthSummaryModule, HealthModule } from './health.js';
+import { ManifestFullModule, ManifestModule } from './manifest.js';
 import { ToggleFeatureModule } from './toggle.js';
-import { UpdateConfigModule, ReloadModuleModule } from './control.js';
-import { UsageSummaryModule, UsageModuleModule } from './usage.js';
+import { UpdateConfigModule, ReloadModule } from './control.js';
+import { UsageSummaryModule, UsageModule } from './usage.js';
 
 // ---------------------------------------------------------------------------
 // Namespace-mode helpers — §9.15.3
@@ -186,15 +186,15 @@ export function registerSysModules(
 
   // Health modules
   reg('system.health.summary', new HealthSummaryModule(registry, metricsCollector ?? null, errorHistory, config));
-  reg('system.health.module', new HealthModuleModule(registry, metricsCollector ?? null, errorHistory));
+  reg('system.health.module', new HealthModule(registry, metricsCollector ?? null, errorHistory));
 
   // Manifest modules
-  reg('system.manifest.module', new ManifestModuleModule(registry, config));
+  reg('system.manifest.module', new ManifestModule(registry, config));
   reg('system.manifest.full', new ManifestFullModule(registry, config));
 
   // Usage modules
   reg('system.usage.summary', new UsageSummaryModule(usageCollector));
-  reg('system.usage.module', new UsageModuleModule(registry, usageCollector));
+  reg('system.usage.module', new UsageModule(registry, usageCollector));
 
   // Events system
   if (_cfgGet(sysCfg, config, 'events.enabled', false)) {
@@ -214,7 +214,7 @@ export function registerSysModules(
     // Control modules (require EventEmitter)
     reg('system.control.toggle_feature', new ToggleFeatureModule(registry, eventEmitter));
     reg('system.control.update_config', new UpdateConfigModule(config, eventEmitter));
-    reg('system.control.reload_module', new ReloadModuleModule(registry, eventEmitter));
+    reg('system.control.reload_module', new ReloadModule(registry, eventEmitter));
 
     // Bridge registry events
     registry.on('register', (moduleId: string) => {

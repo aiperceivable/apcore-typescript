@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { UpdateConfigModule, ReloadModuleModule } from '../src/sys-modules/control.js';
+import { UpdateConfigModule, ReloadModule } from '../src/sys-modules/control.js';
 import { Config } from '../src/config.js';
 import { Registry } from '../src/registry/registry.js';
 import { EventEmitter } from '../src/events/emitter.js';
@@ -191,10 +191,10 @@ describe('UpdateConfigModule', () => {
   });
 });
 
-describe('ReloadModuleModule', () => {
+describe('ReloadModule', () => {
   let registry: Registry;
   let emitter: EventEmitter;
-  let mod: ReloadModuleModule;
+  let mod: ReloadModule;
 
   function createDummyModule(version: string = '1.0.0'): Record<string, unknown> {
     return {
@@ -207,7 +207,7 @@ describe('ReloadModuleModule', () => {
   beforeEach(() => {
     registry = new Registry();
     emitter = new EventEmitter();
-    mod = new ReloadModuleModule(registry, emitter);
+    mod = new ReloadModule(registry, emitter);
   });
 
   describe('input validation', () => {
