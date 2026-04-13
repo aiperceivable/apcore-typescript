@@ -45,6 +45,6 @@ jobs:
         run: pnpm build
 
       - name: Run tests
-        run: pnpm test
+        run: pnpm test:coverage
         env:
           APCORE_SPEC_REPO: ${{ github.workspace }}/.apcore-spec
