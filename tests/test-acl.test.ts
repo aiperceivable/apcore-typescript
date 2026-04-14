@@ -1,8 +1,9 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { ACL } from '../src/acl.js';
+import type { ACLConditionHandler } from '../src/acl-handlers.js';
 import { ACLRuleError, ConfigNotFoundError } from '../src/errors.js';
 import { Context, createIdentity } from '../src/context.js';
 
@@ -403,6 +404,45 @@ describe('ACL condition validation', () => {
     expect(acl.check('mod.a', 'target', ctx)).toBe(false);
   });
 
+  it('supports max_call_depth with object { lte: N } format', () => {
+    const acl = new ACL([{
+      callers: ['*'], targets: ['target'], effect: 'allow', description: '',
+      conditions: { max_call_depth: { lte: 3 } },
+    }]);
+    const ctxWithin = makeContext({ callChain: ['a', 'b'] });
+    const ctxExceeds = makeContext({ callChain: ['a', 'b', 'c', 'd'] });
+    expect(acl.check('mod.a', 'target', ctxWithin)).toBe(true);
+    expect(acl.check('mod.a', 'target', ctxExceeds)).toBe(false);
+  });
+
+  it('returns false for async condition handler used in sync check()', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const asyncHandler: ACLConditionHandler = {
+      evaluate: () => Promise.resolve(true) as unknown as boolean,
+    };
+    ACL.registerCondition('test_async_in_sync', asyncHandler);
+    const acl = new ACL([{
+      callers: ['*'], targets: ['target'], effect: 'allow', description: '',
+      conditions: { test_async_in_sync: true },
+    }]);
+    const ctx = makeContext({ callChain: [] });
+    expect(acl.check('module.a', 'target', ctx)).toBe(false);
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Async condition'));
+    warnSpy.mockRestore();
+    (ACL as any).conditionHandlers.delete('test_async_in_sync');
+  });
+
+  it('throws ACLRuleError when targets is not an array in parseAclRule (via load)', () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), 'acl-targets-test-'));
+    const filePath = join(tmpDir, 'acl.yaml');
+    writeFileSync(filePath, 'rules:\n  - callers: ["*"]\n    targets: "not_a_list"\n    effect: allow\n');
+    try {
+      expect(() => ACL.load(filePath)).toThrow(ACLRuleError);
+    } finally {
+      rmSync(tmpDir, { recursive: true });
+    }
+  });
+
   it('returns false for roles condition when identity is null', () => {
     const acl = new ACL([{
       callers: ['*'], targets: ['target'], effect: 'allow', description: '',
@@ -419,5 +459,146 @@ describe('ACL condition validation', () => {
     }]);
     const ctx = makeContext({});
     expect(acl.check('mod.a', 'target', ctx)).toBe(false);
+  });
+
+  it('calls auditLogger when rule matches in check()', () => {
+    const entries: unknown[] = [];
+    const acl = new ACL([
+      { callers: ['module.a'], targets: ['module.b'], effect: 'allow', description: 'allow a->b' },
+    ], 'deny', (entry) => entries.push(entry));
+    expect(acl.check('module.a', 'module.b')).toBe(true);
+    expect(entries).toHaveLength(1);
+    expect((entries[0] as Record<string, unknown>)['decision']).toBe('allow');
+    expect((entries[0] as Record<string, unknown>)['reason']).toBe('rule_match');
+  });
+
+  it('calls auditLogger with default_effect reason when no rules match in check()', () => {
+    const entries: unknown[] = [];
+    const acl = new ACL([
+      { callers: ['module.a'], targets: ['module.b'], effect: 'allow', description: '' },
+    ], 'deny', (entry) => entries.push(entry));
+    expect(acl.check('other.caller', 'other.target')).toBe(false);
+    expect(entries).toHaveLength(1);
+    expect((entries[0] as Record<string, unknown>)['reason']).toBe('default_effect');
+  });
+
+  it('calls auditLogger with no_rules reason when rule list is empty in check()', () => {
+    const entries: unknown[] = [];
+    const acl = new ACL([], 'deny', (entry) => entries.push(entry));
+    expect(acl.check('module.a', 'module.b')).toBe(false);
+    expect(entries).toHaveLength(1);
+    expect((entries[0] as Record<string, unknown>)['reason']).toBe('no_rules');
+  });
+
+  it('returns false when sync condition handler throws', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const throwingHandler: ACLConditionHandler = {
+      evaluate: () => { throw new Error('sync handler error'); },
+    };
+    ACL.registerCondition('test_throwing_sync', throwingHandler);
+    const acl = new ACL([{
+      callers: ['*'], targets: ['target'], effect: 'allow', description: '',
+      conditions: { test_throwing_sync: true },
+    }]);
+    const ctx = makeContext({ callChain: [] });
+    expect(acl.check('module.a', 'target', ctx)).toBe(false);
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('threw — treated as unsatisfied'));
+    warnSpy.mockRestore();
+    (ACL as any).conditionHandlers.delete('test_throwing_sync');
+  });
+});
+
+describe('ACL.asyncCheck', () => {
+  it('allows access when allow rule matches', async () => {
+    const acl = new ACL([
+      { callers: ['module.a'], targets: ['module.b'], effect: 'allow', description: '' },
+    ]);
+    expect(await acl.asyncCheck('module.a', 'module.b')).toBe(true);
+  });
+
+  it('denies access when deny rule matches', async () => {
+    const acl = new ACL([
+      { callers: ['module.a'], targets: ['module.b'], effect: 'deny', description: '' },
+    ]);
+    expect(await acl.asyncCheck('module.a', 'module.b')).toBe(false);
+  });
+
+  it('returns default deny when no rule matches', async () => {
+    const acl = new ACL([
+      { callers: ['module.a'], targets: ['module.b'], effect: 'allow', description: '' },
+    ]);
+    expect(await acl.asyncCheck('other.x', 'other.y')).toBe(false);
+  });
+
+  it('handles null callerId as @external', async () => {
+    const acl = new ACL([
+      { callers: ['@external'], targets: ['module.b'], effect: 'allow', description: '' },
+    ]);
+    expect(await acl.asyncCheck(null, 'module.b')).toBe(true);
+  });
+
+  it('calls auditLogger with rule_match when rule matches', async () => {
+    const entries: unknown[] = [];
+    const acl = new ACL([
+      { callers: ['module.a'], targets: ['module.b'], effect: 'allow', description: 'allow a->b' },
+    ], 'deny', (entry) => entries.push(entry));
+    expect(await acl.asyncCheck('module.a', 'module.b')).toBe(true);
+    expect(entries).toHaveLength(1);
+    expect((entries[0] as Record<string, unknown>)['reason']).toBe('rule_match');
+  });
+
+  it('calls auditLogger with default_effect when no rule matches', async () => {
+    const entries: unknown[] = [];
+    const acl = new ACL([], 'allow', (entry) => entries.push(entry));
+    expect(await acl.asyncCheck('module.a', 'module.b')).toBe(true);
+    expect(entries).toHaveLength(1);
+    expect((entries[0] as Record<string, unknown>)['reason']).toBe('no_rules');
+  });
+
+  it('supports $or compound operator via asyncCheck', async () => {
+    const acl = new ACL([
+      { callers: ['$or', 'module.x', 'module.y'], targets: ['target.z'], effect: 'allow', description: '' },
+    ]);
+    expect(await acl.asyncCheck('module.x', 'target.z')).toBe(true);
+    expect(await acl.asyncCheck('module.y', 'target.z')).toBe(true);
+    expect(await acl.asyncCheck('module.other', 'target.z')).toBe(false);
+  });
+
+  it('supports $not compound operator via asyncCheck', async () => {
+    const acl = new ACL([
+      { callers: ['$not', 'module.blocked'], targets: ['target.z'], effect: 'allow', description: '' },
+    ]);
+    expect(await acl.asyncCheck('module.other', 'target.z')).toBe(true);
+    expect(await acl.asyncCheck('module.blocked', 'target.z')).toBe(false);
+  });
+
+  it('returns false for unknown condition in asyncCheck', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const acl = new ACL([{
+      callers: ['*'], targets: ['target'], effect: 'allow', description: '',
+      conditions: { unknown_condition_xyz: true },
+    }]);
+    const ctx = makeContext({ callChain: [] });
+    expect(await acl.asyncCheck('module.a', 'target', ctx)).toBe(false);
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Unknown ACL condition'));
+    warnSpy.mockRestore();
+  });
+
+  it('returns false when async condition handler throws', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const throwingHandler: ACLConditionHandler = {
+      evaluate: () => { throw new Error('handler error'); },
+    };
+    ACL.registerCondition('test_throwing_async', throwingHandler);
+    const acl = new ACL([{
+      callers: ['*'], targets: ['target'], effect: 'allow', description: '',
+      conditions: { test_throwing_async: true },
+    }]);
+    const ctx = makeContext({ callChain: [] });
+    expect(await acl.asyncCheck('module.a', 'target', ctx)).toBe(false);
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('threw — treated as unsatisfied'));
+    warnSpy.mockRestore();
+    // Cleanup: unregister the test handler
+    (ACL as any).conditionHandlers.delete('test_throwing_async');
   });
 });

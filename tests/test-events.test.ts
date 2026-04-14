@@ -114,6 +114,60 @@ describe('EventEmitter', () => {
     await emitter.flush();
   });
 
+  it('auto-cleans resolved async deliveries from pending without flush', async () => {
+    const emitter = new EventEmitter();
+    let done = false;
+    emitter.subscribe({
+      onEvent: async () => {
+        await Promise.resolve();
+        done = true;
+      },
+    });
+    emitter.emit(createEvent('test', null, 'info', {}));
+    // Wait for the subscriber to resolve naturally, without calling flush()
+    await new Promise<void>((r) => setTimeout(r, 10));
+    expect(done).toBe(true);
+    // _pending should be empty now (auto-cleaned) — flush is a no-op
+    await emitter.flush();
+  });
+
+  it('flush with non-zero timeoutMs completes normally when within deadline', async () => {
+    const emitter = new EventEmitter();
+    let done = false;
+    emitter.subscribe({
+      onEvent: async () => {
+        await new Promise<void>((r) => setTimeout(r, 5));
+        done = true;
+      },
+    });
+    emitter.emit(createEvent('test', null, 'info', {}));
+    await emitter.flush(500);
+    expect(done).toBe(true);
+  });
+
+  it('flush with expired timeout aborts on subsequent pending round', async () => {
+    const emitter = new EventEmitter();
+    let round2Done = false;
+    emitter.subscribe({
+      onEvent: async (event) => {
+        if (event.data['round'] === 1) {
+          await new Promise<void>((r) => setTimeout(r, 50));
+          // Adds a second round of pending promises after deadline has passed
+          emitter.emit(createEvent('test', null, 'info', { round: 2 }));
+        }
+        if (event.data['round'] === 2) {
+          // Make round 2 async so it is tracked in _pending (not set synchronously)
+          await new Promise<void>((r) => setTimeout(r, 10));
+          round2Done = true;
+        }
+      },
+    });
+    emitter.emit(createEvent('test', null, 'info', { round: 1 }));
+    // 10ms deadline — round 1 takes 50ms, so deadline is exceeded before round 2 starts
+    await emitter.flush(10);
+    expect(round2Done).toBe(false);
+  });
+
   it('snapshot prevents mutation during delivery', () => {
     const emitter = new EventEmitter();
     const calls: string[] = [];

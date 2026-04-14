@@ -218,6 +218,33 @@ describe('Registry', () => {
     expect(() => registry.on('invalid', () => {})).toThrow(InvalidInputError);
   });
 
+  it('off removes a registered callback and returns true', () => {
+    const registry = new Registry();
+    const events: string[] = [];
+    const cb = (id: string) => events.push(id);
+    registry.on('register', cb);
+    expect(registry.off('register', cb)).toBe(true);
+    registry.register('test.a', createMod('test.a'));
+    expect(events).toEqual([]);
+  });
+
+  it('off returns false when callback was not registered', () => {
+    const registry = new Registry();
+    expect(registry.off('register', () => {})).toBe(false);
+  });
+
+  it('off throws InvalidInputError for invalid event', () => {
+    const registry = new Registry();
+    expect(() => registry.off('invalid', () => {})).toThrow(InvalidInputError);
+  });
+
+  it('reload delegates to discover and returns module count', async () => {
+    const registry = new Registry();
+    registry.setDiscoverer({ discover: async () => [] });
+    const count = await registry.reload();
+    expect(count).toBe(0);
+  });
+
   it('getDefinition returns descriptor', () => {
     const registry = new Registry();
     const mod = createMod('test.a');
@@ -1517,5 +1544,141 @@ describe('Registry custom validator', () => {
 
     expect(count).toBe(1);
     expect(registry.has('async.validated')).toBe(true);
+  });
+});
+
+
+describe('Registry hot-reload API (acquire/release/drain)', () => {
+  function createMod(id: string): FunctionModule {
+    return new FunctionModule({
+      execute: () => ({}),
+      moduleId: id,
+      inputSchema: Type.Object({}),
+      outputSchema: Type.Object({}),
+      description: 'Test module',
+    });
+  }
+
+  it('acquire increments refCount and release decrements it', () => {
+    const registry = new Registry();
+    registry.register('test.mod', createMod('test.mod'));
+
+    expect(registry.refCount.get('test.mod')).toBeUndefined();
+    registry.acquire('test.mod');
+    expect(registry.refCount.get('test.mod')).toBe(1);
+    registry.release('test.mod');
+    expect(registry.refCount.get('test.mod')).toBeUndefined();
+  });
+
+  it('acquire throws ModuleNotFoundError for unknown module', () => {
+    const registry = new Registry();
+    expect(() => registry.acquire('no.such')).toThrow(ModuleNotFoundError);
+  });
+
+  it('acquire throws ModuleNotFoundError when module is draining', () => {
+    const registry = new Registry();
+    registry.register('drain.mod', createMod('drain.mod'));
+    registry.beginDrain('drain.mod');
+    expect(() => registry.acquire('drain.mod')).toThrow(ModuleNotFoundError);
+  });
+
+  it('isDraining returns true after beginDrain', () => {
+    const registry = new Registry();
+    registry.register('d.mod', createMod('d.mod'));
+    expect(registry.isDraining('d.mod')).toBe(false);
+    registry.beginDrain('d.mod');
+    expect(registry.isDraining('d.mod')).toBe(true);
+    registry.endDrain('d.mod');
+    expect(registry.isDraining('d.mod')).toBe(false);
+  });
+
+  it('release is a no-op when refCount is 0 or undefined', () => {
+    const registry = new Registry();
+    registry.register('test.mod', createMod('test.mod'));
+    // release without acquire should not throw
+    expect(() => registry.release('test.mod')).not.toThrow();
+  });
+
+  it('release keeps count when multiple acquires', () => {
+    const registry = new Registry();
+    registry.register('test.mod', createMod('test.mod'));
+    registry.acquire('test.mod');
+    registry.acquire('test.mod');
+    expect(registry.refCount.get('test.mod')).toBe(2);
+    registry.release('test.mod');
+    expect(registry.refCount.get('test.mod')).toBe(1);
+    registry.release('test.mod');
+    expect(registry.refCount.get('test.mod')).toBeUndefined();
+  });
+
+  it('waitDrained resolves immediately when no in-flight executions', async () => {
+    const registry = new Registry();
+    registry.register('test.mod', createMod('test.mod'));
+    const result = await registry.waitDrained('test.mod');
+    expect(result).toBe(true);
+  });
+
+  it('waitDrained resolves when release clears refCount', async () => {
+    const registry = new Registry();
+    registry.register('test.mod', createMod('test.mod'));
+    registry.acquire('test.mod');
+    const drainPromise = registry.waitDrained('test.mod', 5000);
+    registry.release('test.mod');
+    expect(await drainPromise).toBe(true);
+  });
+
+  it('waitDrained resolves false on timeout when refCount stays positive', async () => {
+    const registry = new Registry();
+    registry.register('test.mod', createMod('test.mod'));
+    registry.acquire('test.mod');
+    const result = await registry.waitDrained('test.mod', 10); // 10ms timeout
+    expect(result).toBe(false);
+    // Cleanup
+    registry.release('test.mod');
+  });
+
+  it('safeUnregister returns false for unknown module', async () => {
+    const registry = new Registry();
+    const result = await registry.safeUnregister('no.such');
+    expect(result).toBe(false);
+  });
+
+  it('safeUnregister cleanly unregisters a non-acquired module', async () => {
+    const registry = new Registry();
+    registry.register('test.mod', createMod('test.mod'));
+    const result = await registry.safeUnregister('test.mod');
+    expect(result).toBe(true);
+    expect(registry.has('test.mod')).toBe(false);
+  });
+
+  it('safeUnregister force-unloads and warns after timeout', async () => {
+    const registry = new Registry();
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    registry.register('test.mod', createMod('test.mod'));
+    registry.acquire('test.mod'); // hold a ref so it never drains
+    const result = await registry.safeUnregister('test.mod', 10); // 10ms timeout
+    expect(result).toBe(false);
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Force-unloading'));
+    warnSpy.mockRestore();
+  });
+
+  it('exportSchema returns null for unknown module', () => {
+    const registry = new Registry();
+    expect(registry.exportSchema('no.such')).toBeNull();
+  });
+
+  it('exportSchema returns strict schema when strict=true', () => {
+    const registry = new Registry();
+    const mod = createMod('test.mod');
+    registry.register('test.mod', mod);
+    const result = registry.exportSchema('test.mod', true);
+    expect(result).not.toBeNull();
+  });
+
+  it('clearCache clears the schema cache', () => {
+    const registry = new Registry();
+    registry.register('test.mod', createMod('test.mod'));
+    registry.exportSchema('test.mod'); // populate cache
+    expect(() => registry.clearCache()).not.toThrow();
   });
 });

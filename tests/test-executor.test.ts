@@ -13,6 +13,7 @@ import {
   CircularCallError,
   CallFrequencyExceededError,
   SchemaValidationError,
+  InvalidInputError,
 } from '../src/errors.js';
 
 function createSimpleModule(id: string): FunctionModule {
@@ -89,6 +90,13 @@ describe('Executor', () => {
     const executor = new Executor({ registry });
 
     await expect(executor.call('nonexistent')).rejects.toThrow(ModuleNotFoundError);
+  });
+
+  it('throws InvalidInputError for invalid module ID in call()', async () => {
+    const registry = new Registry();
+    const executor = new Executor({ registry });
+
+    await expect(executor.call('INVALID-MODULE-ID!!')).rejects.toThrow(InvalidInputError);
   });
 
   it('validates input against schema', async () => {
@@ -378,6 +386,22 @@ describe('Executor', () => {
     const executor = new Executor({ registry });
     const result = await executor.validate('approval.test', { x: 42 });
     expect(result.valid).toBe(true);
+    expect(result.requiresApproval).toBe(true);
+  });
+
+  it('validate() detects snake_case requires_approval annotation', async () => {
+    const registry = new Registry();
+    const mod = {
+      execute: () => ({ ok: true }),
+      inputSchema: Type.Object({}),
+      outputSchema: Type.Object({ ok: Type.Boolean() }),
+      description: 'Snake case approval test',
+      annotations: { requires_approval: true },
+    };
+    registry.register('snake.approval', mod as any);
+
+    const executor = new Executor({ registry });
+    const result = await executor.validate('snake.approval', {});
     expect(result.requiresApproval).toBe(true);
   });
 

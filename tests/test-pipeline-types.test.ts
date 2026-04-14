@@ -342,6 +342,20 @@ describe('StepNotReplaceableError', () => {
     expect(err).toBeInstanceOf(ModuleError);
     expect(err.code).toBe('STEP_NOT_REPLACEABLE');
   });
+
+  it('passes options to parent constructor', () => {
+    const cause = new Error('root');
+    const err = new StepNotReplaceableError('no replace', {
+      cause,
+      traceId: 'trace-r1',
+      retryable: false,
+      aiGuidance: 'use a different step',
+      userFixable: true,
+      suggestion: 'replace with allowed step',
+    });
+    expect(err.cause).toBe(cause);
+    expect(err.traceId).toBe('trace-r1');
+  });
 });
 
 describe('StepNameDuplicateError', () => {
@@ -350,6 +364,20 @@ describe('StepNameDuplicateError', () => {
     expect(err).toBeInstanceOf(ModuleError);
     expect(err.code).toBe('STEP_NAME_DUPLICATE');
   });
+
+  it('passes options to parent constructor', () => {
+    const cause = new Error('root');
+    const err = new StepNameDuplicateError('duplicate', {
+      cause,
+      traceId: 'trace-d1',
+      retryable: false,
+      aiGuidance: 'rename the step',
+      userFixable: true,
+      suggestion: 'use unique step names',
+    });
+    expect(err.cause).toBe(cause);
+    expect(err.traceId).toBe('trace-d1');
+  });
 });
 
 describe('StrategyNotFoundError', () => {
@@ -357,6 +385,20 @@ describe('StrategyNotFoundError', () => {
     const err = new StrategyNotFoundError('no strategy');
     expect(err).toBeInstanceOf(ModuleError);
     expect(err.code).toBe('STRATEGY_NOT_FOUND');
+  });
+
+  it('passes options to parent constructor', () => {
+    const cause = new Error('root');
+    const err = new StrategyNotFoundError('missing', {
+      cause,
+      traceId: 'trace-s1',
+      retryable: false,
+      aiGuidance: 'check strategy name',
+      userFixable: true,
+      suggestion: 'use a valid strategy',
+    });
+    expect(err.cause).toBe(cause);
+    expect(err.traceId).toBe('trace-s1');
   });
 });
 
@@ -519,5 +561,275 @@ describe('PipelineEngine', () => {
     }
     expect(trace.totalDurationMs).toBeGreaterThanOrEqual(0);
     expect(trace.moduleId).toBe('test.mod');
+  });
+
+  it('skips step when matchModules does not match the current moduleId', async () => {
+    const executed: string[] = [];
+    const steps: Step[] = [
+      {
+        name: 'filtered',
+        description: 'Filtered step',
+        removable: true,
+        replaceable: true,
+        matchModules: ['other.module'],
+        execute: async (): Promise<StepResult> => {
+          executed.push('filtered');
+          return { action: 'continue' };
+        },
+      },
+      {
+        name: 'always',
+        description: 'Always runs',
+        removable: true,
+        replaceable: true,
+        execute: async (): Promise<StepResult> => {
+          executed.push('always');
+          return { action: 'continue' };
+        },
+      },
+    ];
+    const strategy = new ExecutionStrategy('match_filter', steps);
+    const ctx = makePipelineContext('test.mod');
+    const engine = new PipelineEngine();
+
+    const [, trace] = await engine.run(strategy, ctx);
+
+    expect(executed).toEqual(['always']);
+    expect(trace.steps[0].skipped).toBe(true);
+    expect(trace.steps[0].skipReason).toBe('no_match');
+    expect(trace.steps[1].skipped).toBe(false);
+  });
+
+  it('runs step when matchModules matches the current moduleId', async () => {
+    const executed: string[] = [];
+    const steps: Step[] = [
+      {
+        name: 'matched',
+        description: 'Matches',
+        removable: true,
+        replaceable: true,
+        matchModules: ['test.mod'],
+        execute: async (): Promise<StepResult> => {
+          executed.push('matched');
+          return { action: 'continue' };
+        },
+      },
+    ];
+    const strategy = new ExecutionStrategy('match_hit', steps);
+    const ctx = makePipelineContext('test.mod');
+    const engine = new PipelineEngine();
+
+    await engine.run(strategy, ctx);
+
+    expect(executed).toEqual(['matched']);
+  });
+
+  it('skips non-pure steps in dry_run mode', async () => {
+    const executed: string[] = [];
+    const steps: Step[] = [
+      {
+        name: 'impure',
+        description: 'Has side effects',
+        removable: true,
+        replaceable: true,
+        pure: false,
+        execute: async (): Promise<StepResult> => {
+          executed.push('impure');
+          return { action: 'continue' };
+        },
+      },
+      {
+        name: 'pure',
+        description: 'Pure read-only',
+        removable: true,
+        replaceable: true,
+        pure: true,
+        execute: async (): Promise<StepResult> => {
+          executed.push('pure');
+          return { action: 'continue' };
+        },
+      },
+    ];
+    const strategy = new ExecutionStrategy('dry_run_test', steps);
+    const ctx: PipelineContext = { ...makePipelineContext(), dryRun: true };
+    const engine = new PipelineEngine();
+
+    const [, trace] = await engine.run(strategy, ctx);
+
+    expect(executed).toEqual(['pure']);
+    expect(trace.steps[0].skipped).toBe(true);
+    expect(trace.steps[0].skipReason).toBe('dry_run');
+    expect(trace.steps[1].skipped).toBe(false);
+  });
+
+  it('continues execution when ignoreErrors is true on a failing step', async () => {
+    const executed: string[] = [];
+    const steps: Step[] = [
+      {
+        name: 'failing',
+        description: 'Throws but ignored',
+        removable: true,
+        replaceable: true,
+        ignoreErrors: true,
+        execute: async (): Promise<StepResult> => {
+          throw new Error('step failed');
+        },
+      },
+      {
+        name: 'after',
+        description: 'Runs after failure',
+        removable: true,
+        replaceable: true,
+        execute: async (): Promise<StepResult> => {
+          executed.push('after');
+          return { action: 'continue' };
+        },
+      },
+    ];
+    const strategy = new ExecutionStrategy('ignore_err', steps);
+    const ctx = makePipelineContext();
+    const engine = new PipelineEngine();
+
+    const [, trace] = await engine.run(strategy, ctx);
+
+    expect(executed).toEqual(['after']);
+    expect(trace.success).toBe(true);
+    expect(trace.steps[0].skipReason).toBe('error_ignored');
+    expect(trace.steps[0].result.explanation).toContain('step failed');
+  });
+
+  it('records String(exc) when ignoreErrors throws a non-Error value', async () => {
+    const steps: Step[] = [
+      {
+        name: 'throws_string',
+        description: 'Throws a string, not an Error',
+        removable: true,
+        replaceable: true,
+        ignoreErrors: true,
+        execute: async (): Promise<StepResult> => {
+          // eslint-disable-next-line no-throw-literal
+          throw 'raw string thrown';
+        },
+      },
+    ];
+    const strategy = new ExecutionStrategy('non_error_throw', steps);
+    const ctx = makePipelineContext();
+    const engine = new PipelineEngine();
+
+    const [, trace] = await engine.run(strategy, ctx);
+    expect(trace.steps[0].result.explanation).toBe('raw string thrown');
+  });
+
+  it('records String(exc) in abort trace when a non-Error is thrown without ignoreErrors', async () => {
+    const steps: Step[] = [
+      {
+        name: 'throws_string',
+        description: 'Throws a string',
+        removable: true,
+        replaceable: true,
+        execute: async (): Promise<StepResult> => {
+          // eslint-disable-next-line no-throw-literal
+          throw 'direct string error';
+        },
+      },
+    ];
+    const strategy = new ExecutionStrategy('non_error_abort', steps);
+    const ctx = makePipelineContext();
+    const engine = new PipelineEngine();
+
+    await expect(engine.run(strategy, ctx)).rejects.toBe('direct string error');
+  });
+
+  it('abort step without explanation or alternatives uses null defaults', async () => {
+    const steps: Step[] = [
+      makeStepWithResult('abort', { action: 'abort' }),
+    ];
+    const strategy = new ExecutionStrategy('no_explanation_abort', steps);
+    const ctx = makePipelineContext();
+    const engine = new PipelineEngine();
+
+    try {
+      await engine.run(strategy, ctx);
+    } catch (e) {
+      const err = e as PipelineAbortError;
+      expect(err.explanation).toBeNull();
+      expect(err.alternatives).toBeNull();
+    }
+  });
+
+  it('per-step timeout aborts the step when exceeded', async () => {
+    const steps: Step[] = [
+      {
+        name: 'slow',
+        description: 'Takes too long',
+        removable: true,
+        replaceable: true,
+        timeoutMs: 20,
+        execute: async (): Promise<StepResult> => {
+          await new Promise<void>((r) => setTimeout(r, 200));
+          return { action: 'continue' };
+        },
+      },
+    ];
+    const strategy = new ExecutionStrategy('timeout_test', steps);
+    const ctx = makePipelineContext();
+    const engine = new PipelineEngine();
+
+    await expect(engine.run(strategy, ctx)).rejects.toThrow("timed out");
+  });
+
+  it('per-step timeout clears timer when step completes within timeout', async () => {
+    const steps: Step[] = [
+      {
+        name: 'fast_with_timeout',
+        description: 'Completes before timeout',
+        removable: true,
+        replaceable: true,
+        timeoutMs: 5000,
+        execute: async (): Promise<StepResult> => ({ action: 'continue' }),
+      },
+    ];
+    const strategy = new ExecutionStrategy('fast_timeout', steps);
+    const ctx = makePipelineContext();
+    const engine = new PipelineEngine();
+
+    const [, trace] = await engine.run(strategy, ctx);
+    expect(trace.success).toBe(true);
+  });
+
+  it('throws StepNotFoundError for unknown step action', async () => {
+    const steps: Step[] = [
+      {
+        name: 'bad_action',
+        description: 'Returns unknown action',
+        removable: true,
+        replaceable: true,
+        execute: async (): Promise<StepResult> => ({ action: 'unknown_action' as StepResult['action'] }),
+      },
+    ];
+    const strategy = new ExecutionStrategy('bad_action_test', steps);
+    const ctx = makePipelineContext();
+    const engine = new PipelineEngine();
+
+    await expect(engine.run(strategy, ctx)).rejects.toThrow(StepNotFoundError);
+  });
+
+  it('skip_to with undefined skipTo falls back to empty string target', async () => {
+    const steps: Step[] = [
+      {
+        name: 'skipper',
+        description: 'Skips without target',
+        removable: true,
+        replaceable: true,
+        execute: async (): Promise<StepResult> => ({ action: 'skip_to' }),
+      },
+      makeStepWithResult('next', { action: 'continue' }),
+    ];
+    const strategy = new ExecutionStrategy('skip_no_target', steps);
+    const ctx = makePipelineContext();
+    const engine = new PipelineEngine();
+
+    // skipTo is undefined, target becomes '' which findIndex won't find → throws StepNotFoundError
+    await expect(engine.run(strategy, ctx)).rejects.toThrow(StepNotFoundError);
   });
 });

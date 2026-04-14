@@ -30,6 +30,9 @@ import {
   ApprovalTimeoutError,
   ApprovalPendingError,
   ErrorCodes,
+  ConfigEnvMapConflictError,
+  ConfigBindError,
+  ErrorFormatterDuplicateError,
 } from '../src/errors.js';
 import type { ErrorOptions } from '../src/errors.js';
 
@@ -886,5 +889,67 @@ describe('Approval error subclasses', () => {
     expect(err.retryable).toBe(false);
     expect(err.aiGuidance).toBe('poll for approval status');
     expect(err.suggestion).toBe('Wait for approval or contact approver');
+  });
+});
+
+describe('ConfigEnvMapConflictError', () => {
+  it('creates error with correct code and message', () => {
+    const err = new ConfigEnvMapConflictError('MY_VAR', 'config.owner');
+    expect(err).toBeInstanceOf(ModuleError);
+    expect(err.code).toBe('CONFIG_ENV_MAP_CONFLICT');
+    expect(err.message).toContain('MY_VAR');
+    expect(err.message).toContain('config.owner');
+    expect(err.name).toBe('ConfigEnvMapConflictError');
+  });
+
+  it('passes options to parent constructor', () => {
+    const cause = new Error('root');
+    const err = new ConfigEnvMapConflictError('MY_VAR', 'config.owner', {
+      cause,
+      traceId: 'trace-abc',
+      retryable: false,
+      aiGuidance: 'check config',
+      userFixable: true,
+      suggestion: 'remove duplicate mapping',
+    });
+    expect(err.cause).toBe(cause);
+    expect(err.traceId).toBe('trace-abc');
+    expect(err.retryable).toBe(false);
+  });
+});
+
+describe('ConfigBindError', () => {
+  it('passes options to parent constructor', () => {
+    const cause = new Error('root');
+    const err = new ConfigBindError('bind failed', {
+      cause,
+      traceId: 'trace-xyz',
+      retryable: false,
+      aiGuidance: 'check config',
+      userFixable: true,
+      suggestion: 'fix binding',
+    });
+    expect(err).toBeInstanceOf(ModuleError);
+    expect(err.code).toBe('CONFIG_BIND_ERROR');
+    expect(err.cause).toBe(cause);
+    expect(err.traceId).toBe('trace-xyz');
+  });
+});
+
+describe('ErrorFormatterDuplicateError', () => {
+  it('passes options to parent constructor', () => {
+    const cause = new Error('dup');
+    const err = new ErrorFormatterDuplicateError('json', {
+      cause,
+      traceId: 'trace-fmt',
+      retryable: false,
+      aiGuidance: 'use unique names',
+      userFixable: false,
+      suggestion: 'rename adapter',
+    });
+    expect(err).toBeInstanceOf(ModuleError);
+    expect(err.code).toBe('ERROR_FORMATTER_DUPLICATE');
+    expect(err.cause).toBe(cause);
+    expect(err.message).toContain('json');
   });
 });
