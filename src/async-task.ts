@@ -56,13 +56,13 @@ export class AsyncTaskManager {
   /**
    * Submit a module for background execution.
    *
-   * Returns the generated task_id immediately.
+   * Returns the generated task_id. Async to satisfy the cross-SDK protocol contract.
    */
-  submit(
+  async submit(
     moduleId: string,
     inputs: Record<string, unknown>,
     context?: Context | null,
-  ): string {
+  ): Promise<string> {
     if (this._tasks.size >= this._maxTasks) {
       throw new Error(`Task limit reached (${this._maxTasks})`);
     }
@@ -127,8 +127,9 @@ export class AsyncTaskManager {
    * will be discarded when it completes.
    *
    * Returns true if the task was successfully marked as cancelled.
+   * Async to satisfy the cross-SDK protocol contract.
    */
-  cancel(taskId: string): boolean {
+  async cancel(taskId: string): Promise<boolean> {
     const internal = this._tasks.get(taskId);
     if (!internal) return false;
 
@@ -176,14 +177,17 @@ export class AsyncTaskManager {
   }
 
   /**
-   * Cancel all pending and running tasks.
+   * Cancel all pending and running tasks and wait for them to settle.
    */
-  shutdown(): void {
+  async shutdown(): Promise<void> {
+    const promises: Promise<void>[] = [];
     for (const [taskId, task] of this._tasks) {
       if (task.info.status === TaskStatus.PENDING || task.info.status === TaskStatus.RUNNING) {
-        this.cancel(taskId);
+        void this.cancel(taskId);
+        promises.push(task.promise);
       }
     }
+    await Promise.allSettled(promises);
   }
 
   /**

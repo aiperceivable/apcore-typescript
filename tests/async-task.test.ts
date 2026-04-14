@@ -69,7 +69,7 @@ describe('AsyncTaskManager', () => {
   describe('submit and status transitions', () => {
     it('submits a task and transitions to COMPLETED', async () => {
       const { manager } = createManager();
-      const taskId = manager.submit('test.simple', { x: 42 });
+      const taskId = await manager.submit('test.simple', { x: 42 });
 
       const info = manager.getStatus(taskId);
       expect(info).not.toBeNull();
@@ -86,10 +86,10 @@ describe('AsyncTaskManager', () => {
       expect(completed!.error).toBeNull();
     });
 
-    it('returns a unique task id', () => {
+    it('returns a unique task id', async () => {
       const { manager } = createManager();
-      const id1 = manager.submit('test.simple', { x: 1 });
-      const id2 = manager.submit('test.simple', { x: 2 });
+      const id1 = await manager.submit('test.simple', { x: 1 });
+      const id2 = await manager.submit('test.simple', { x: 2 });
       expect(id1).not.toBe(id2);
     });
   });
@@ -97,7 +97,7 @@ describe('AsyncTaskManager', () => {
   describe('task failure', () => {
     it('sets status to FAILED with error message', async () => {
       const { manager } = createManager();
-      const taskId = manager.submit('test.failing', {});
+      const taskId = await manager.submit('test.failing', {});
 
       await wait(100);
 
@@ -113,7 +113,7 @@ describe('AsyncTaskManager', () => {
   describe('task cancellation', () => {
     it('cancels a running task', async () => {
       const { manager } = createManager();
-      const taskId = manager.submit('test.slow', { delay: 60000 });
+      const taskId = await manager.submit('test.slow', { delay: 60000 });
 
       await wait(100);
 
@@ -121,7 +121,7 @@ describe('AsyncTaskManager', () => {
       expect(info).not.toBeNull();
       expect(info!.status).toBe(TaskStatus.RUNNING);
 
-      const cancelled = manager.cancel(taskId);
+      const cancelled = await manager.cancel(taskId);
       expect(cancelled).toBe(true);
 
       const after = manager.getStatus(taskId);
@@ -130,20 +130,20 @@ describe('AsyncTaskManager', () => {
       expect(after!.completedAt).not.toBeNull();
     });
 
-    it('returns false for nonexistent task', () => {
+    it('returns false for nonexistent task', async () => {
       const { manager } = createManager();
-      const result = manager.cancel('no-such-id');
+      const result = await manager.cancel('no-such-id');
       expect(result).toBe(false);
     });
 
     it('returns false for already completed task', async () => {
       const { manager } = createManager();
-      const taskId = manager.submit('test.simple', { x: 1 });
+      const taskId = await manager.submit('test.simple', { x: 1 });
       await wait(100);
 
       expect(manager.getStatus(taskId)!.status).toBe(TaskStatus.COMPLETED);
 
-      const result = manager.cancel(taskId);
+      const result = await manager.cancel(taskId);
       expect(result).toBe(false);
     });
   });
@@ -152,10 +152,12 @@ describe('AsyncTaskManager', () => {
     it('limits concurrent executions to maxConcurrent', async () => {
       const { manager } = createManager(2);
 
-      const taskIds: string[] = [];
-      for (let i = 0; i < 4; i++) {
-        taskIds.push(manager.submit('test.slow', { delay: 60000 }));
-      }
+      const taskIds = await Promise.all([
+        manager.submit('test.slow', { delay: 60000 }),
+        manager.submit('test.slow', { delay: 60000 }),
+        manager.submit('test.slow', { delay: 60000 }),
+        manager.submit('test.slow', { delay: 60000 }),
+      ]);
 
       await wait(200);
 
@@ -165,17 +167,14 @@ describe('AsyncTaskManager', () => {
       expect(running.length).toBeLessThanOrEqual(2);
       expect(running.length + pending.length).toBe(4);
 
-      // Cleanup: cancel all (synchronous, no need to await)
-      for (const id of taskIds) {
-        manager.cancel(id);
-      }
+      await Promise.all(taskIds.map(id => manager.cancel(id)));
     });
   });
 
   describe('getResult', () => {
     it('returns result for completed task', async () => {
       const { manager } = createManager();
-      const taskId = manager.submit('test.simple', { x: 99 });
+      const taskId = await manager.submit('test.simple', { x: 99 });
       await wait(100);
 
       const result = manager.getResult(taskId);
@@ -187,13 +186,13 @@ describe('AsyncTaskManager', () => {
       expect(() => manager.getResult('no-such-task')).toThrow('Task not found');
     });
 
-    it('throws for non-completed task', () => {
+    it('throws for non-completed task', async () => {
       const { manager } = createManager();
-      const taskId = manager.submit('test.slow', { delay: 60000 });
+      const taskId = await manager.submit('test.slow', { delay: 60000 });
 
       expect(() => manager.getResult(taskId)).toThrow('not completed');
 
-      manager.cancel(taskId);
+      await manager.cancel(taskId);
     });
   });
 
@@ -207,8 +206,8 @@ describe('AsyncTaskManager', () => {
   describe('listTasks', () => {
     it('returns all tasks', async () => {
       const { manager } = createManager();
-      manager.submit('test.simple', { x: 1 });
-      manager.submit('test.simple', { x: 2 });
+      await manager.submit('test.simple', { x: 1 });
+      await manager.submit('test.simple', { x: 2 });
       await wait(100);
 
       const all = manager.listTasks();
@@ -217,8 +216,8 @@ describe('AsyncTaskManager', () => {
 
     it('filters tasks by status', async () => {
       const { manager } = createManager();
-      manager.submit('test.simple', { x: 1 });
-      manager.submit('test.failing', {});
+      await manager.submit('test.simple', { x: 1 });
+      await manager.submit('test.failing', {});
       await wait(100);
 
       const completed = manager.listTasks(TaskStatus.COMPLETED);
@@ -229,18 +228,18 @@ describe('AsyncTaskManager', () => {
   });
 
   describe('max tasks limit', () => {
-    it('throws when task limit is exceeded', () => {
+    it('throws when task limit is exceeded', async () => {
       const { manager } = createManager();
       // Create a manager with a small limit
       const registry = createRegistry();
       const executor = new Executor({ registry });
       const limitedManager = new AsyncTaskManager(executor, 10, 3);
 
-      limitedManager.submit('test.simple', { x: 1 });
-      limitedManager.submit('test.simple', { x: 2 });
-      limitedManager.submit('test.simple', { x: 3 });
+      await limitedManager.submit('test.simple', { x: 1 });
+      await limitedManager.submit('test.simple', { x: 2 });
+      await limitedManager.submit('test.simple', { x: 3 });
 
-      expect(() => limitedManager.submit('test.simple', { x: 4 })).toThrow(
+      await expect(limitedManager.submit('test.simple', { x: 4 })).rejects.toThrow(
         'Task limit reached (3)',
       );
     });
@@ -250,14 +249,14 @@ describe('AsyncTaskManager', () => {
       const executor = new Executor({ registry });
       const limitedManager = new AsyncTaskManager(executor, 10, 2);
 
-      limitedManager.submit('test.simple', { x: 1 });
-      limitedManager.submit('test.simple', { x: 2 });
+      await limitedManager.submit('test.simple', { x: 1 });
+      await limitedManager.submit('test.simple', { x: 2 });
 
       await wait(100);
       limitedManager.cleanup(0);
 
       // Should succeed after cleanup
-      const taskId = limitedManager.submit('test.simple', { x: 3 });
+      const taskId = await limitedManager.submit('test.simple', { x: 3 });
       expect(taskId).toBeDefined();
     });
   });
@@ -275,18 +274,18 @@ describe('AsyncTaskManager', () => {
       const mgr = new AsyncTaskManager(executor, 1);
 
       // Submit a long-enough task to fill the single slot
-      const firstId = mgr.submit('test.slow', { delay: 500 });
+      const firstId = await mgr.submit('test.slow', { delay: 500 });
       await wait(10);
 
       // Submit a second task -- it will be waiting in the queue
-      const queuedId = mgr.submit('test.slow', { delay: 500 });
+      const queuedId = await mgr.submit('test.slow', { delay: 500 });
       await wait(10);
 
       // The queued task should still be PENDING (firstId has ~480ms left)
       expect(mgr.getStatus(queuedId)!.status).toBe(TaskStatus.PENDING);
 
       // Cancel the queued task while it's waiting for a slot
-      mgr.cancel(queuedId);
+      await mgr.cancel(queuedId);
 
       // Wait for the first task to complete, which releases the slot
       // and wakes the cancelled queued task. The queued task should
@@ -303,10 +302,71 @@ describe('AsyncTaskManager', () => {
     });
   });
 
+  describe('async API contract', () => {
+    it('submit() returns a Promise', async () => {
+      const { manager } = createManager();
+      const result = manager.submit('test.simple', { x: 1 });
+      expect(result).toBeInstanceOf(Promise);
+      await result;
+    });
+
+    it('cancel() returns a Promise', async () => {
+      const { manager } = createManager();
+      const taskId = await manager.submit('test.simple', { x: 1 });
+      const result = manager.cancel(taskId);
+      expect(result).toBeInstanceOf(Promise);
+      await result;
+    });
+
+    it('shutdown() returns a Promise', async () => {
+      const { manager } = createManager();
+      const result = manager.shutdown();
+      expect(result).toBeInstanceOf(Promise);
+      await result;
+    });
+  });
+
+  describe('shutdown', () => {
+    it('cancels all pending and running tasks', async () => {
+      const { manager } = createManager(1);
+      const [taskId1, taskId2] = await Promise.all([
+        manager.submit('test.slow', { delay: 200 }),
+        manager.submit('test.slow', { delay: 200 }),
+      ]);
+
+      await wait(100);
+
+      await manager.shutdown();
+
+      expect(manager.getStatus(taskId1)!.status).toBe(TaskStatus.CANCELLED);
+      expect(manager.getStatus(taskId2)!.status).toBe(TaskStatus.CANCELLED);
+    });
+
+    it('is a no-op when no tasks are running', async () => {
+      const { manager } = createManager();
+      await expect(manager.shutdown()).resolves.toBeUndefined();
+    });
+
+    it('waits for in-flight tasks to settle after cancellation', async () => {
+      const { manager } = createManager();
+      // Short delay so the task is running but finishes quickly once cancel is called
+      const taskId = await manager.submit('test.slow', { delay: 200 });
+
+      await wait(50); // let task start running
+      expect(manager.getStatus(taskId)!.status).toBe(TaskStatus.RUNNING);
+
+      await manager.shutdown();
+
+      // After shutdown resolves, the task should be in a terminal state
+      const finalStatus = manager.getStatus(taskId)!.status;
+      expect([TaskStatus.CANCELLED, TaskStatus.COMPLETED, TaskStatus.FAILED]).toContain(finalStatus);
+    });
+  });
+
   describe('cleanup', () => {
     it('removes old completed tasks', async () => {
       const { manager } = createManager();
-      const taskId = manager.submit('test.simple', { x: 1 });
+      const taskId = await manager.submit('test.simple', { x: 1 });
       await wait(100);
 
       expect(manager.getStatus(taskId)!.status).toBe(TaskStatus.COMPLETED);
@@ -318,7 +378,7 @@ describe('AsyncTaskManager', () => {
 
     it('preserves recent tasks', async () => {
       const { manager } = createManager();
-      manager.submit('test.simple', { x: 1 });
+      await manager.submit('test.simple', { x: 1 });
       await wait(100);
 
       const removed = manager.cleanup(3600);
@@ -328,13 +388,13 @@ describe('AsyncTaskManager', () => {
 
     it('preserves running tasks', async () => {
       const { manager } = createManager();
-      const taskId = manager.submit('test.slow', { delay: 60000 });
+      const taskId = await manager.submit('test.slow', { delay: 60000 });
       await wait(100);
 
       const removed = manager.cleanup(0);
       expect(removed).toBe(0);
 
-      manager.cancel(taskId);
+      await manager.cancel(taskId);
     });
   });
 });
