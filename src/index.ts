@@ -114,19 +114,11 @@ export {
   unregisterSubscriberType,
   resetSubscriberRegistry,
   ToggleState,
-  ToggleFeatureModule,
   DEFAULT_TOGGLE_STATE,
   isModuleDisabled,
   checkModuleDisabled,
-  HealthSummaryModule,
-  HealthModule,
   classifyHealthStatus,
-  ManifestModule,
-  ManifestFullModule,
-  UpdateConfigModule,
-  ReloadModule,
-  UsageSummaryModule,
-  UsageModule,
+  UpdateConfigModule, // public: sys-module class needed for custom registration
 } from './sys-modules/index.js';
 export type { SysModulesContext } from './sys-modules/index.js';
 

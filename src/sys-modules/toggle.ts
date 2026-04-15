@@ -54,6 +54,7 @@ export function checkModuleDisabled(moduleId: string): void {
 /**
  * Disable or enable a module without unloading it from the Registry.
  * A disabled module remains registered but calls return MODULE_DISABLED error.
+ * @internal
  */
 export class ToggleFeatureModule {
   readonly description = 'Disable or enable a module without unloading it';

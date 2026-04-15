@@ -6,6 +6,7 @@ import type { Registry } from '../registry/registry.js';
 import type { Config } from '../config.js';
 import { InvalidInputError, ModuleNotFoundError } from '../errors.js';
 
+/** @internal */
 export class ManifestModule {
   readonly description = 'Full manifest for a registered module including source path';
   readonly annotations = { readonly: true, destructive: false, idempotent: true, requiresApproval: false, openWorld: false, streaming: false, cacheable: false, cacheTtl: 0, cacheKeyFields: null, paginated: false, paginationStyle: 'cursor' as const };
@@ -77,6 +78,7 @@ export class ManifestModule {
   }
 }
 
+/** @internal */
 export class ManifestFullModule {
   readonly description = 'Complete system manifest with filtering by prefix and tags';
   readonly annotations = { readonly: true, destructive: false, idempotent: true, requiresApproval: false, openWorld: false, streaming: false, cacheable: false, cacheTtl: 0, cacheKeyFields: null, paginated: false, paginationStyle: 'cursor' as const };
