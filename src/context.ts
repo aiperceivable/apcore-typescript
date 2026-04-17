@@ -4,8 +4,8 @@
 
 import { v4 as uuidv4 } from 'uuid';
 import type { CancelToken } from './cancel.js';
-import type { TraceParent } from './trace-context.js';
 import { ContextLogger } from './observability/context-logger.js';
+import type { TraceParent } from './trace-context.js';
 
 export interface Identity {
   readonly id: string;
@@ -20,7 +20,12 @@ export function createIdentity(
   roles: string[] = [],
   attrs: Record<string, unknown> = {},
 ): Identity {
-  return Object.freeze({ id, type, roles: Object.freeze([...roles]), attrs: Object.freeze({ ...attrs }) });
+  return Object.freeze({
+    id,
+    type,
+    roles: Object.freeze([...roles]),
+    attrs: Object.freeze({ ...attrs }),
+  });
 }
 
 export class Context<T = null> {
@@ -30,6 +35,7 @@ export class Context<T = null> {
   readonly executor: unknown;
   readonly identity: Identity | null;
   redactedInputs: Record<string, unknown> | null;
+  redactedOutput: Record<string, unknown> | null;
   readonly data: Record<string, unknown>;
   readonly services: T;
   readonly cancelToken: CancelToken | null;
@@ -53,6 +59,7 @@ export class Context<T = null> {
     this.executor = executor;
     this.identity = identity;
     this.redactedInputs = redactedInputs;
+    this.redactedOutput = null;
     this.data = data;
     this.services = services;
     this.cancelToken = cancelToken;
@@ -115,16 +122,21 @@ export class Context<T = null> {
       trace_id: this.traceId,
       caller_id: this.callerId,
       call_chain: [...this.callChain],
-      identity: this.identity ? {
-        id: this.identity.id,
-        type: this.identity.type,
-        roles: [...this.identity.roles],
-        attrs: { ...this.identity.attrs },
-      } : null,
+      identity: this.identity
+        ? {
+            id: this.identity.id,
+            type: this.identity.type,
+            roles: [...this.identity.roles],
+            attrs: { ...this.identity.attrs },
+          }
+        : null,
       data: filteredData,
     };
     if (this.redactedInputs !== undefined && this.redactedInputs !== null) {
       result.redacted_inputs = { ...this.redactedInputs };
+    }
+    if (this.redactedOutput !== undefined && this.redactedOutput !== null) {
+      result.redacted_output = { ...this.redactedOutput };
     }
     return result;
   }
@@ -142,19 +154,21 @@ export class Context<T = null> {
     if (version > 1) {
       console.warn(
         `[apcore:context] Unknown _context_version ${version} (expected 1). ` +
-        'Proceeding with best-effort deserialization.',
+          'Proceeding with best-effort deserialization.',
       );
     }
 
     const identityData = data.identity as Record<string, unknown> | null | undefined;
-    const identity = identityData ? createIdentity(
-      identityData.id as string,
-      (identityData.type as string) ?? 'user',
-      Array.isArray(identityData.roles) ? identityData.roles as string[] : [],
-      (identityData.attrs && typeof identityData.attrs === 'object'
-        ? identityData.attrs as Record<string, unknown>
-        : {}),
-    ) : null;
+    const identity = identityData
+      ? createIdentity(
+          identityData.id as string,
+          (identityData.type as string) ?? 'user',
+          Array.isArray(identityData.roles) ? (identityData.roles as string[]) : [],
+          identityData.attrs && typeof identityData.attrs === 'object'
+            ? (identityData.attrs as Record<string, unknown>)
+            : {},
+        )
+      : null;
 
     return new Context(
       (data.trace_id as string) ?? '',

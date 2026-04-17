@@ -9,7 +9,6 @@
 import type { TSchema } from '@sinclair/typebox';
 import { Kind } from '@sinclair/typebox';
 import { Value } from '@sinclair/typebox/value';
-import { jsonSchemaToTypeBox } from './schema/loader.js';
 import type { ACL } from './acl.js';
 import type { ApprovalHandler, ApprovalResult } from './approval.js';
 import { createApprovalRequest } from './approval.js';
@@ -26,14 +25,15 @@ import {
   ModuleTimeoutError,
   SchemaValidationError,
 } from './errors.js';
-import { MiddlewareChainError, MiddlewareManager } from './middleware/manager.js';
-import { guardCallChain } from './utils/call-chain.js';
+import { CTX_GLOBAL_DEADLINE, CTX_TRACING_SPANS, redactSensitive } from './executor.js';
+import { MiddlewareChainError, type MiddlewareManager } from './middleware/manager.js';
 import type { ModuleAnnotations } from './module.js';
 import { DEFAULT_ANNOTATIONS } from './module.js';
-import type { Registry } from './registry/registry.js';
-import type { Step, StepResult, PipelineContext } from './pipeline.js';
+import type { PipelineContext, Step, StepResult } from './pipeline.js';
 import { ExecutionStrategy } from './pipeline.js';
-import { redactSensitive, CTX_GLOBAL_DEADLINE, CTX_TRACING_SPANS } from './executor.js';
+import type { Registry } from './registry/registry.js';
+import { jsonSchemaToTypeBox } from './schema/loader.js';
+import { guardCallChain } from './utils/call-chain.js';
 
 // ---------------------------------------------------------------------------
 // Helpers (shared with executor, kept minimal)
@@ -48,11 +48,7 @@ function resolveSchema(mod: Record<string, unknown>, key: string): TSchema | nul
   return converted;
 }
 
-function validateSchema(
-  schema: TSchema,
-  data: Record<string, unknown>,
-  direction: string,
-): void {
+function validateSchema(schema: TSchema, data: Record<string, unknown>, direction: string): void {
   if (Value.Check(schema, data)) return;
   const errors: Array<Record<string, unknown>> = [];
   for (const error of Value.Errors(schema, data)) {
@@ -112,7 +108,9 @@ export class BuiltinContextCreation implements Step {
 
   constructor(config: Config | null) {
     if (config !== null) {
-      this._globalTimeout = (config.get('executor.global_timeout') as number) ?? getDefault('executor.global_timeout') as number;
+      this._globalTimeout =
+        (config.get('executor.global_timeout') as number) ??
+        (getDefault('executor.global_timeout') as number);
     } else {
       this._globalTimeout = getDefault('executor.global_timeout') as number;
     }
@@ -151,8 +149,12 @@ export class BuiltinCallChainGuard implements Step {
 
   constructor(config: Config | null) {
     if (config !== null) {
-      this._maxCallDepth = (config.get('executor.max_call_depth') as number) ?? getDefault('executor.max_call_depth') as number;
-      this._maxModuleRepeat = (config.get('executor.max_module_repeat') as number) ?? getDefault('executor.max_module_repeat') as number;
+      this._maxCallDepth =
+        (config.get('executor.max_call_depth') as number) ??
+        (getDefault('executor.max_call_depth') as number);
+      this._maxModuleRepeat =
+        (config.get('executor.max_module_repeat') as number) ??
+        (getDefault('executor.max_module_repeat') as number);
     } else {
       this._maxCallDepth = getDefault('executor.max_call_depth') as number;
       this._maxModuleRepeat = getDefault('executor.max_module_repeat') as number;
@@ -166,12 +168,7 @@ export class BuiltinCallChainGuard implements Step {
     }
 
     // Call chain safety guard — throws CallDepthExceededError, CircularCallError, etc.
-    guardCallChain(
-      ctx.moduleId,
-      ctx.context.callChain,
-      this._maxCallDepth,
-      this._maxModuleRepeat,
-    );
+    guardCallChain(ctx.moduleId, ctx.context.callChain, this._maxCallDepth, this._maxModuleRepeat);
 
     return { action: 'continue' };
   }
@@ -202,6 +199,21 @@ export class BuiltinModuleLookup implements Step {
       throw new ModuleNotFoundError(ctx.moduleId);
     }
     ctx.module = mod;
+
+    // Early input redaction: set context.redactedInputs BEFORE middleware
+    // runs (step 6). This ensures logging middleware sees redacted data.
+    if (ctx.context != null) {
+      const inputSchema = resolveSchema(mod as Record<string, unknown>, 'inputSchema');
+      if (inputSchema != null) {
+        ctx.context.redactedInputs = redactSensitive(
+          ctx.inputs,
+          inputSchema as unknown as Record<string, unknown>,
+        );
+      } else {
+        ctx.context.redactedInputs = { ...ctx.inputs };
+      }
+    }
+
     return { action: 'continue' };
   }
 }
@@ -287,7 +299,11 @@ export class BuiltinApprovalGate implements Step {
     } else {
       const annotations = mod['annotations'];
       let ann: ModuleAnnotations;
-      if (annotations != null && typeof annotations === 'object' && 'requiresApproval' in annotations) {
+      if (
+        annotations != null &&
+        typeof annotations === 'object' &&
+        'requiresApproval' in annotations
+      ) {
         ann = annotations as ModuleAnnotations;
       } else if (annotations != null && typeof annotations === 'object') {
         ann = dictToAnnotations(annotations as Record<string, unknown>);
@@ -405,7 +421,11 @@ export class BuiltinMiddlewareBefore implements Step {
         ctx.executedMiddlewares = e.executedMiddlewares;
         // Try on_error recovery
         const recovery = this._middlewareManager.executeOnError(
-          ctx.moduleId, ctx.inputs, e.original, ctx.context, e.executedMiddlewares,
+          ctx.moduleId,
+          ctx.inputs,
+          e.original,
+          ctx.context,
+          e.executedMiddlewares,
         );
         if (recovery !== null) {
           ctx.output = recovery;
@@ -437,7 +457,9 @@ export class BuiltinExecute implements Step {
 
   constructor(config: Config | null) {
     if (config !== null) {
-      this._defaultTimeout = (config.get('executor.default_timeout') as number) ?? getDefault('executor.default_timeout') as number;
+      this._defaultTimeout =
+        (config.get('executor.default_timeout') as number) ??
+        (getDefault('executor.default_timeout') as number);
     } else {
       this._defaultTimeout = getDefault('executor.default_timeout') as number;
     }
@@ -454,7 +476,10 @@ export class BuiltinExecute implements Step {
     // Streaming path: store the generator on ctx.outputStream
     if (ctx.stream) {
       const streamFn = mod['stream'] as
-        | ((inputs: Record<string, unknown>, context: Context) => AsyncGenerator<Record<string, unknown>>)
+        | ((
+            inputs: Record<string, unknown>,
+            context: Context,
+          ) => AsyncGenerator<Record<string, unknown>>)
         | undefined;
       if (typeof streamFn === 'function') {
         ctx.outputStream = streamFn.call(mod, ctx.inputs, ctx.context);
@@ -482,8 +507,12 @@ export class BuiltinExecute implements Step {
     }
 
     const executionPromise = Promise.resolve(
-      (executeFn as (inputs: Record<string, unknown>, context: Context) => Promise<Record<string, unknown>> | Record<string, unknown>)
-        .call(mod, ctx.inputs, ctx.context),
+      (
+        executeFn as (
+          inputs: Record<string, unknown>,
+          context: Context,
+        ) => Promise<Record<string, unknown>> | Record<string, unknown>
+      ).call(mod, ctx.inputs, ctx.context),
     );
 
     if (timeoutMs === 0) {
@@ -538,6 +567,16 @@ export class BuiltinOutputValidation implements Step {
     validateSchema(outputSchema, output, 'Output');
 
     ctx.validatedOutput = output;
+
+    // Store redacted output as first-class Context field (symmetric with
+    // redactedInputs). Available to middleware.after() and serialize().
+    if (ctx.context != null) {
+      ctx.context.redactedOutput = redactSensitive(
+        output,
+        outputSchema as unknown as Record<string, unknown>,
+      );
+    }
+
     return { action: 'continue' };
   }
 }
