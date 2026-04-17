@@ -101,7 +101,7 @@ const result = await executor.call('example.greet', { name: 'World' });
 
 | Class | Description |
 |-------|-------------|
-| `APCore` | High-level client — register modules, call, stream, validate |
+| `APCore` | High-level client — register modules, call, stream, validate, listModules, describe, on/off, disable/enable |
 | `Registry` | Module storage — discover, register, get, list, watch |
 | `Executor` | Execution engine — call with middleware pipeline, ACL, approval |
 | `Context` | Request context — trace ID, identity, call chain, cancel token |

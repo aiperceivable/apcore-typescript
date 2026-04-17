@@ -564,6 +564,122 @@ export class BindingSchemaModeConflictError extends ModuleError {
   }
 }
 
+/**
+ * Raised when auto_schema: strict is requested but the inferred schema contains
+ * features incompatible with strict mode (e.g., `anyOf`, `oneOf`, recursive `$ref`).
+ * See DECLARATIVE_CONFIG_SPEC.md §6.2.
+ */
+export class BindingStrictSchemaIncompatibleError extends ModuleError {
+  static override readonly DEFAULT_RETRYABLE: boolean | null = false;
+
+  constructor(
+    moduleId: string,
+    featuresListed: string[],
+    filePath?: string,
+    line?: number,
+    options?: ErrorOptions,
+  ) {
+    const loc = filePath ? (line !== undefined ? `${filePath}:${line}: ` : `${filePath}: `) : '';
+    super(
+      'BINDING_STRICT_SCHEMA_INCOMPATIBLE',
+      `${loc}binding '${moduleId}' uses auto_schema: strict but inferred schema ` +
+        `contains incompatible features: ${featuresListed.join(', ')}. ` +
+        'See DECLARATIVE_CONFIG_SPEC.md §6.2',
+      { moduleId, featuresListed, filePath, line },
+      options?.cause,
+      options?.traceId,
+      options?.retryable,
+      options?.aiGuidance,
+      options?.userFixable,
+      options?.suggestion,
+    );
+    this.name = 'BindingStrictSchemaIncompatibleError';
+  }
+}
+
+/**
+ * Raised when a binding entry field violates a configured policy limit
+ * (e.g., description exceeds policy.max_description_length).
+ * See DECLARATIVE_CONFIG_SPEC.md §7.1 and §9.
+ */
+export class BindingPolicyViolationError extends ModuleError {
+  static override readonly DEFAULT_RETRYABLE: boolean | null = false;
+
+  constructor(
+    moduleId: string,
+    fieldName: string,
+    policyPath: string,
+    reason: string,
+    limitValue: unknown,
+    filePath?: string,
+    line?: number,
+    options?: ErrorOptions,
+  ) {
+    const loc = filePath ? (line !== undefined ? `${filePath}:${line}: ` : `${filePath}: `) : '';
+    super(
+      'BINDING_POLICY_VIOLATION',
+      `${loc}binding '${moduleId}' field '${fieldName}' violates policy ` +
+        `'${policyPath}': ${reason} (configured limit: ${String(limitValue)}). ` +
+        'Adjust the limit in apcore.yaml or shorten the value.',
+      { moduleId, fieldName, policyPath, reason, limitValue, filePath, line },
+      options?.cause,
+      options?.traceId,
+      options?.retryable,
+      options?.aiGuidance,
+      options?.userFixable,
+      options?.suggestion,
+    );
+    this.name = 'BindingPolicyViolationError';
+  }
+}
+
+/**
+ * Raised when a function parameter has no type annotation or a forward
+ * reference cannot be resolved during auto-schema inference.
+ */
+export class FuncMissingTypeHintError extends ModuleError {
+  static override readonly DEFAULT_RETRYABLE: boolean | null = false;
+
+  constructor(functionName: string, parameterName: string, options?: ErrorOptions) {
+    super(
+      'FUNC_MISSING_TYPE_HINT',
+      `Parameter '${parameterName}' in function '${functionName}' has no type annotation. ` +
+        `Add a type hint like '${parameterName}: string'.`,
+      { functionName, parameterName },
+      options?.cause,
+      options?.traceId,
+      options?.retryable,
+      options?.aiGuidance,
+      options?.userFixable,
+      options?.suggestion,
+    );
+    this.name = 'FuncMissingTypeHintError';
+  }
+}
+
+/**
+ * Raised when a function has no return type annotation during auto-schema
+ * inference.
+ */
+export class FuncMissingReturnTypeError extends ModuleError {
+  static override readonly DEFAULT_RETRYABLE: boolean | null = false;
+
+  constructor(functionName: string, options?: ErrorOptions) {
+    super(
+      'FUNC_MISSING_RETURN_TYPE',
+      `Function '${functionName}' has no return type annotation. Add a return type like ': Promise<Record<string, unknown>>'.`,
+      { functionName },
+      options?.cause,
+      options?.traceId,
+      options?.retryable,
+      options?.aiGuidance,
+      options?.userFixable,
+      options?.suggestion,
+    );
+    this.name = 'FuncMissingReturnTypeError';
+  }
+}
+
 export class BindingFileInvalidError extends ModuleError {
   static override readonly DEFAULT_RETRYABLE: boolean | null = false;
 
@@ -941,6 +1057,10 @@ export const ErrorCodes = Object.freeze({
   BINDING_CALLABLE_NOT_FOUND: 'BINDING_CALLABLE_NOT_FOUND',
   BINDING_NOT_CALLABLE: 'BINDING_NOT_CALLABLE',
   BINDING_SCHEMA_MISSING: 'BINDING_SCHEMA_MISSING',
+  BINDING_SCHEMA_INFERENCE_FAILED: 'BINDING_SCHEMA_INFERENCE_FAILED',
+  BINDING_SCHEMA_MODE_CONFLICT: 'BINDING_SCHEMA_MODE_CONFLICT',
+  BINDING_STRICT_SCHEMA_INCOMPATIBLE: 'BINDING_STRICT_SCHEMA_INCOMPATIBLE',
+  BINDING_POLICY_VIOLATION: 'BINDING_POLICY_VIOLATION',
   BINDING_FILE_INVALID: 'BINDING_FILE_INVALID',
   CIRCULAR_DEPENDENCY: 'CIRCULAR_DEPENDENCY',
   MIDDLEWARE_CHAIN_ERROR: 'MIDDLEWARE_CHAIN_ERROR',
