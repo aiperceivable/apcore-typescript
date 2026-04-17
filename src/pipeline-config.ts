@@ -2,10 +2,10 @@
  * Pipeline YAML configuration: step type registry and strategy builder.
  */
 
-import type { Step, PipelineContext, StepResult } from './pipeline.js';
-import { ExecutionStrategy } from './pipeline.js';
 import { buildStandardStrategy } from './builtin-steps.js';
 import type { StandardStrategyDeps } from './builtin-steps.js';
+import type { PipelineContext, Step, StepResult } from './pipeline.js';
+import type { ExecutionStrategy } from './pipeline.js';
 
 // ---------------------------------------------------------------------------
 // Global step type registry
@@ -24,10 +24,7 @@ const _stepTypeRegistry = new Map<string, StepFactory>();
  * @param factory - A callable `(config) => Step`.
  * @throws If name is empty, contains whitespace, or is already registered.
  */
-export function registerStepType(
-  name: string,
-  factory: StepFactory,
-): void {
+export function registerStepType(name: string, factory: StepFactory): void {
   if (!name || /\s/.test(name)) {
     throw new Error(`Invalid step type name: '${name}'`);
   }
@@ -103,12 +100,18 @@ class ConfiguredStep implements Step {
 /**
  * Resolve a step definition dict into a Step instance.
  *
- * Resolution order:
- *   1. `type` field -> look up in registry
- *   2. `handler` field -> dynamic import (TypeScript-native)
+ * Resolution order (DECLARATIVE_CONFIG_SPEC.md §4):
+ *   1. `type` field -> look up in registry (sync, fast path)
+ *   2. `handler` field -> dynamic ESM import via `await import()`
+ *      Format: `"module:exportName"`. The resolved export is invoked as
+ *      `factory(config)` — wrap classes in a factory if needed.
  *   3. Neither -> throw Error
+ *
+ * NOTE: this function is async because handler resolution requires
+ * `await import()`. Type-registry lookups still resolve synchronously
+ * inside this async wrapper.
  */
-export function _resolveStep(stepDef: StepDefinition): Step {
+export async function _resolveStep(stepDef: StepDefinition): Promise<Step> {
   const typeName = stepDef.type;
   const handlerPath = stepDef.handler;
   const config = stepDef.config ?? {};
@@ -120,22 +123,75 @@ export function _resolveStep(stepDef: StepDefinition): Step {
     return new ConfiguredStep(step, stepDef);
   }
 
-  // (2) Handler path (dynamic import placeholder)
+  // (2) Handler path -- dynamic ESM import
   if (handlerPath) {
-    throw new Error(
-      `Dynamic handler import '${handlerPath}' is not supported in TypeScript SDK. ` +
-      `Use registerStepType() to register the step type, then reference it via 'type'.`,
-    );
+    const step = await _importStep(handlerPath, config);
+    return new ConfiguredStep(step, stepDef);
   }
 
   // (3) Neither
   if (typeName) {
     throw new Error(
       `Step type '${typeName}' not registered. ` +
-      `Register with: registerStepType('${typeName}', yourFactory)`,
+        `Register with: registerStepType('${typeName}', yourFactory)`,
     );
   }
   throw new Error(`Step '${stepDef.name ?? ''}' has neither 'type' nor 'handler'`);
+}
+
+/**
+ * Dynamically import a Step factory from a `"module:exportName"` handler path.
+ *
+ * Mirrors `bindings.ts#resolveTarget` security model: rejects path-traversal
+ * (`..`) segments and `file:` URLs at parse time. The resolved export must be
+ * a callable `(config) => Step`. Classes should be wrapped in a thin factory.
+ */
+async function _importStep(handlerPath: string, config: Record<string, unknown>): Promise<Step> {
+  // Security checks run on the whole path BEFORE the module:export split,
+  // because 'file:' URLs contain a colon that would otherwise be misparsed.
+  if (handlerPath.startsWith('file:')) {
+    throw new Error(`Handler path '${handlerPath}' must not use file: URLs.`);
+  }
+  if (handlerPath.includes('..')) {
+    throw new Error(`Handler path '${handlerPath}' must not contain '..' segments.`);
+  }
+  if (!handlerPath.includes(':')) {
+    throw new Error(`Invalid handler path '${handlerPath}'. Expected format: 'module:exportName'.`);
+  }
+
+  // Split from the right so module specifiers containing ':' (e.g., URL-like)
+  // don't get misparsed. Standard forms ('./mod:fn', '@scope/pkg:fn') split fine
+  // either way; rsplit defends against future scheme-like specifiers.
+  const lastColon = handlerPath.lastIndexOf(':');
+  const modulePath = handlerPath.slice(0, lastColon);
+  const exportName = handlerPath.slice(lastColon + 1);
+
+  let mod: Record<string, unknown>;
+  try {
+    mod = await import(modulePath);
+  } catch (e) {
+    throw new Error(`Cannot import handler module '${modulePath}': ${(e as Error).message}`);
+  }
+
+  const resolved = mod[exportName];
+  if (resolved == null) {
+    throw new Error(`Export '${exportName}' not found in module '${modulePath}'.`);
+  }
+  if (typeof resolved !== 'function') {
+    throw new Error(
+      `Handler '${handlerPath}' resolved to a non-callable. ` +
+        `Expected a (config) => Step factory; wrap classes in a factory if needed.`,
+    );
+  }
+
+  // Try constructor first (handles class exports), fall back to function call.
+  let step: unknown;
+  try {
+    step = new (resolved as new (cfg: Record<string, unknown>) => Step)(config);
+  } catch {
+    step = (resolved as (cfg: Record<string, unknown>) => Step)(config);
+  }
+  return step as Step;
 }
 
 // ---------------------------------------------------------------------------
@@ -160,10 +216,10 @@ interface PipelineConfig {
  * @param deps - Forwarded to `buildStandardStrategy()`.
  * @returns Configured ExecutionStrategy.
  */
-export function buildStrategyFromConfig(
+export async function buildStrategyFromConfig(
   pipelineConfig: PipelineConfig,
   deps: StandardStrategyDeps,
-): ExecutionStrategy {
+): Promise<ExecutionStrategy> {
   const strategy = buildStandardStrategy(deps);
 
   // (1) Remove steps
@@ -193,7 +249,7 @@ export function buildStrategyFromConfig(
 
   // (3) Resolve and insert custom steps
   for (const stepDef of pipelineConfig.steps ?? []) {
-    const step = _resolveStep(stepDef);
+    const step = await _resolveStep(stepDef);
     const after = stepDef.after;
     const before = stepDef.before;
     if (after) {

@@ -1,40 +1,39 @@
-import { describe, it, expect } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import {
-  ModuleError,
-  ModuleNotFoundError,
-  ModuleTimeoutError,
-  ModuleExecuteError,
-  ModuleLoadError,
-  SchemaValidationError,
-  SchemaNotFoundError,
-  SchemaParseError,
-  SchemaCircularRefError,
   ACLDeniedError,
   ACLRuleError,
-  CallDepthExceededError,
-  CircularCallError,
-  CallFrequencyExceededError,
-  ConfigNotFoundError,
-  ConfigError,
-  InvalidInputError,
-  InternalError,
+  ApprovalDeniedError,
+  ApprovalError,
+  ApprovalPendingError,
+  ApprovalTimeoutError,
+  BindingCallableNotFoundError,
+  BindingFileInvalidError,
   BindingInvalidTargetError,
   BindingModuleNotFoundError,
-  BindingCallableNotFoundError,
   BindingNotCallableError,
   BindingSchemaMissingError,
-  BindingFileInvalidError,
+  CallDepthExceededError,
+  CallFrequencyExceededError,
+  CircularCallError,
   CircularDependencyError,
-  ApprovalError,
-  ApprovalDeniedError,
-  ApprovalTimeoutError,
-  ApprovalPendingError,
-  ErrorCodes,
-  ConfigEnvMapConflictError,
   ConfigBindError,
+  ConfigEnvMapConflictError,
+  ConfigError,
+  ConfigNotFoundError,
+  ErrorCodes,
   ErrorFormatterDuplicateError,
+  InternalError,
+  InvalidInputError,
+  ModuleError,
+  ModuleExecuteError,
+  ModuleLoadError,
+  ModuleNotFoundError,
+  ModuleTimeoutError,
+  SchemaCircularRefError,
+  SchemaNotFoundError,
+  SchemaParseError,
+  SchemaValidationError,
 } from '../src/errors.js';
-import type { ErrorOptions } from '../src/errors.js';
 
 describe('ModuleError', () => {
   it('creates with code and message', () => {
@@ -164,10 +163,12 @@ describe('Error subclasses', () => {
     expect(err.code).toBe('BINDING_NOT_CALLABLE');
   });
 
-  it('BindingSchemaMissingError', () => {
+  it('BindingSchemaInferenceFailedError (canonical name in spec 1.0)', () => {
     const err = new BindingSchemaMissingError('some:target');
-    expect(err.name).toBe('BindingSchemaMissingError');
-    expect(err.code).toBe('BINDING_SCHEMA_MISSING');
+    expect(err.name).toBe('BindingSchemaInferenceFailedError');
+    expect(err.code).toBe('BINDING_SCHEMA_INFERENCE_FAILED');
+    expect(err.message).toContain('some:target');
+    expect(err.message).toContain('DECLARATIVE_CONFIG_SPEC.md §6');
   });
 
   it('BindingFileInvalidError', () => {
@@ -498,13 +499,16 @@ describe('Error subclasses with options (cause and traceId branches)', () => {
     expect(err.traceId).toBeUndefined();
   });
 
-  it('BindingSchemaMissingError with cause and traceId', () => {
-    const err = new BindingSchemaMissingError('some:target', { cause, traceId });
+  it('BindingSchemaInferenceFailedError with options', () => {
+    const err = new BindingSchemaMissingError('some:target', 'mod.id', 'b.yaml', undefined, {
+      cause,
+      traceId,
+    });
     expect(err.cause).toBe(cause);
     expect(err.traceId).toBe(traceId);
   });
 
-  it('BindingSchemaMissingError without options', () => {
+  it('BindingSchemaInferenceFailedError without options', () => {
     const err = new BindingSchemaMissingError('some:target');
     expect(err.cause).toBeUndefined();
     expect(err.traceId).toBeUndefined();
@@ -633,8 +637,15 @@ describe('AI Error Guidance Fields', () => {
 
     it('accepts explicit AI fields', () => {
       const err = new ModuleError(
-        'TEST', 'test', {}, undefined, undefined,
-        true, 'retry after delay', false, 'Wait and try again',
+        'TEST',
+        'test',
+        {},
+        undefined,
+        undefined,
+        true,
+        'retry after delay',
+        false,
+        'Wait and try again',
       );
       expect(err.retryable).toBe(true);
       expect(err.aiGuidance).toBe('retry after delay');
@@ -671,8 +682,15 @@ describe('AI Error Guidance Fields', () => {
 
     it('includes non-null AI fields', () => {
       const err = new ModuleError(
-        'TEST', 'test', {}, undefined, undefined,
-        false, 'do not retry', true, 'Fix input',
+        'TEST',
+        'test',
+        {},
+        undefined,
+        undefined,
+        false,
+        'do not retry',
+        true,
+        'Fix input',
       );
       const json = err.toJSON();
       expect(json.retryable).toBe(false);
@@ -742,7 +760,7 @@ describe('AI Error Guidance Fields', () => {
       ['BindingModuleNotFoundError', () => new BindingModuleNotFoundError('m')],
       ['BindingCallableNotFoundError', () => new BindingCallableNotFoundError('c', 'm')],
       ['BindingNotCallableError', () => new BindingNotCallableError('t')],
-      ['BindingSchemaMissingError', () => new BindingSchemaMissingError('t')],
+      ['BindingSchemaInferenceFailedError', () => new BindingSchemaMissingError('t')],
       ['BindingFileInvalidError', () => new BindingFileInvalidError('/f', 'bad')],
       ['CircularDependencyError', () => new CircularDependencyError(['a', 'b'])],
       ['ModuleLoadError', () => new ModuleLoadError('m', 'fail')],

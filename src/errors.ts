@@ -42,7 +42,10 @@ export class ModuleError extends Error {
     this.cause = cause;
     this.traceId = traceId;
     this.timestamp = new Date().toISOString();
-    this.retryable = retryable !== undefined ? retryable : (this.constructor as typeof ModuleError).DEFAULT_RETRYABLE;
+    this.retryable =
+      retryable !== undefined
+        ? retryable
+        : (this.constructor as typeof ModuleError).DEFAULT_RETRYABLE;
     this.aiGuidance = aiGuidance ?? null;
     this.userFixable = userFixable ?? null;
     this.suggestion = suggestion ?? null;
@@ -106,7 +109,17 @@ export class ConfigError extends ModuleError {
   static override readonly DEFAULT_RETRYABLE: boolean | null = false;
 
   constructor(message: string, options?: ErrorOptions) {
-    super('CONFIG_INVALID', message, {}, options?.cause, options?.traceId, options?.retryable, options?.aiGuidance, options?.userFixable, options?.suggestion);
+    super(
+      'CONFIG_INVALID',
+      message,
+      {},
+      options?.cause,
+      options?.traceId,
+      options?.retryable,
+      options?.aiGuidance,
+      options?.userFixable,
+      options?.suggestion,
+    );
     this.name = 'ConfigError';
   }
 }
@@ -115,7 +128,17 @@ export class ACLRuleError extends ModuleError {
   static override readonly DEFAULT_RETRYABLE: boolean | null = false;
 
   constructor(message: string, options?: ErrorOptions) {
-    super('ACL_RULE_ERROR', message, {}, options?.cause, options?.traceId, options?.retryable, options?.aiGuidance, options?.userFixable, options?.suggestion);
+    super(
+      'ACL_RULE_ERROR',
+      message,
+      {},
+      options?.cause,
+      options?.traceId,
+      options?.retryable,
+      options?.aiGuidance,
+      options?.userFixable,
+      options?.suggestion,
+    );
     this.name = 'ACLRuleError';
   }
 }
@@ -131,7 +154,8 @@ export class ACLDeniedError extends ModuleError {
       options?.cause,
       options?.traceId,
       options?.retryable,
-      options?.aiGuidance ?? `Access denied for '${callerId}' calling '${targetId}'. Verify the caller has the required role or permission, or try an alternative module with similar functionality.`,
+      options?.aiGuidance ??
+        `Access denied for '${callerId}' calling '${targetId}'. Verify the caller has the required role or permission, or try an alternative module with similar functionality.`,
       options?.userFixable,
       options?.suggestion,
     );
@@ -158,7 +182,8 @@ export class ModuleNotFoundError extends ModuleError {
       options?.cause,
       options?.traceId,
       options?.retryable,
-      options?.aiGuidance ?? `Module '${moduleId}' does not exist in the registry. Verify the module ID spelling. Use system.manifest.full to list available modules.`,
+      options?.aiGuidance ??
+        `Module '${moduleId}' does not exist in the registry. Verify the module ID spelling. Use system.manifest.full to list available modules.`,
       options?.userFixable,
       options?.suggestion,
     );
@@ -177,7 +202,8 @@ export class ModuleDisabledError extends ModuleError {
       options?.cause,
       options?.traceId,
       options?.retryable,
-      options?.aiGuidance ?? `Module '${moduleId}' is currently disabled. Use system.control.toggle_feature to re-enable it, or find an alternative module.`,
+      options?.aiGuidance ??
+        `Module '${moduleId}' is currently disabled. Use system.control.toggle_feature to re-enable it, or find an alternative module.`,
       options?.userFixable,
       options?.suggestion,
     );
@@ -196,7 +222,8 @@ export class ModuleTimeoutError extends ModuleError {
       options?.cause,
       options?.traceId,
       options?.retryable,
-      options?.aiGuidance ?? `Module '${moduleId}' timed out after ${timeoutMs}ms. Consider: 1) Breaking the operation into smaller steps. 2) Reducing the input data size. 3) Asking the user if a longer timeout is acceptable.`,
+      options?.aiGuidance ??
+        `Module '${moduleId}' timed out after ${timeoutMs}ms. Consider: 1) Breaking the operation into smaller steps. 2) Reducing the input data size. 3) Asking the user if a longer timeout is acceptable.`,
       options?.userFixable,
       options?.suggestion,
     );
@@ -227,7 +254,8 @@ export class SchemaValidationError extends ModuleError {
       options?.cause,
       options?.traceId,
       options?.retryable,
-      options?.aiGuidance ?? 'Input validation failed. Review the error details to identify which fields have invalid values, then correct them or ask the user for valid input.',
+      options?.aiGuidance ??
+        'Input validation failed. Review the error details to identify which fields have invalid values, then correct them or ask the user for valid input.',
       options?.userFixable,
       options?.suggestion,
     );
@@ -258,7 +286,17 @@ export class SchemaParseError extends ModuleError {
   static override readonly DEFAULT_RETRYABLE: boolean | null = false;
 
   constructor(message: string, options?: ErrorOptions) {
-    super('SCHEMA_PARSE_ERROR', message, {}, options?.cause, options?.traceId, options?.retryable, options?.aiGuidance, options?.userFixable, options?.suggestion);
+    super(
+      'SCHEMA_PARSE_ERROR',
+      message,
+      {},
+      options?.cause,
+      options?.traceId,
+      options?.retryable,
+      options?.aiGuidance,
+      options?.userFixable,
+      options?.suggestion,
+    );
     this.name = 'SchemaParseError';
   }
 }
@@ -293,7 +331,8 @@ export class CallDepthExceededError extends ModuleError {
       options?.cause,
       options?.traceId,
       options?.retryable,
-      options?.aiGuidance ?? `Call depth ${depth} exceeds maximum ${maxDepth}. Simplify the module call chain or restructure to reduce nesting depth.`,
+      options?.aiGuidance ??
+        `Call depth ${depth} exceeds maximum ${maxDepth}. Simplify the module call chain or restructure to reduce nesting depth.`,
       options?.userFixable,
       options?.suggestion,
     );
@@ -320,7 +359,8 @@ export class CircularCallError extends ModuleError {
       options?.cause,
       options?.traceId,
       options?.retryable,
-      options?.aiGuidance ?? 'A circular call was detected in the module call chain. Review the call_chain in error details and restructure to eliminate the cycle.',
+      options?.aiGuidance ??
+        'A circular call was detected in the module call chain. Review the call_chain in error details and restructure to eliminate the cycle.',
       options?.userFixable,
       options?.suggestion,
     );
@@ -373,7 +413,17 @@ export class InvalidInputError extends ModuleError {
   static override readonly DEFAULT_RETRYABLE: boolean | null = false;
 
   constructor(message: string = 'Invalid input', options?: ErrorOptions) {
-    super('GENERAL_INVALID_INPUT', message, {}, options?.cause, options?.traceId, options?.retryable, options?.aiGuidance, options?.userFixable, options?.suggestion);
+    super(
+      'GENERAL_INVALID_INPUT',
+      message,
+      {},
+      options?.cause,
+      options?.traceId,
+      options?.retryable,
+      options?.aiGuidance,
+      options?.userFixable,
+      options?.suggestion,
+    );
     this.name = 'InvalidInputError';
   }
 }
@@ -454,14 +504,27 @@ export class BindingNotCallableError extends ModuleError {
   }
 }
 
-export class BindingSchemaMissingError extends ModuleError {
+export class BindingSchemaInferenceFailedError extends ModuleError {
   static override readonly DEFAULT_RETRYABLE: boolean | null = false;
 
-  constructor(target: string, options?: ErrorOptions) {
+  constructor(
+    target: string,
+    moduleId?: string,
+    filePath?: string,
+    remediation?: string,
+    options?: ErrorOptions,
+  ) {
+    const loc = filePath ? `${filePath}: ` : '';
+    const modPart = moduleId ? `binding '${moduleId}' ` : '';
+    const rem =
+      remediation ??
+      'no schema source detected. Provide one of: target input/output as TypeBox schemas, zod schemas, ' +
+        'class-validator-decorated DTO, or use the typia adapter. ' +
+        'Alternatively specify input_schema/output_schema explicitly.';
     super(
-      'BINDING_SCHEMA_MISSING',
-      `No schema available for target '${target}'. Add type hints or provide an explicit schema.`,
-      { target },
+      'BINDING_SCHEMA_INFERENCE_FAILED',
+      `${loc}${modPart}auto schema inference failed for target '${target}'. ${rem} See DECLARATIVE_CONFIG_SPEC.md §6`,
+      { target, moduleId, filePath },
       options?.cause,
       options?.traceId,
       options?.retryable,
@@ -469,7 +532,35 @@ export class BindingSchemaMissingError extends ModuleError {
       options?.userFixable,
       options?.suggestion,
     );
-    this.name = 'BindingSchemaMissingError';
+    this.name = 'BindingSchemaInferenceFailedError';
+  }
+}
+
+/**
+ * Deprecated alias for {@link BindingSchemaInferenceFailedError}.
+ * Per DECLARATIVE_CONFIG_SPEC.md §7.1, the canonical name is
+ * BindingSchemaInferenceFailedError.
+ */
+export const BindingSchemaMissingError = BindingSchemaInferenceFailedError;
+
+export class BindingSchemaModeConflictError extends ModuleError {
+  static override readonly DEFAULT_RETRYABLE: boolean | null = false;
+
+  constructor(moduleId: string, modesListed: string[], filePath?: string, options?: ErrorOptions) {
+    const loc = filePath ? `${filePath}: ` : '';
+    super(
+      'BINDING_SCHEMA_MODE_CONFLICT',
+      `${loc}binding '${moduleId}' specifies multiple schema modes (${modesListed.join(', ')}). ` +
+        'Choose one. See DECLARATIVE_CONFIG_SPEC.md §3.4',
+      { moduleId, modesListed, filePath },
+      options?.cause,
+      options?.traceId,
+      options?.retryable,
+      options?.aiGuidance,
+      options?.userFixable,
+      options?.suggestion,
+    );
+    this.name = 'BindingSchemaModeConflictError';
   }
 }
 
@@ -572,7 +663,17 @@ export class InternalError extends ModuleError {
   static override readonly DEFAULT_RETRYABLE: boolean | null = true;
 
   constructor(message: string = 'Internal error', options?: ErrorOptions) {
-    super('GENERAL_INTERNAL_ERROR', message, {}, options?.cause, options?.traceId, options?.retryable, options?.aiGuidance, options?.userFixable, options?.suggestion);
+    super(
+      'GENERAL_INTERNAL_ERROR',
+      message,
+      {},
+      options?.cause,
+      options?.traceId,
+      options?.retryable,
+      options?.aiGuidance,
+      options?.userFixable,
+      options?.suggestion,
+    );
     this.name = 'InternalError';
   }
 }
@@ -593,7 +694,17 @@ export class ApprovalError extends ModuleError {
     moduleId?: string,
     options?: ErrorOptions,
   ) {
-    super(code, message, { moduleId: moduleId ?? null }, options?.cause, options?.traceId, options?.retryable, options?.aiGuidance, options?.userFixable, options?.suggestion);
+    super(
+      code,
+      message,
+      { moduleId: moduleId ?? null },
+      options?.cause,
+      options?.traceId,
+      options?.retryable,
+      options?.aiGuidance,
+      options?.userFixable,
+      options?.suggestion,
+    );
     this.name = 'ApprovalError';
     this.result = result;
   }
@@ -626,7 +737,13 @@ export class ApprovalTimeoutError extends ApprovalError {
   static override readonly DEFAULT_RETRYABLE: boolean | null = true;
 
   constructor(result: unknown, moduleId: string = '', options?: ErrorOptions) {
-    super('APPROVAL_TIMEOUT', `Approval timed out for module '${moduleId}'`, result, moduleId, options);
+    super(
+      'APPROVAL_TIMEOUT',
+      `Approval timed out for module '${moduleId}'`,
+      result,
+      moduleId,
+      options,
+    );
     this.name = 'ApprovalTimeoutError';
   }
 }
@@ -636,7 +753,13 @@ export class ApprovalPendingError extends ApprovalError {
 
   constructor(result: unknown, moduleId: string = '', options?: ErrorOptions) {
     const approvalId = (result as Record<string, unknown>)?.['approvalId'] as string | undefined;
-    super('APPROVAL_PENDING', `Approval pending for module '${moduleId}'`, result, moduleId, options);
+    super(
+      'APPROVAL_PENDING',
+      `Approval pending for module '${moduleId}'`,
+      result,
+      moduleId,
+      options,
+    );
     this.name = 'ApprovalPendingError';
     this.details['approvalId'] = approvalId ?? null;
   }
@@ -784,50 +907,50 @@ export class ErrorFormatterDuplicateError extends ModuleError {
  * Use these instead of hardcoding error code strings.
  */
 export const ErrorCodes = Object.freeze({
-  CONFIG_NOT_FOUND: "CONFIG_NOT_FOUND",
-  CONFIG_INVALID: "CONFIG_INVALID",
-  CONFIG_NAMESPACE_DUPLICATE: "CONFIG_NAMESPACE_DUPLICATE",
-  CONFIG_NAMESPACE_RESERVED: "CONFIG_NAMESPACE_RESERVED",
-  CONFIG_ENV_PREFIX_CONFLICT: "CONFIG_ENV_PREFIX_CONFLICT",
-  CONFIG_MOUNT_ERROR: "CONFIG_MOUNT_ERROR",
-  CONFIG_BIND_ERROR: "CONFIG_BIND_ERROR",
+  CONFIG_NOT_FOUND: 'CONFIG_NOT_FOUND',
+  CONFIG_INVALID: 'CONFIG_INVALID',
+  CONFIG_NAMESPACE_DUPLICATE: 'CONFIG_NAMESPACE_DUPLICATE',
+  CONFIG_NAMESPACE_RESERVED: 'CONFIG_NAMESPACE_RESERVED',
+  CONFIG_ENV_PREFIX_CONFLICT: 'CONFIG_ENV_PREFIX_CONFLICT',
+  CONFIG_MOUNT_ERROR: 'CONFIG_MOUNT_ERROR',
+  CONFIG_BIND_ERROR: 'CONFIG_BIND_ERROR',
   CONFIG_ENV_MAP_CONFLICT: 'CONFIG_ENV_MAP_CONFLICT' as const,
-  ERROR_FORMATTER_DUPLICATE: "ERROR_FORMATTER_DUPLICATE",
-  ACL_RULE_ERROR: "ACL_RULE_ERROR",
-  ACL_DENIED: "ACL_DENIED",
-  MODULE_NOT_FOUND: "MODULE_NOT_FOUND",
-  MODULE_DISABLED: "MODULE_DISABLED",
-  MODULE_TIMEOUT: "MODULE_TIMEOUT",
-  MODULE_LOAD_ERROR: "MODULE_LOAD_ERROR",
-  RELOAD_FAILED: "RELOAD_FAILED",
-  EXECUTION_CANCELLED: "EXECUTION_CANCELLED",
-  MODULE_EXECUTE_ERROR: "MODULE_EXECUTE_ERROR",
-  SCHEMA_VALIDATION_ERROR: "SCHEMA_VALIDATION_ERROR",
-  SCHEMA_NOT_FOUND: "SCHEMA_NOT_FOUND",
-  SCHEMA_PARSE_ERROR: "SCHEMA_PARSE_ERROR",
-  SCHEMA_CIRCULAR_REF: "SCHEMA_CIRCULAR_REF",
-  CALL_DEPTH_EXCEEDED: "CALL_DEPTH_EXCEEDED",
-  CIRCULAR_CALL: "CIRCULAR_CALL",
-  CALL_FREQUENCY_EXCEEDED: "CALL_FREQUENCY_EXCEEDED",
-  GENERAL_INVALID_INPUT: "GENERAL_INVALID_INPUT",
-  GENERAL_INTERNAL_ERROR: "GENERAL_INTERNAL_ERROR",
-  FUNC_MISSING_TYPE_HINT: "FUNC_MISSING_TYPE_HINT",
-  FUNC_MISSING_RETURN_TYPE: "FUNC_MISSING_RETURN_TYPE",
-  BINDING_INVALID_TARGET: "BINDING_INVALID_TARGET",
-  BINDING_MODULE_NOT_FOUND: "BINDING_MODULE_NOT_FOUND",
-  BINDING_CALLABLE_NOT_FOUND: "BINDING_CALLABLE_NOT_FOUND",
-  BINDING_NOT_CALLABLE: "BINDING_NOT_CALLABLE",
-  BINDING_SCHEMA_MISSING: "BINDING_SCHEMA_MISSING",
-  BINDING_FILE_INVALID: "BINDING_FILE_INVALID",
-  CIRCULAR_DEPENDENCY: "CIRCULAR_DEPENDENCY",
-  MIDDLEWARE_CHAIN_ERROR: "MIDDLEWARE_CHAIN_ERROR",
-  APPROVAL_DENIED: "APPROVAL_DENIED",
-  APPROVAL_TIMEOUT: "APPROVAL_TIMEOUT",
-  APPROVAL_PENDING: "APPROVAL_PENDING",
-  VERSION_INCOMPATIBLE: "VERSION_INCOMPATIBLE",
-  ERROR_CODE_COLLISION: "ERROR_CODE_COLLISION",
-  GENERAL_NOT_IMPLEMENTED: "GENERAL_NOT_IMPLEMENTED",
-  DEPENDENCY_NOT_FOUND: "DEPENDENCY_NOT_FOUND",
+  ERROR_FORMATTER_DUPLICATE: 'ERROR_FORMATTER_DUPLICATE',
+  ACL_RULE_ERROR: 'ACL_RULE_ERROR',
+  ACL_DENIED: 'ACL_DENIED',
+  MODULE_NOT_FOUND: 'MODULE_NOT_FOUND',
+  MODULE_DISABLED: 'MODULE_DISABLED',
+  MODULE_TIMEOUT: 'MODULE_TIMEOUT',
+  MODULE_LOAD_ERROR: 'MODULE_LOAD_ERROR',
+  RELOAD_FAILED: 'RELOAD_FAILED',
+  EXECUTION_CANCELLED: 'EXECUTION_CANCELLED',
+  MODULE_EXECUTE_ERROR: 'MODULE_EXECUTE_ERROR',
+  SCHEMA_VALIDATION_ERROR: 'SCHEMA_VALIDATION_ERROR',
+  SCHEMA_NOT_FOUND: 'SCHEMA_NOT_FOUND',
+  SCHEMA_PARSE_ERROR: 'SCHEMA_PARSE_ERROR',
+  SCHEMA_CIRCULAR_REF: 'SCHEMA_CIRCULAR_REF',
+  CALL_DEPTH_EXCEEDED: 'CALL_DEPTH_EXCEEDED',
+  CIRCULAR_CALL: 'CIRCULAR_CALL',
+  CALL_FREQUENCY_EXCEEDED: 'CALL_FREQUENCY_EXCEEDED',
+  GENERAL_INVALID_INPUT: 'GENERAL_INVALID_INPUT',
+  GENERAL_INTERNAL_ERROR: 'GENERAL_INTERNAL_ERROR',
+  FUNC_MISSING_TYPE_HINT: 'FUNC_MISSING_TYPE_HINT',
+  FUNC_MISSING_RETURN_TYPE: 'FUNC_MISSING_RETURN_TYPE',
+  BINDING_INVALID_TARGET: 'BINDING_INVALID_TARGET',
+  BINDING_MODULE_NOT_FOUND: 'BINDING_MODULE_NOT_FOUND',
+  BINDING_CALLABLE_NOT_FOUND: 'BINDING_CALLABLE_NOT_FOUND',
+  BINDING_NOT_CALLABLE: 'BINDING_NOT_CALLABLE',
+  BINDING_SCHEMA_MISSING: 'BINDING_SCHEMA_MISSING',
+  BINDING_FILE_INVALID: 'BINDING_FILE_INVALID',
+  CIRCULAR_DEPENDENCY: 'CIRCULAR_DEPENDENCY',
+  MIDDLEWARE_CHAIN_ERROR: 'MIDDLEWARE_CHAIN_ERROR',
+  APPROVAL_DENIED: 'APPROVAL_DENIED',
+  APPROVAL_TIMEOUT: 'APPROVAL_TIMEOUT',
+  APPROVAL_PENDING: 'APPROVAL_PENDING',
+  VERSION_INCOMPATIBLE: 'VERSION_INCOMPATIBLE',
+  ERROR_CODE_COLLISION: 'ERROR_CODE_COLLISION',
+  GENERAL_NOT_IMPLEMENTED: 'GENERAL_NOT_IMPLEMENTED',
+  DEPENDENCY_NOT_FOUND: 'DEPENDENCY_NOT_FOUND',
 } as const);
 
 export type ErrorCode = (typeof ErrorCodes)[keyof typeof ErrorCodes];

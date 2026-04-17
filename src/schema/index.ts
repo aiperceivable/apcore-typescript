@@ -12,3 +12,5 @@ export { mergeAnnotations, mergeExamples, mergeMetadata } from './annotations.js
 export { SchemaLoader, jsonSchemaToTypeBox } from './loader.js';
 export { SchemaValidator } from './validator.js';
 export { SchemaExporter } from './exporter.js';
+export type { SchemaAdapter } from './extractor.js';
+export { SchemaExtractorRegistry, extractSchema, inferSchemasFromModule } from './extractor.js';

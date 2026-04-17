@@ -2,15 +2,15 @@
  * Tests for pipeline-config.ts: step type registry, _resolveStep, and buildStrategyFromConfig.
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
-  registerStepType,
-  unregisterStepType,
-  registeredStepTypes,
   _resolveStep,
   buildStrategyFromConfig,
+  registerStepType,
+  registeredStepTypes,
+  unregisterStepType,
 } from '../src/pipeline-config.js';
-import type { Step, StepResult, PipelineContext } from '../src/pipeline.js';
+import type { Step, StepResult } from '../src/pipeline.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -54,7 +54,9 @@ describe('registerStepType', () => {
   });
 
   it('throws when name is empty', () => {
-    expect(() => registerStepType('', () => makeMinimalStep('x'))).toThrow(/Invalid step type name/);
+    expect(() => registerStepType('', () => makeMinimalStep('x'))).toThrow(
+      /Invalid step type name/,
+    );
   });
 
   it('throws when name contains whitespace', () => {
@@ -125,34 +127,54 @@ describe('_resolveStep', () => {
     unregisterStepType(TEST_TYPE);
   });
 
-  it('resolves a step from a registered type', () => {
-    const step = _resolveStep({ type: TEST_TYPE, config: { stepName: 'my-step' } });
+  it('resolves a step from a registered type', async () => {
+    const step = await _resolveStep({ type: TEST_TYPE, config: { stepName: 'my-step' } });
     expect(step.name).toBe('my-step');
   });
 
-  it('applies name override from step definition', () => {
-    const step = _resolveStep({ type: TEST_TYPE, name: 'override-name', config: {} });
+  it('applies name override from step definition', async () => {
+    const step = await _resolveStep({ type: TEST_TYPE, name: 'override-name', config: {} });
     expect(step.name).toBe('override-name');
   });
 
-  it('throws when handler path is provided (dynamic import not supported)', () => {
-    expect(() => _resolveStep({ handler: './some-module.js' })).toThrow(
-      /Dynamic handler import/,
+  it('rejects handler path missing colon separator', async () => {
+    await expect(_resolveStep({ handler: 'no-colon-here' })).rejects.toThrow(
+      /Expected format: 'module:exportName'/,
     );
   });
 
-  it('throws when type is unknown', () => {
-    expect(() => _resolveStep({ type: uniqueType('not-registered') })).toThrow(
+  it('rejects handler path containing path-traversal segments', async () => {
+    await expect(_resolveStep({ handler: '../escape:fn' })).rejects.toThrow(
+      /must not contain '\.\.'/,
+    );
+  });
+
+  it('rejects handler path using file: URLs', async () => {
+    await expect(_resolveStep({ handler: 'file:///etc/passwd:fn' })).rejects.toThrow(
+      /must not use file: URLs/,
+    );
+  });
+
+  it('rejects handler module that cannot be imported', async () => {
+    await expect(_resolveStep({ handler: './nonexistent-module-xyz:fn' })).rejects.toThrow(
+      /Cannot import handler module/,
+    );
+  });
+
+  it('throws when type is unknown', async () => {
+    await expect(_resolveStep({ type: uniqueType('not-registered') })).rejects.toThrow(
       /not registered/,
     );
   });
 
-  it('throws when neither type nor handler is provided', () => {
-    expect(() => _resolveStep({ name: 'bare-step' })).toThrow(/neither 'type' nor 'handler'/);
+  it('throws when neither type nor handler is provided', async () => {
+    await expect(_resolveStep({ name: 'bare-step' })).rejects.toThrow(
+      /neither 'type' nor 'handler'/,
+    );
   });
 
-  it('forwards matchModules, ignoreErrors, pure, and timeoutMs overrides', () => {
-    const step = _resolveStep({
+  it('forwards matchModules, ignoreErrors, pure, and timeoutMs overrides', async () => {
+    const step = await _resolveStep({
       type: TEST_TYPE,
       matchModules: ['foo.*'],
       ignoreErrors: true,
@@ -186,52 +208,48 @@ describe('buildStrategyFromConfig', () => {
     unregisterStepType(CUSTOM_TYPE);
   });
 
-  it('produces a strategy with standard steps when given empty config', () => {
-    // buildStandardStrategy requires real deps; we just verify it runs without error.
-    // Use minimal stub deps that satisfy the TypeScript shape.
+  it('produces a strategy with standard steps when given empty config', async () => {
     const deps = makeFakeDeps();
-    const strategy = buildStrategyFromConfig({}, deps);
+    const strategy = await buildStrategyFromConfig({}, deps);
     expect(strategy.stepNames().length).toBeGreaterThan(0);
   });
 
-  it('removes a named step when listed in remove', () => {
+  it('removes a named step when listed in remove', async () => {
     const deps = makeFakeDeps();
-    const strategy = buildStrategyFromConfig({}, deps);
-    const initialNames = strategy.stepNames();
 
-    // Find a removable step from the standard strategy to remove
-    // We need to pick one that is actually removable. 'output_validation' is removable.
-    // Let's just verify that attempting to remove a non-existent step warns rather than throws.
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    buildStrategyFromConfig({ remove: ['nonexistent_step_xyz'] }, deps);
+    await buildStrategyFromConfig({ remove: ['nonexistent_step_xyz'] }, deps);
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('nonexistent_step_xyz'));
     warnSpy.mockRestore();
   });
 
-  it('warns when a step has neither after nor before in steps list', () => {
+  it('warns when a step has neither after nor before in steps list', async () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const deps = makeFakeDeps();
-    buildStrategyFromConfig({
-      steps: [{ type: CUSTOM_TYPE, name: 'custom-step' }],
-    }, deps);
-    expect(warnSpy).toHaveBeenCalledWith(
-      expect.stringContaining("neither 'after' nor 'before'"),
+    await buildStrategyFromConfig(
+      {
+        steps: [{ type: CUSTOM_TYPE, name: 'custom-step' }],
+      },
+      deps,
     );
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("neither 'after' nor 'before'"));
     warnSpy.mockRestore();
   });
 
-  it('inserts a custom step after a named standard step', () => {
+  it('inserts a custom step after a named standard step', async () => {
     const deps = makeFakeDeps();
-    const baseStrategy = buildStrategyFromConfig({}, deps);
+    const baseStrategy = await buildStrategyFromConfig({}, deps);
     const firstName = baseStrategy.stepNames()[0];
 
-    // Register a unique step for this test
     const insertType = uniqueType('insert-after');
     registerStepType(insertType, (_c) => makeMinimalStep('inserted-after'));
     try {
-      const strategy = buildStrategyFromConfig({
-        steps: [{ type: insertType, name: 'inserted-after', after: firstName }],
-      }, deps);
+      const strategy = await buildStrategyFromConfig(
+        {
+          steps: [{ type: insertType, name: 'inserted-after', after: firstName }],
+        },
+        deps,
+      );
       const names = strategy.stepNames();
       const firstIdx = names.indexOf(firstName);
       expect(names[firstIdx + 1]).toBe('inserted-after');
@@ -240,17 +258,20 @@ describe('buildStrategyFromConfig', () => {
     }
   });
 
-  it('inserts a custom step before a named standard step', () => {
+  it('inserts a custom step before a named standard step', async () => {
     const deps = makeFakeDeps();
-    const baseStrategy = buildStrategyFromConfig({}, deps);
+    const baseStrategy = await buildStrategyFromConfig({}, deps);
     const lastName = baseStrategy.stepNames().at(-1)!;
 
     const insertType = uniqueType('insert-before');
     registerStepType(insertType, (_c) => makeMinimalStep('inserted-before'));
     try {
-      const strategy = buildStrategyFromConfig({
-        steps: [{ type: insertType, name: 'inserted-before', before: lastName }],
-      }, deps);
+      const strategy = await buildStrategyFromConfig(
+        {
+          steps: [{ type: insertType, name: 'inserted-before', before: lastName }],
+        },
+        deps,
+      );
       const names = strategy.stepNames();
       const lastIdx = names.indexOf(lastName);
       expect(names[lastIdx - 1]).toBe('inserted-before');

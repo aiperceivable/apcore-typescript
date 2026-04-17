@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [0.19.0] - 2026-04-17
+
+### Added
+
+- **Auto-schema multi-adapter chain** (`src/schema/extractor.ts`) — `SchemaExtractorRegistry` with pluggable adapters. Built-in: TypeBox (priority 100, detects `Symbol.for('TypeBox.Kind')`), JsonSchema (priority 30, detects `type`/`properties`). Custom adapters (zod, class-validator, typia) registered via `SchemaExtractorRegistry.register()`. See DECLARATIVE_CONFIG_SPEC.md §6.3.
+- **`auto_schema: true | permissive | strict`** in binding YAML — triggers module export scanning (`inputSchema`/`outputSchema` named exports, or `<symbolName>InputSchema`/`<symbolName>OutputSchema` companion naming). Implicit default when no schema mode specified.
+- **`BindingSchemaInferenceFailedError`** and **`BindingSchemaModeConflictError`** — canonical errors per DECLARATIVE_CONFIG_SPEC.md §7.1. `BindingSchemaMissingError` is now a deprecated alias.
+- **`spec_version`** field support in binding YAML with deprecation warning when absent.
+- **`documentation`, `annotations`, `metadata`** fields pass through `BindingLoader` → `FunctionModule`. Annotations converted from YAML snake_case to TypeScript camelCase via `parseAnnotations()`.
+- **Pipeline `handler:` dynamic import** — `_resolveStep` and `buildStrategyFromConfig` are now `async`. Handler modules loaded via `await import()` with security checks (rejects `..` segments, `file:` URLs). See DECLARATIVE_CONFIG_SPEC.md §4.4.
+- **Cross-SDK conformance fixtures** in `apcore/conformance/fixtures/`.
+
+### Changed (BREAKING)
+
+- **`buildStrategyFromConfig()` is now `async`** — returns `Promise<ExecutionStrategy>`. Callers must `await` it. Necessary because `handler:` resolution uses `await import()`.
+- **`_resolveStep()` is now `async`** — returns `Promise<Step>`.
+- **`BindingSchemaMissingError`** renamed to `BindingSchemaInferenceFailedError`. Constructor signature changed: `(target, moduleId?, filePath?, remediation?, options?)`. Old name kept as alias.
+
 ## [0.18.0] - 2026-04-15
 
 ### Added
