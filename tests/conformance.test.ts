@@ -518,4 +518,51 @@ describe('apcore Conformance Suite (TypeScript)', () => {
       });
     });
   });
+
+  // --------------------------------------------------------------------------
+  // Context.create trace_parent handling (PROTOCOL_SPEC §10.5)
+  // --------------------------------------------------------------------------
+  describe('Context.create trace_parent', () => {
+    const fixture = loadFixture('context_trace_parent');
+
+    fixture.test_cases.forEach((tc: any) => {
+      it(tc.id, () => {
+        const incoming: string | null = tc.input.trace_parent_trace_id;
+        const expected = tc.expected;
+
+        // Spy on console.warn to capture the WARN log.
+        const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+        const traceParent =
+          incoming === null
+            ? null
+            : {
+                version: '00',
+                traceId: incoming,
+                parentId: '0000000000000001',
+                traceFlags: '01',
+              };
+
+        const ctx = Context.create(null, null, undefined, traceParent as any);
+
+        // trace_id must always be valid 32-char lowercase hex
+        expect(ctx.traceId).toMatch(/^[0-9a-f]{32}$/);
+        expect(ctx.traceId).not.toBe('0'.repeat(32));
+        expect(ctx.traceId).not.toBe('f'.repeat(32));
+
+        if (expected.regenerated) {
+          expect(ctx.traceId).not.toBe(incoming);
+        } else {
+          expect(ctx.traceId).toBe(expected.trace_id);
+        }
+
+        const warnSeen = warnSpy.mock.calls.some((call) =>
+          String(call[0]).includes('Invalid trace_id format'),
+        );
+        expect(warnSeen).toBe(expected.warn_logged);
+
+        warnSpy.mockRestore();
+      });
+    });
+  });
 });

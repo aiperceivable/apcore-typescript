@@ -67,11 +67,14 @@ export class Context<T = null> {
   }
 
   /**
-   * Create a new top-level Context with a generated UUID v4 traceId.
+   * Create a new top-level Context with a generated 32-char hex traceId.
    *
-   * When `traceParent` is provided, its `traceId` (32 hex chars) is
-   * converted to UUID format (8-4-4-4-12) and used instead of generating
-   * a new one.
+   * When `traceParent` is provided, its `traceId` is accepted only if it is
+   * exactly 32 lowercase hex characters and not the W3C-reserved all-zero
+   * or all-f value. Otherwise a fresh traceId is generated and a warning
+   * is logged. No normalization (dashed UUID stripping, case folding) is
+   * performed here; such normalization is the responsibility of the
+   * TraceParent header parser or the caller's ContextFactory.
    */
   static create<S = null>(
     executor: unknown = null,
@@ -84,7 +87,16 @@ export class Context<T = null> {
     let traceId: string;
     if (traceParent) {
       const h = traceParent.traceId;
-      traceId = /^[0-9a-f]{32}$/.test(h) ? h : uuidv4().replace(/-/g, '');
+      const isValidHex = /^[0-9a-f]{32}$/.test(h);
+      const isW3cValid = h !== '0'.repeat(32) && h !== 'f'.repeat(32);
+      if (isValidHex && isW3cValid) {
+        traceId = h;
+      } else {
+        console.warn(
+          `[apcore] Invalid trace_id format in trace_parent: ${JSON.stringify(h)}. Restarting trace.`,
+        );
+        traceId = uuidv4().replace(/-/g, '');
+      }
     } else {
       traceId = uuidv4().replace(/-/g, '');
     }

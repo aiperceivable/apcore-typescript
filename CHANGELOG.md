@@ -18,6 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Pipeline `handler:` dynamic import** — `_resolveStep` and `buildStrategyFromConfig` are now `async`. Handler modules loaded via `await import()` with security checks (rejects `..` segments, `file:` URLs). See DECLARATIVE_CONFIG_SPEC.md §4.4.
 - **Cross-SDK conformance fixtures** in `apcore/conformance/fixtures/`.
 
+### Changed
+
+- **`Context.create({ traceParent })`** — strict input validation per PROTOCOL_SPEC §10.5. trace_ids that are all-zero or all-f (W3C-invalid) now trigger regeneration, and any regeneration now emits `console.warn` (previously silent). No auto-normalization (dashed-UUID stripping or case folding) is performed at `Context.create`; such normalization is the caller's ContextFactory responsibility. Valid 32-hex inputs remain accepted verbatim. Covered by new conformance fixture `context_trace_parent.json`.
+
 ### Changed (BREAKING)
 
 - **`buildStrategyFromConfig()` is now `async`** — returns `Promise<ExecutionStrategy>`. Callers must `await` it. Necessary because `handler:` resolution uses `await import()`.

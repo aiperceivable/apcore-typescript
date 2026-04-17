@@ -99,14 +99,22 @@ describe('Registry', () => {
     }
   });
 
-  it('register rejects reserved word in any segment, not just first', () => {
+  it('register rejects reserved word as first segment', () => {
     const registry = new Registry();
-    expect(() => registry.register('email.system', createMod('email.system'))).toThrow(
+    expect(() => registry.register('system.health', createMod('system.health'))).toThrow(
       /reserved word/,
     );
-    expect(() => registry.register('myapp.core.x', createMod('myapp.core.x'))).toThrow(
+    expect(() => registry.register('core.utils', createMod('core.utils'))).toThrow(
       /reserved word/,
     );
+  });
+
+  it('register allows reserved word in middle segments', () => {
+    const registry = new Registry();
+    expect(() => registry.register('email.system', createMod('email.system'))).not.toThrow();
+    expect(registry.has('email.system')).toBe(true);
+    expect(() => registry.register('myapp.core.x', createMod('myapp.core.x'))).not.toThrow();
+    expect(registry.has('myapp.core.x')).toBe(true);
   });
 
   // registerInternal — bypasses ONLY reserved word check (parity with python/rust)
@@ -116,7 +124,7 @@ describe('Registry', () => {
     expect(registry.has('system.health')).toBe(true);
   });
 
-  it('registerInternal accepts reserved word in any segment', () => {
+  it('registerInternal accepts reserved word in non-first segment', () => {
     const registry = new Registry();
     expect(() => registry.registerInternal('myapp.system.config', createMod('myapp.system.config'))).not.toThrow();
   });

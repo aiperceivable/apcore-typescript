@@ -20,12 +20,12 @@ export interface ConflictResult {
  *
  * Steps:
  *   1. Exact duplicate detection.
- *   2. Reserved word detection (per segment).
+ *   2. Reserved word detection (first segment).
  *   3. Case collision detection.
  *
  * @param newId - Canonical ID to be registered.
  * @param existingIds - Set of already registered IDs.
- * @param reservedWords - Reserved words that cannot be used as ID segments.
+ * @param reservedWords - Reserved words that cannot be used as the first ID segment.
  * @param lowercaseMap - Optional pre-built lowercase-to-original_id mapping for O(1) case collision.
  * @returns ConflictResult if a conflict is found, null if the ID is safe.
  */
@@ -44,15 +44,14 @@ export function detectIdConflicts(
     };
   }
 
-  // Step 2: Reserved word check
-  for (const segment of newId.split('.')) {
-    if (reservedWords.has(segment)) {
-      return {
-        type: 'reserved_word',
-        severity: 'error',
-        message: `Module ID '${newId}' contains reserved word '${segment}'`,
-      };
-    }
+  // Step 2: Reserved word check (first segment only)
+  const firstSegment = newId.split('.')[0];
+  if (reservedWords.has(firstSegment)) {
+    return {
+      type: 'reserved_word',
+      severity: 'error',
+      message: `Module ID '${newId}' contains reserved word '${firstSegment}'`,
+    };
   }
 
   // Step 3: Case collision

@@ -86,18 +86,18 @@ export const MODULE_ID_PATTERN = /^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$/;
 export const MAX_MODULE_ID_LENGTH = 192;
 
 /**
- * Reserved words that cannot appear as any segment of a module ID.
+ * Reserved words that cannot appear as the first segment of a module ID.
  */
 export const RESERVED_WORDS = new Set(['system', 'internal', 'core', 'apcore', 'plugin', 'schema', 'acl']);
 
 /**
  * Validate a module ID against PROTOCOL_SPEC §2.7 in canonical order.
  *
- * Order: empty → pattern → length → reserved (per-segment).
+ * Order: empty → pattern → length → reserved (first-segment).
  * Duplicate detection is the caller's responsibility (it requires registry
  * state).
  *
- * When `allowReserved` is true the per-segment reserved word check is
+ * When `allowReserved` is true the first-segment reserved word check is
  * skipped — used by `Registry.registerInternal` so sys modules can use the
  * `system.*` prefix. All other validations (empty, pattern, length) still
  * apply.
@@ -128,12 +128,11 @@ function validateModuleId(moduleId: string, allowReserved: boolean): void {
     );
   }
 
-  // 4. reserved word per-segment check (skipped for registerInternal)
+  // 4. reserved word first-segment check (skipped for registerInternal)
   if (!allowReserved) {
-    for (const segment of moduleId.split('.')) {
-      if (RESERVED_WORDS.has(segment)) {
-        throw new InvalidInputError(`Module ID contains reserved word: '${segment}'`);
-      }
+    const firstSegment = moduleId.split('.')[0];
+    if (RESERVED_WORDS.has(firstSegment)) {
+      throw new InvalidInputError(`Module ID contains reserved word: '${firstSegment}'`);
     }
   }
 }

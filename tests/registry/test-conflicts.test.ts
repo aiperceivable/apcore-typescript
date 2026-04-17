@@ -19,21 +19,25 @@ describe('detectIdConflicts', () => {
     expect(result!.message).toContain('executor.email.send');
   });
 
-  it('detects reserved word in segment', () => {
+  it('detects reserved word as first segment', () => {
     const existing = new Set<string>();
-    const result = detectIdConflicts('executor.system.check', existing, reserved);
+    const result = detectIdConflicts('system.check', existing, reserved);
     expect(result).not.toBeNull();
     expect(result!.type).toBe('reserved_word');
     expect(result!.severity).toBe('error');
     expect(result!.message).toContain('system');
   });
 
-  it('checks all segments for reserved words', () => {
+  it('allows reserved word in non-first segments', () => {
+    const existing = new Set<string>();
+    const result = detectIdConflicts('executor.system.check', existing, reserved);
+    expect(result).toBeNull();
+  });
+
+  it('allows reserved word in last segment', () => {
     const existing = new Set<string>();
     const result = detectIdConflicts('api.foo.internal', existing, reserved);
-    expect(result).not.toBeNull();
-    expect(result!.type).toBe('reserved_word');
-    expect(result!.message).toContain('internal');
+    expect(result).toBeNull();
   });
 
   it('detects case collision without lowercaseMap', () => {
@@ -71,15 +75,23 @@ describe('detectIdConflicts', () => {
   });
 
   it('prioritises duplicate over reserved word', () => {
-    // If the ID is both a duplicate and contains a reserved word, duplicate wins
-    const existing = new Set(['executor.system.check']);
-    const result = detectIdConflicts('executor.system.check', existing, reserved);
+    // If the ID is both a duplicate and has a reserved first segment, duplicate wins
+    const existing = new Set(['system.check']);
+    const result = detectIdConflicts('system.check', existing, reserved);
     expect(result!.type).toBe('duplicate_id');
   });
 
+  it('detects reserved word when first segment is reserved (non-duplicate)', () => {
+    const existing = new Set<string>();
+    const result = detectIdConflicts('core.check', existing, reserved);
+    expect(result).not.toBeNull();
+    expect(result!.type).toBe('reserved_word');
+    expect(result!.message).toContain('core');
+  });
+
   it('prioritises reserved word over case collision', () => {
-    const existing = new Set(['Executor.Core.Check']);
-    const result = detectIdConflicts('executor.core.check', existing, reserved);
+    const existing = new Set(['System.Check']);
+    const result = detectIdConflicts('system.check', existing, reserved);
     expect(result!.type).toBe('reserved_word');
   });
 });
