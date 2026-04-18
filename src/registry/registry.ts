@@ -319,7 +319,12 @@ export class Registry {
             ? dm.filePath.slice(root.length + 1)
             : null;
           if (relPath && relPath in this._idMap) {
-            dm.canonicalId = this._idMap[relPath]['id'] as string;
+            const rawId = this._idMap[relPath]['id'];
+            if (typeof rawId === 'string' && rawId.length > 0) {
+              dm.canonicalId = rawId;
+            } else {
+              console.warn(`[apcore:registry] ID map entry for '${relPath}' has invalid 'id' field (got ${typeof rawId}), skipping override`);
+            }
             break;
           }
         } catch (e) {
