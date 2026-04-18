@@ -7,9 +7,6 @@ import type { MetricsCollector } from './metrics.js';
 export const METRIC_CALLS_TOTAL = 'apcore_module_calls_total';
 export const METRIC_DURATION_SECONDS = 'apcore_module_duration_seconds';
 
-const DEFAULT_HISTOGRAM_BUCKETS = [
-  0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0,
-];
 
 /**
  * Check if a metric key's labels contain an exact module_id match.
@@ -70,8 +67,9 @@ export function estimateP99FromHistogram(
 
   let p99LatencyMs = 0;
   if (countVal > 0 && histograms.buckets) {
+    const buckets = metricsCollector.buckets;
     const target = countVal * 0.99;
-    for (const b of DEFAULT_HISTOGRAM_BUCKETS) {
+    for (const b of buckets) {
       const bkey = `${durationKey}|${b}`;
       const cumCount = histograms.buckets[bkey] ?? 0;
       if (cumCount >= target) {
@@ -80,7 +78,7 @@ export function estimateP99FromHistogram(
       }
     }
     // All observations exceed the largest bucket
-    p99LatencyMs = DEFAULT_HISTOGRAM_BUCKETS[DEFAULT_HISTOGRAM_BUCKETS.length - 1] * 1000;
+    p99LatencyMs = (buckets[buckets.length - 1] ?? 0) * 1000;
   }
 
   return { avgLatencyMs, p99LatencyMs };

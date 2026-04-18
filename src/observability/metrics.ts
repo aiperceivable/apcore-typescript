@@ -31,6 +31,10 @@ export class MetricsCollector {
     this._buckets = buckets ? [...buckets].sort((a, b) => a - b) : [...MetricsCollector.DEFAULT_BUCKETS];
   }
 
+  get buckets(): readonly number[] {
+    return this._buckets;
+  }
+
   increment(name: string, labels: Record<string, string>, amount: number = 1): void {
     const key = `${name}|${labelsKey(labels)}`;
     this._counters.set(key, (this._counters.get(key) ?? 0) + amount);

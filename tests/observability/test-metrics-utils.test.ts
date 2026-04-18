@@ -107,4 +107,24 @@ describe('estimateP99FromHistogram', () => {
     // avg = (0.1 + 0.3) / 2 = 0.2s = 200ms
     expect(result.avgLatencyMs).toBeCloseTo(200);
   });
+
+  it('uses collector custom buckets instead of hardcoded defaults', () => {
+    // Custom collector with coarse buckets: 1s, 2s, 5s only
+    const collector = new MetricsCollector([1.0, 2.0, 5.0]);
+    // Observe 100 values at 0.5s — all fall in the 1.0s bucket
+    for (let i = 0; i < 100; i++) {
+      collector.observeDuration('mod.custom', 0.5);
+    }
+    const result = estimateP99FromHistogram(collector, 'mod.custom');
+    // p99 target = 99; all 100 land in 1.0s bucket → p99 = 1000ms
+    expect(result.p99LatencyMs).toBe(1000);
+  });
+
+  it('returns last custom bucket when observations exceed all custom buckets', () => {
+    const collector = new MetricsCollector([0.1, 0.5]);
+    collector.observeDuration('mod.custom', 10.0); // exceeds all buckets
+    const result = estimateP99FromHistogram(collector, 'mod.custom');
+    // Last custom bucket is 0.5s = 500ms
+    expect(result.p99LatencyMs).toBe(500);
+  });
 });
