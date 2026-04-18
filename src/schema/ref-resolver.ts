@@ -157,7 +157,15 @@ export class RefResolver {
   }
 
   private _assertWithinSchemasDir(resolvedPath: string, refString: string): void {
-    if (!resolvedPath.startsWith(this._schemasDir + '/') && resolvedPath !== this._schemasDir) {
+    const pathMod = _nodePath!;
+    if (resolvedPath === this._schemasDir) return;
+    const rel = pathMod.relative(this._schemasDir, resolvedPath);
+    // A path is inside schemasDir iff its relative form is non-empty, not
+    // absolute, and does not start with a parent-directory traversal segment.
+    // Using path.relative() makes this check cross-platform — the previous
+    // startsWith(schemasDir + '/') check was hard-coded to POSIX separators
+    // and silently disabled on Windows where resolve() emits backslash paths.
+    if (!rel || pathMod.isAbsolute(rel) || rel === '..' || rel.startsWith('..' + pathMod.sep)) {
       throw new SchemaNotFoundError(
         `Reference '${refString}' resolves outside schemas directory`,
       );

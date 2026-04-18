@@ -354,6 +354,28 @@ describe('RefResolver - path traversal guard', () => {
     expect(() => resolver.resolve(schema)).toThrow(SchemaNotFoundError);
     expect(() => resolver.resolve(schema)).toThrow(/resolves outside schemas directory/);
   });
+
+  it('rejects refs into a sibling directory whose name shares a prefix with schemas dir', () => {
+    // Regression: the earlier guard used `startsWith(schemasDir + '/')` which
+    // is both path-separator dependent AND vulnerable to sibling directories
+    // whose name happens to share a common prefix. The cross-platform
+    // path.relative() based check rejects them consistently.
+    const schemasDir = join(tmpDir, 'schemas');
+    const siblingDir = join(tmpDir, 'schemas_evil');
+    mkdirSync(schemasDir, { recursive: true });
+    mkdirSync(siblingDir, { recursive: true });
+    writeFileSync(join(siblingDir, 'sneaky.yaml'), 'type: string\n');
+
+    const resolver = new RefResolver(schemasDir);
+    const schema = {
+      type: 'object',
+      properties: {
+        x: { $ref: '../schemas_evil/sneaky.yaml' },
+      },
+    };
+    expect(() => resolver.resolve(schema)).toThrow(SchemaNotFoundError);
+    expect(() => resolver.resolve(schema)).toThrow(/resolves outside schemas directory/);
+  });
 });
 
 describe('RefResolver - clearCache', () => {

@@ -320,18 +320,18 @@ export class Executor {
     } catch (exc) {
       if (exc instanceof ExecutionCancelledError) throw exc;
       // Pipeline errors propagate with their original types (ModuleNotFoundError, etc.)
-      // because builtin steps now throw directly.
+      // because builtin steps now throw directly. MiddlewareChainError wraps the
+      // original; unwrap it so callers see the real error class/code instead of a
+      // generic MODULE_EXECUTE_ERROR.
       const ctxObj = pipeCtx.context;
-      const wrapped = propagateError(exc as Error, moduleId, ctxObj);
+      const underlying = exc instanceof MiddlewareChainError ? exc.original : (exc as Error);
+      const wrapped = propagateError(underlying, moduleId, ctxObj);
       const executedMw = pipeCtx.executedMiddlewares;
       if (executedMw && executedMw.length > 0) {
         const recovery = this._middlewareManager.executeOnError(
           moduleId, pipeCtx.inputs, wrapped as Error, ctxObj, executedMw as Middleware[],
         );
         if (recovery !== null) return recovery;
-      }
-      if (exc instanceof MiddlewareChainError) {
-        throw new ModuleError('MODULE_EXECUTE_ERROR', String(exc), { moduleId });
       }
       throw wrapped;
     }
@@ -485,8 +485,26 @@ export class Executor {
       const postStrategy = new ExecutionStrategy('post_stream', postSteps);
       try {
         await this._pipelineEngine.run(postStrategy, pipeCtx);
-      } catch {
-        // Post-stream validation errors are non-fatal for already-yielded chunks
+      } catch (exc) {
+        // Chunks were already yielded, so we can't re-throw without surprising
+        // the consumer mid-iteration. But silently swallowing hides real bugs
+        // (schema violations, after-middleware exceptions) — route through the
+        // onError chain so at least one observability surface sees the failure.
+        const ctxObj = pipeCtx.context;
+        const wrapped = propagateError(exc as Error, moduleId, ctxObj);
+        console.warn(
+          `[apcore:executor] Post-stream validation/after-middleware failed for '${moduleId}':`,
+          wrapped,
+        );
+        if (pipeCtx.executedMiddlewares && pipeCtx.executedMiddlewares.length > 0) {
+          this._middlewareManager.executeOnError(
+            moduleId,
+            pipeCtx.inputs,
+            wrapped as Error,
+            ctxObj,
+            pipeCtx.executedMiddlewares as Middleware[],
+          );
+        }
       }
     }
   }

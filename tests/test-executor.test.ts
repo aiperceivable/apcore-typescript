@@ -278,6 +278,24 @@ describe('Executor', () => {
     expect(errorSeen).toBe(true);
   });
 
+  it('unwraps MiddlewareChainError so callers see the original error class', async () => {
+    // Regression: before-middleware throwing InvalidInputError was wrapped
+    // inside MiddlewareChainError and then re-thrown as a generic
+    // ModuleError('MODULE_EXECUTE_ERROR', ...), losing the original class
+    // and error code.
+    const registry = new Registry();
+    registry.register('echo', createSimpleModule('echo'));
+
+    class FailingBeforeMiddleware extends Middleware {
+      override before(): null {
+        throw new InvalidInputError('bad input from middleware');
+      }
+    }
+
+    const executor = new Executor({ registry, middlewares: [new FailingBeforeMiddleware()] });
+    await expect(executor.call('echo', { name: 'World' })).rejects.toBeInstanceOf(InvalidInputError);
+  });
+
   it('middleware onError can recover', async () => {
     const registry = new Registry();
     const failMod = new FunctionModule({

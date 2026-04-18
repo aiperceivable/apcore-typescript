@@ -2,16 +2,28 @@
  * Dependency resolution via Kahn's topological sort.
  */
 
-import { CircularDependencyError, ModuleLoadError } from '../errors.js';
+import {
+  CircularDependencyError,
+  DependencyNotFoundError,
+  DependencyVersionMismatchError,
+} from '../errors.js';
 import type { DependencyInfo } from './types.js';
+import { matchesVersionHint } from './version.js';
 
 export function resolveDependencies(
   modules: Array<[string, DependencyInfo[]]>,
   knownIds?: Set<string> | null,
+  moduleVersions?: Map<string, string> | Record<string, string> | null,
 ): string[] {
   if (modules.length === 0) return [];
 
   const ids = knownIds ?? new Set(modules.map(([id]) => id));
+
+  const versionLookup: Map<string, string> | null = (() => {
+    if (moduleVersions == null) return null;
+    if (moduleVersions instanceof Map) return moduleVersions;
+    return new Map(Object.entries(moduleVersions));
+  })();
 
   // Build graph and in-degree
   const graph = new Map<string, Set<string>>();
@@ -25,7 +37,27 @@ export function resolveDependencies(
     for (const dep of deps) {
       if (!ids.has(dep.moduleId)) {
         if (dep.optional) continue;
-        throw new ModuleLoadError(moduleId, `Required dependency '${dep.moduleId}' not found`);
+        throw new DependencyNotFoundError(moduleId, dep.moduleId);
+      }
+      if (dep.version && versionLookup !== null) {
+        const actual = versionLookup.get(dep.moduleId);
+        if (actual === undefined) {
+          // Version constraint cannot be evaluated — surface this so a silent
+          // bypass does not masquerade as a satisfied constraint. Typical
+          // cause: the target module is registered but has no `version`
+          // string on its class and no YAML metadata declared one.
+          console.warn(
+            `[apcore:registry] Cannot enforce version constraint '${dep.version}' on '${dep.moduleId}' for '${moduleId}': no version information available for the target module`,
+          );
+        } else if (!matchesVersionHint(actual, dep.version)) {
+          if (dep.optional) {
+            console.warn(
+              `[apcore:registry] Optional dependency '${dep.moduleId}' for module '${moduleId}' has version '${actual}' which does not satisfy constraint '${dep.version}', skipping`,
+            );
+            continue;
+          }
+          throw new DependencyVersionMismatchError(moduleId, dep.moduleId, dep.version, actual);
+        }
       }
       if (!graph.has(dep.moduleId)) graph.set(dep.moduleId, new Set());
       graph.get(dep.moduleId)!.add(moduleId);
@@ -73,27 +105,53 @@ function extractCycle(
   const depMap = new Map<string, string[]>();
   for (const [modId, deps] of modules) {
     if (remaining.has(modId)) {
-      depMap.set(modId, deps.filter((d) => remaining.has(d.moduleId)).map((d) => d.moduleId));
+      const uniq = new Set(deps.filter((d) => remaining.has(d.moduleId)).map((d) => d.moduleId));
+      depMap.set(modId, [...uniq].sort());
     }
   }
 
-  const start = remaining.values().next().value as string;
-  const visited: string[] = [start];
-  const visitedSet = new Set([start]);
-  let current = start;
-
-  while (true) {
-    const nexts = depMap.get(current) ?? [];
-    if (nexts.length === 0) break;
-    const nxt = nexts[0];
-    if (visitedSet.has(nxt)) {
-      const idx = visited.indexOf(nxt);
-      return [...visited.slice(idx), nxt];
-    }
-    visited.push(nxt);
-    visitedSet.add(nxt);
-    current = nxt;
+  const sortedRemaining = [...remaining].sort();
+  for (const start of sortedRemaining) {
+    const cycle = dfsFindCycle(depMap, start);
+    if (cycle !== null) return cycle;
   }
 
-  return [...remaining, remaining.values().next().value as string];
+  return sortedRemaining;
+}
+
+function dfsFindCycle(depMap: Map<string, string[]>, start: string): string[] | null {
+  const path: string[] = [];
+  const onPath = new Set<string>();
+  const visited = new Set<string>();
+  const stack: Array<[string, number]> = [[start, 0]];
+
+  while (stack.length > 0) {
+    const frame = stack[stack.length - 1];
+    const [node, idx] = frame;
+    if (idx === 0) {
+      if (onPath.has(node)) {
+        const startIdx = path.indexOf(node);
+        return [...path.slice(startIdx), node];
+      }
+      if (visited.has(node)) {
+        stack.pop();
+        continue;
+      }
+      visited.add(node);
+      onPath.add(node);
+      path.push(node);
+    }
+
+    const neighbors = depMap.get(node) ?? [];
+    if (idx < neighbors.length) {
+      frame[1] = idx + 1;
+      stack.push([neighbors[idx], 0]);
+    } else {
+      onPath.delete(node);
+      path.pop();
+      stack.pop();
+    }
+  }
+
+  return null;
 }

@@ -181,6 +181,47 @@ describe('Executor.stream()', () => {
     expect(afterOutput).toEqual({ a: 'test_a', b: 'test_b' });
   });
 
+  it('logs and routes to onError middleware when post-stream after() throws', async () => {
+    // Regression: post-stream validation / after-middleware exceptions were
+    // silently swallowed in Phase 3. At minimum the error should surface via
+    // console.warn and the onError middleware chain so telemetry sees it.
+    const registry = new Registry();
+    const mod = createStreamingModule('stream_after_fail');
+    registry.register('stream_after_fail', mod);
+
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (...args: unknown[]) => {
+      warnings.push(args.map((a) => String(a)).join(' '));
+    };
+
+    let onErrorCalled = false;
+    class FailingAfter extends Middleware {
+      override after(): null {
+        throw new Error('post-stream after boom');
+      }
+      override onError(): null {
+        onErrorCalled = true;
+        return null;
+      }
+    }
+
+    try {
+      const executor = new Executor({ registry, middlewares: [new FailingAfter()] });
+      const chunks = await collectChunks(executor.stream('stream_after_fail', { name: 'Test' }));
+      // Chunks should still be yielded (the error happens post-iteration)
+      expect(chunks.length).toBeGreaterThan(0);
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    const matched = warnings.some(
+      (w) => w.includes('[apcore:executor]') && w.includes('Post-stream'),
+    );
+    expect(matched).toBe(true);
+    expect(onErrorCalled).toBe(true);
+  });
+
   it('validates output schema on accumulated streaming result', async () => {
     const registry = new Registry();
     const mod = new FunctionModule({
