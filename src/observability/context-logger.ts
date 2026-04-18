@@ -16,6 +16,18 @@ const LEVELS: Record<string, number> = {
 
 const REDACTED = '***REDACTED***';
 
+function deepRedact(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(deepRedact);
+  if (value !== null && typeof value === 'object') {
+    const result: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      result[k] = k.startsWith('_secret_') ? REDACTED : deepRedact(v);
+    }
+    return result;
+  }
+  return value;
+}
+
 interface WritableOutput {
   write(s: string): void;
 }
@@ -66,10 +78,7 @@ export class ContextLogger {
 
     let redactedExtra = extra ?? null;
     if (extra != null && this._redactSensitive) {
-      redactedExtra = {};
-      for (const [k, v] of Object.entries(extra)) {
-        (redactedExtra as Record<string, unknown>)[k] = k.startsWith('_secret_') ? REDACTED : v;
-      }
+      redactedExtra = deepRedact(extra) as Record<string, unknown>;
     }
 
     const now = new Date();

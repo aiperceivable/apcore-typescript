@@ -63,6 +63,24 @@ describe('ContextLogger', () => {
     expect(parsed.extra._secret_token).toBe('abc123');
   });
 
+  it('redacts _secret_ keys nested inside objects', () => {
+    const { output, lines } = createBufferOutput();
+    const logger = new ContextLogger({ output });
+    logger.info('test', { user: { name: 'Bob', _secret_password: 'hunter2' } });
+    const parsed = JSON.parse(lines[0]);
+    expect(parsed.extra.user.name).toBe('Bob');
+    expect(parsed.extra.user._secret_password).toBe('***REDACTED***');
+  });
+
+  it('redacts _secret_ keys inside array elements', () => {
+    const { output, lines } = createBufferOutput();
+    const logger = new ContextLogger({ output });
+    logger.info('test', { items: [{ _secret_key: 'shh', label: 'ok' }] });
+    const parsed = JSON.parse(lines[0]);
+    expect(parsed.extra.items[0]._secret_key).toBe('***REDACTED***');
+    expect(parsed.extra.items[0].label).toBe('ok');
+  });
+
   it('fromContext sets trace/module/caller', () => {
     const { output, lines } = createBufferOutput();
     const ctx = Context.create(undefined, createIdentity('user1'));
