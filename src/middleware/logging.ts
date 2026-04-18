@@ -1,5 +1,10 @@
 /**
  * LoggingMiddleware for structured module call logging.
+ *
+ * @deprecated Use `ObsLoggingMiddleware` from `apcore/observability` instead.
+ * `ObsLoggingMiddleware` provides the same functionality with structured JSON
+ * output, configurable log levels, and `_secret_`-key redaction via
+ * `ContextLogger`. `LoggingMiddleware` will be removed in a future major version.
  */
 
 import type { Context } from '../context.js';
@@ -19,6 +24,7 @@ const defaultLogger: Logger = {
   },
 };
 
+/** @deprecated Use `ObsLoggingMiddleware` from `apcore/observability`. */
 export class LoggingMiddleware extends Middleware {
   private _logger: Logger;
   private _logInputs: boolean;
