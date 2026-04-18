@@ -6,10 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
-## [0.19.0] - 2026-04-17
+## [0.19.0] - 2026-04-19
 
 ### Added
 
+- **`DependencyNotFoundError`** (error code `DEPENDENCY_NOT_FOUND`) — thrown by `resolveDependencies` when a module's required dependency is not registered. Aligns TypeScript with PROTOCOL_SPEC §5.15.2 which has always mandated this error code. Details include `moduleId` and `dependencyId`. Exported from `apcore`.
+- **`DependencyVersionMismatchError`** (error code `DEPENDENCY_VERSION_MISMATCH`) — thrown by `resolveDependencies` when a declared `version` constraint is not satisfied by the registered version of the target module. Details include `moduleId`, `dependencyId`, `required`, `actual`. Exported from `apcore`.
+- **`resolveDependencies(modules, knownIds, moduleVersions)`** — new optional third argument accepting `Map<string, string>` or `Record<string, string>` mapping module id → version. When provided, declared dependency version constraints are enforced per PROTOCOL_SPEC §5.3. When absent, the `DependencyInfo.version` field is silently ignored. `ModuleRegistry._resolveLoadOrder` now populates this map from YAML version / class `version` / `"1.0.0"` fallback, and includes already-registered modules so inter-batch constraints resolve against the live registry.
+- **Caret (`^`) and tilde (`~`) constraint support** in `matchesVersionHint` / `selectBestVersion` (npm/Cargo semantics): `^1.2.3 → >=1.2.3,<2.0.0`, `^0.2.3 → >=0.2.3,<0.3.0`, `^0.0.3 → >=0.0.3,<0.0.4`, `~1.2.3 → >=1.2.3,<1.3.0`, `~1.2 → >=1.2.0,<1.3.0`, `~1 → >=1.0.0,<2.0.0`. `matchesVersionHint` is now exported.
 - **Auto-schema multi-adapter chain** (`src/schema/extractor.ts`) — `SchemaExtractorRegistry` with pluggable adapters. Built-in: TypeBox (priority 100, detects `Symbol.for('TypeBox.Kind')`), JsonSchema (priority 30, detects `type`/`properties`). Custom adapters (zod, class-validator, typia) registered via `SchemaExtractorRegistry.register()`. See DECLARATIVE_CONFIG_SPEC.md §6.3.
 - **`auto_schema: true | permissive | strict`** in binding YAML — triggers module export scanning (`inputSchema`/`outputSchema` named exports, or `<symbolName>InputSchema`/`<symbolName>OutputSchema` companion naming). Implicit default when no schema mode specified.
 - **`BindingSchemaInferenceFailedError`** and **`BindingSchemaModeConflictError`** — canonical errors per DECLARATIVE_CONFIG_SPEC.md §7.1. `BindingSchemaMissingError` is now a deprecated alias.
@@ -18,8 +22,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Pipeline `handler:` dynamic import** — `_resolveStep` and `buildStrategyFromConfig` are now `async`. Handler modules loaded via `await import()` with security checks (rejects `..` segments, `file:` URLs). See DECLARATIVE_CONFIG_SPEC.md §4.4.
 - **Cross-SDK conformance fixtures** in `apcore/conformance/fixtures/`.
 
-### Changed
+### Fixed
 
+- **`resolveDependencies` cycle path accuracy** — `extractCycle` previously returned a phantom path (all remaining nodes plus the first one re-appended) when the arbitrarily-picked start node had no outgoing edge inside `remaining`. This could happen when a module is blocked on an external `knownIds` dependency while another subset contains a real cycle. Rewritten to DFS from each remaining node (sorted) and return a true back-edge cycle `[n0, ..., nk, n0]`; falls back to `sortedRemaining` only when no back-edge exists.
+
+### Changed
+- **Missing required dependencies now throw `DependencyNotFoundError` (code `DEPENDENCY_NOT_FOUND`) instead of `ModuleLoadError` (code `MODULE_LOAD_ERROR`).** Brings TypeScript into compliance with PROTOCOL_SPEC §5.15.2. Upgrade path: catch `DependencyNotFoundError` specifically, or catch the `ModuleError` base class. Code-based dispatch (`err.code === 'DEPENDENCY_NOT_FOUND'`) also works and is recommended for cross-language consumers.
 - **`Context.create({ traceParent })`** — strict input validation per PROTOCOL_SPEC §10.5. trace_ids that are all-zero or all-f (W3C-invalid) now trigger regeneration, and any regeneration now emits `console.warn` (previously silent). No auto-normalization (dashed-UUID stripping or case folding) is performed at `Context.create`; such normalization is the caller's ContextFactory responsibility. Valid 32-hex inputs remain accepted verbatim. Covered by new conformance fixture `context_trace_parent.json`.
 
 ### Changed (BREAKING)

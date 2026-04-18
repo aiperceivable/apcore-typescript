@@ -79,6 +79,8 @@ export {
   FuncMissingTypeHintError,
   FuncMissingReturnTypeError,
   CircularDependencyError,
+  DependencyNotFoundError,
+  DependencyVersionMismatchError,
   ModuleLoadError,
   ReloadFailedError,
   ModuleExecuteError,

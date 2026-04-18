@@ -3,7 +3,7 @@
  */
 
 const SEMVER_RE = /^(\d+)(?:\.(\d+))?(?:\.(\d+))?/;
-const CONSTRAINT_RE = /^(>=|<=|>|<|=)?(.+)$/;
+const CONSTRAINT_RE = /^(>=|<=|>|<|\^|~|=)?(.+)$/;
 
 /**
  * Parse a version string into a [major, minor, patch] tuple.
@@ -36,6 +36,32 @@ export function compareSemver(a: string, b: string): number {
   return 0;
 }
 
+function caretUpperBound(
+  target: [number, number, number],
+): [number, number, number] {
+  // npm/Cargo semantics:
+  //   ^1.2.3 -> <2.0.0
+  //   ^0.2.3 -> <0.3.0
+  //   ^0.0.3 -> <0.0.4
+  const [major, minor, patch] = target;
+  if (major > 0) return [major + 1, 0, 0];
+  if (minor > 0) return [0, minor + 1, 0];
+  return [0, 0, patch + 1];
+}
+
+function tildeUpperBound(
+  target: [number, number, number],
+  partCount: number,
+): [number, number, number] {
+  // npm semantics:
+  //   ~1.2.3 -> <1.3.0   (3 parts: patch bumps)
+  //   ~1.2   -> <1.3.0   (2 parts: patch bumps)
+  //   ~1     -> <2.0.0   (1 part: minor + patch bumps)
+  const [major, minor] = target;
+  if (partCount >= 2) return [major, minor + 1, 0];
+  return [major + 1, 0, 0];
+}
+
 function checkSingleConstraint(
   versionTuple: [number, number, number],
   constraint: string,
@@ -47,10 +73,18 @@ function checkSingleConstraint(
   }
   const op = m[1] || '=';
   const target = parseSemver(m[2]) ?? [0, 0, 0];
-
-  // Partial match: if constraint is just a major number (e.g. "1"),
-  // match any version with the same major
   const parts = m[2].trim().split('.');
+
+  if (op === '^') {
+    const upper = caretUpperBound(target);
+    return compareTuples(versionTuple, target) >= 0 && compareTuples(versionTuple, upper) < 0;
+  }
+  if (op === '~') {
+    const upper = tildeUpperBound(target, parts.length);
+    return compareTuples(versionTuple, target) >= 0 && compareTuples(versionTuple, upper) < 0;
+  }
+
+  // Partial match: "1" matches any 1.x.x, "1.2" matches any 1.2.x
   if (op === '=' && parts.length === 1) {
     return versionTuple[0] === target[0];
   }
@@ -77,7 +111,7 @@ function compareTuples(
   return 0;
 }
 
-function matchesVersionHint(version: string, hint: string): boolean {
+export function matchesVersionHint(version: string, hint: string): boolean {
   const versionTuple = parseSemver(version) ?? [0, 0, 0];
   const constraints = hint.split(',').map((c) => c.trim());
   return constraints.every((c) => checkSingleConstraint(versionTuple, c));
