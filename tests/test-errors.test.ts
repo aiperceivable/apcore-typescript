@@ -705,11 +705,12 @@ describe('AI Error Guidance Fields', () => {
       expect(json.details).toEqual({ key: 'val' });
     });
 
-    it('includes cause as string', () => {
-      const cause = new Error('root');
+    it('includes cause as the Error message only (no type prefix or stack)', () => {
+      const cause = new Error('root cause message');
       const err = new ModuleError('TEST', 'test', {}, cause);
       const json = err.toJSON();
-      expect(json.cause).toBe('Error: root');
+      // Only the message is included — no "Error: " prefix or stack frames
+      expect(json.cause).toBe('root cause message');
     });
 
     it('includes traceId when present', () => {

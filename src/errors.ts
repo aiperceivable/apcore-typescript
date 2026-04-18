@@ -64,7 +64,7 @@ export class ModuleError extends Error {
       obj.details = this.details;
     }
     if (this.cause !== undefined) {
-      obj.cause = String(this.cause);
+      obj.cause = this.cause instanceof Error ? this.cause.message : String(this.cause);
     }
     if (this.traceId !== undefined) {
       obj.traceId = this.traceId;
