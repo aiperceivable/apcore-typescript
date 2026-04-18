@@ -140,8 +140,15 @@ export class UsageCollector {
   private _collectRecords(moduleId: string, start: Date, end: Date): UsageRecord[] {
     const mod = this._data.get(moduleId);
     if (!mod) return [];
+
+    // Bucket keys are ISO hour strings (e.g. "2026-04-18T10") — lexicographic
+    // order matches chronological order, so we can skip buckets outside range.
+    const startKey = bucketKey(start);
+    const endKey = bucketKey(end);
+
     const records: UsageRecord[] = [];
-    for (const recs of mod.values()) {
+    for (const [bk, recs] of mod.entries()) {
+      if (bk < startKey || bk > endKey) continue;
       for (const r of recs) {
         const ts = new Date(r.timestamp);
         if (ts >= start && ts <= end) {
