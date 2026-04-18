@@ -29,28 +29,16 @@ const DEFAULT_RETRY_CONFIG: RetryConfig = {
 /**
  * Advisory retry-hint middleware.
  *
- * **IMPORTANT:** Despite the name, this middleware does NOT cause the
- * MiddlewareManager to re-invoke the failed module. First-class
- * re-execution is not part of the middleware contract in this version.
+ * This middleware does NOT re-invoke the failed module. It records retry
+ * state and advisory delay hints in `context.data` for outer retry loops,
+ * then returns null so the original error always propagates to the caller.
  *
- * What this middleware actually does when onError fires on a retryable
- * error:
- *
- *   1. Increments a retry counter in `context.data` (key prefix
- *      `CTX_RETRY_COUNT_PREFIX`).
- *   2. Writes an advisory delay (ms) to `context.data` under
- *      `CTX_RETRY_DELAY_PREFIX` so an outer executor can honor it.
- *   3. Returns the original inputs. `MiddlewareManager.executeOnError`
- *      treats the first non-null return from onError as the **recovered
- *      output** and yields it to the caller — meaning the caller will see
- *      the input payload echoed back as the module's output.
+ * Context keys written on a retryable error:
+ *   - `CTX_RETRY_COUNT_PREFIX + moduleId` — number of attempts so far
+ *   - `CTX_RETRY_DELAY_PREFIX + moduleId` — suggested delay in ms before retry
  *
  * If you need real retries, wrap `Executor.call` in an outer retry loop
- * that inspects `error.retryable` and the hint values above. A first-class
- * pipeline-level retry primitive may be added in a future major version.
- *
- * After `maxRetries` attempts or for non-retryable errors, `onError`
- * returns null so the original error propagates.
+ * that inspects `error.retryable` and the hint values above.
  */
 export class RetryMiddleware extends Middleware {
   private _config: RetryConfig;
@@ -81,20 +69,16 @@ export class RetryMiddleware extends Middleware {
 
     const delayMs = this._calculateDelay(retryCount);
     context.data[retryKey] = retryCount + 1;
-
-    console.warn(
-      `[apcore:retry] Retrying module '${moduleId}' (attempt ${retryCount + 1}/${this._config.maxRetries}) after ${Math.round(delayMs)}ms`,
-    );
-
-    // Synchronous onError cannot await -- schedule sleep externally.
-    // In JS, the MiddlewareManager runs onError synchronously, so we block
-    // via a busy wait only if strictly needed, but the better approach is
-    // to return the inputs immediately and let the pipeline handle retry.
-    // For compatibility with the sync Middleware base class, we return
-    // inputs directly. The delay is handled via context.data hint.
     context.data[`${CTX_RETRY_DELAY_PREFIX}${moduleId}`] = delayMs;
 
-    return { ...inputs };
+    console.warn(
+      `[apcore:retry] Retryable error in '${moduleId}' (attempt ${retryCount + 1}/${this._config.maxRetries}). ` +
+        `Hint written to context.data for outer retry loop (delay: ${Math.round(delayMs)}ms).`,
+    );
+
+    // Return null so the error propagates. Returning inputs here would cause
+    // the executor to treat them as the recovered output — a silent footgun.
+    return null;
   }
 
   private _calculateDelay(attempt: number): number {

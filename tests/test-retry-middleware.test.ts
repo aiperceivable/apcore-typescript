@@ -17,12 +17,12 @@ describe('RetryMiddleware', () => {
     expect(mw.onError('test.module', { x: 1 }, err, ctx)).toBeNull();
   });
 
-  it('returns inputs for retryable errors', () => {
+  it('returns null for retryable errors (error always propagates) and records hint in context', () => {
     const mw = new RetryMiddleware();
     const ctx = makeContext();
     const err = new ModuleTimeoutError('test.module', 5000);
     const result = mw.onError('test.module', { x: 1 }, err, ctx);
-    expect(result).toEqual({ x: 1 });
+    expect(result).toBeNull();
     expect(ctx.data['_apcore.mw.retry.count.test.module']).toBe(1);
   });
 
@@ -86,12 +86,9 @@ describe('RetryMiddleware', () => {
     expect(ctx.data['_apcore.mw.retry.delay_ms.test.module']).toBe(2000);
   });
 
-  it('documented semantic: the module is NOT re-invoked — caller receives the echoed input as output', async () => {
-    // Pinning behavior that the class docstring explicitly warns about:
-    // MiddlewareManager treats the first non-null onError return as the
-    // recovered output. RetryMiddleware returns the inputs, so Executor.call
-    // resolves with those inputs, NOT with a successful module output.
-    // Tests like this one must be updated if first-class retry lands.
+  it('returns null from onError so the error propagates (no input echoing)', async () => {
+    // RetryMiddleware now always returns null — errors propagate to the caller
+    // and context.data holds retry hints for outer retry loops.
     let invocations = 0;
     const flaky = new FunctionModule({
       execute: () => {
@@ -107,10 +104,8 @@ describe('RetryMiddleware', () => {
     registry.register('flaky', flaky);
     const executor = new Executor({ registry, middlewares: [new RetryMiddleware()] });
 
-    const result = await executor.call('flaky', { x: 42 });
+    await expect(executor.call('flaky', { x: 42 })).rejects.toThrow(ModuleTimeoutError);
     // Module executed exactly once — no auto-retry.
     expect(invocations).toBe(1);
-    // Caller sees the inputs echoed back as "output".
-    expect(result).toEqual({ x: 42 });
   });
 });
