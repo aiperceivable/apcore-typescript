@@ -103,6 +103,8 @@ export class UsageCollector {
     }
     if (bucket.length < this._maxRecordsPerBucket) {
       bucket.push(rec);
+    } else {
+      console.warn(`[apcore:usage] Record buffer full for module '${moduleId}' bucket '${bk}' (max ${this._maxRecordsPerBucket}) — record dropped`);
     }
     this._cleanupExpired(moduleId);
   }
