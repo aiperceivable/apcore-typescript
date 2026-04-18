@@ -377,13 +377,34 @@ export class Registry {
     rawMetadata: Map<string, Record<string, unknown>>,
   ): string[] {
     const modulesWithDeps: Array<[string, DependencyInfo[]]> = [];
-    for (const modId of validModules.keys()) {
+    const moduleVersions = new Map<string, string>();
+    for (const [modId, cls] of validModules.entries()) {
       const meta = rawMetadata.get(modId) ?? {};
       const depsRaw = (meta['dependencies'] as Array<Record<string, unknown>>) ?? [];
       modulesWithDeps.push([modId, depsRaw.length > 0 ? parseDependencies(depsRaw) : []]);
+      const yamlVersion = meta['version'];
+      const codeVersion = (cls as { version?: unknown })?.version;
+      const resolvedVersion =
+        (typeof yamlVersion === 'string' && yamlVersion) ||
+        (typeof codeVersion === 'string' && codeVersion) ||
+        '1.0.0';
+      moduleVersions.set(modId, resolvedVersion);
     }
-    const knownIds = new Set(modulesWithDeps.map(([id]) => id));
-    return resolveDependencies(modulesWithDeps, knownIds);
+    // Include already-registered modules so inter-batch version constraints
+    // resolve against the live registry too.
+    for (const [existingId, existingMod] of this._modules.entries()) {
+      if (!moduleVersions.has(existingId)) {
+        const existingVersion = (existingMod as { version?: unknown })?.version;
+        if (typeof existingVersion === 'string') {
+          moduleVersions.set(existingId, existingVersion);
+        }
+      }
+    }
+    const knownIds = new Set([
+      ...modulesWithDeps.map(([id]) => id),
+      ...this._modules.keys(),
+    ]);
+    return resolveDependencies(modulesWithDeps, knownIds, moduleVersions);
   }
 
   private _registerInOrder(
@@ -658,21 +679,33 @@ export class Registry {
           if (now - last < 300) return;
           this._debounceTimers?.set(fullPath, now);
 
+          const handle = (p: Promise<void>): void => {
+            p.catch((e: unknown) => {
+              console.warn(`[apcore:registry] Watch handler failed for ${fullPath}:`, e);
+            });
+          };
+
           if (eventType === "rename") {
             // Could be create or delete
             try {
               fs.accessSync(fullPath);
-              this._handleFileChange(fullPath);
+              handle(this._handleFileChange(fullPath));
             } catch {
-              this._handleFileDeletion(fullPath);
+              handle(this._handleFileDeletion(fullPath));
             }
           } else {
-            this._handleFileChange(fullPath);
+            handle(this._handleFileChange(fullPath));
           }
         });
         this._watchers.push(watcher);
-      } catch {
-        // Skip directories that don't exist
+      } catch (e) {
+        // Surface real failures (EMFILE, EACCES, Linux kernels < 4.7 without
+        // recursive support, etc.). A silently non-functional watch misleads
+        // users who expect hot-reload to be active.
+        console.warn(
+          `[apcore:registry] fs.watch failed for '${rootPath}' — hot-reload disabled for this root:`,
+          e,
+        );
       }
     }
   }
@@ -695,13 +728,24 @@ export class Registry {
     if (moduleId && this.has(moduleId)) {
       const oldModule = this.get(moduleId) as Record<string, unknown> | null;
       if (oldModule && typeof oldModule.onUnload === "function") {
-        try { oldModule.onUnload(); } catch { /* ignore */ }
+        try {
+          oldModule.onUnload();
+        } catch (e) {
+          console.warn(`[apcore:registry] onUnload failed for '${moduleId}':`, e);
+        }
       }
       this.unregister(moduleId);
     }
 
-    // Re-import is complex in ES modules - emit event for user to handle
-    this._triggerEvent("register", moduleId ?? basename(filePath, extname(filePath)), null);
+    // Re-import is complex in ES modules — tell consumers that a watched file
+    // changed so they can re-import and re-register. The earlier design
+    // emitted a 'register' event with a null module, which crashed any
+    // consumer that accessed fields on the module argument.
+    this._triggerEvent(
+      "file_changed",
+      moduleId ?? basename(filePath, extname(filePath)),
+      { filePath },
+    );
   }
 
   private async _handleFileDeletion(path: string): Promise<void> {
@@ -709,7 +753,11 @@ export class Registry {
     if (moduleId && this.has(moduleId)) {
       const module = this.get(moduleId) as Record<string, unknown> | null;
       if (module && typeof module.onUnload === "function") {
-        try { module.onUnload(); } catch { /* ignore */ }
+        try {
+          module.onUnload();
+        } catch (e) {
+          console.warn(`[apcore:registry] onUnload failed for '${moduleId}':`, e);
+        }
       }
       this.unregister(moduleId);
     }
@@ -853,9 +901,17 @@ export class Registry {
 
   /**
    * Remove the draining mark and clean up drain state.
+   *
+   * If any waitDrained waiters are still pending (e.g., refCount briefly
+   * hit zero and then a new acquire bumped it back up), resolve them first
+   * so they do not wait for their individual timeouts before returning.
    */
   endDrain(moduleId: string): void {
     this._draining.delete(moduleId);
+    const resolvers = this._drainResolvers.get(moduleId);
+    if (resolvers) {
+      for (const resolve of resolvers) resolve();
+    }
     this._drainResolvers.delete(moduleId);
     this._refCounts.delete(moduleId);
   }

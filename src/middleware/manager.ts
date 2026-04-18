@@ -83,14 +83,29 @@ export class MiddlewareManager {
   ): Record<string, unknown> {
     let currentOutput = output;
     const middlewares = this.snapshot();
+    let firstError: Error | null = null;
 
+    // Run every after() hook even if one throws, so a single misbehaving
+    // middleware cannot silently block subsequent observers from seeing
+    // the output. Surface the first error once all hooks have run.
     for (let i = middlewares.length - 1; i >= 0; i--) {
-      const result = middlewares[i].after(moduleId, inputs, currentOutput, context);
-      if (result !== null) {
-        currentOutput = result;
+      try {
+        const result = middlewares[i].after(moduleId, inputs, currentOutput, context);
+        if (result !== null) {
+          currentOutput = result;
+        }
+      } catch (e) {
+        if (firstError === null) firstError = e as Error;
+        else {
+          console.warn(
+            '[apcore:middleware] Additional error in after() while propagating earlier error:',
+            e,
+          );
+        }
       }
     }
 
+    if (firstError !== null) throw firstError;
     return currentOutput;
   }
 

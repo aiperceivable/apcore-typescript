@@ -140,7 +140,10 @@ export class ReloadModule {
     }
 
     const start = performance.now();
-    this._registry.unregister(moduleId);
+    // Use safeUnregister so in-flight executions finish (or time out) before
+    // the module disappears. Bare unregister() lets a caller land between
+    // unregister and re-discovery and see ModuleNotFoundError.
+    await this._registry.safeUnregister(moduleId);
 
     try {
       await this._registry.discover();

@@ -12,10 +12,10 @@ export interface Logger {
 
 const defaultLogger: Logger = {
   info(message: string, extra?: Record<string, unknown>) {
-    console.info(message, extra ?? '');
+    console.info(`[apcore:middleware.logging] ${message}`, extra ?? '');
   },
   error(message: string, extra?: Record<string, unknown>) {
-    console.error(message, extra ?? '');
+    console.error(`[apcore:middleware.logging] ${message}`, extra ?? '');
   },
 };
 
@@ -68,13 +68,17 @@ export class LoggingMiddleware extends Middleware {
     const durationMs = performance.now() - startTime;
 
     if (this._logOutputs) {
+      // Use the schema-aware redacted output when the executor produced one;
+      // the executor's redaction only ran on context.redactedOutput and not
+      // on the raw `output` argument.
+      const redactedOutput = context.redactedOutput ?? output;
       this._logger.info(
         `[${context.traceId}] END ${moduleId} (${durationMs.toFixed(2)}ms)`,
         {
           traceId: context.traceId,
           moduleId,
           durationMs,
-          output,
+          output: redactedOutput,
         },
       );
     }

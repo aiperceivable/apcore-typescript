@@ -79,15 +79,18 @@ export class OTLPExporter implements SpanExporter {
   private _endpoint: string;
   private _serviceName: string;
   private _headers: Record<string, string>;
+  private _timeoutMs: number;
 
   constructor(options?: {
     endpoint?: string;
     serviceName?: string;
     headers?: Record<string, string>;
+    timeoutMs?: number;
   }) {
     this._endpoint = options?.endpoint ?? 'http://localhost:4318/v1/traces';
     this._serviceName = options?.serviceName ?? 'apcore';
     this._headers = options?.headers ?? {};
+    this._timeoutMs = options?.timeoutMs ?? 5000;
   }
 
   export(span: Span): void {
@@ -117,7 +120,10 @@ export class OTLPExporter implements SpanExporter {
       }],
     };
 
-    // Fire-and-forget POST
+    // Fire-and-forget POST with timeout so a stuck OTLP backend does not
+    // accumulate pending promises and retain span data in memory.
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this._timeoutMs);
     fetch(this._endpoint, {
       method: 'POST',
       headers: {
@@ -125,9 +131,14 @@ export class OTLPExporter implements SpanExporter {
         ...this._headers,
       },
       body: JSON.stringify(payload),
-    }).catch((err: unknown) => {
-      console.warn('[apcore:tracing] OTLP export failed:', err);
-    });
+      signal: controller.signal,
+    })
+      .catch((err: unknown) => {
+        console.warn('[apcore:tracing] OTLP export failed:', err);
+      })
+      .finally(() => {
+        clearTimeout(timer);
+      });
   }
 }
 

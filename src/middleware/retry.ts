@@ -27,13 +27,30 @@ const DEFAULT_RETRY_CONFIG: RetryConfig = {
 };
 
 /**
- * Middleware that retries failed module executions based on error retryability.
+ * Advisory retry-hint middleware.
  *
- * When onError is called with a retryable error (error.retryable === true),
- * it returns the original inputs to signal the middleware pipeline to retry.
- * The calculated delay is stored in context.data as a hint for the caller.
- * After maxRetries attempts or for non-retryable errors, returns null so the
- * error propagates.
+ * **IMPORTANT:** Despite the name, this middleware does NOT cause the
+ * MiddlewareManager to re-invoke the failed module. First-class
+ * re-execution is not part of the middleware contract in this version.
+ *
+ * What this middleware actually does when onError fires on a retryable
+ * error:
+ *
+ *   1. Increments a retry counter in `context.data` (key prefix
+ *      `CTX_RETRY_COUNT_PREFIX`).
+ *   2. Writes an advisory delay (ms) to `context.data` under
+ *      `CTX_RETRY_DELAY_PREFIX` so an outer executor can honor it.
+ *   3. Returns the original inputs. `MiddlewareManager.executeOnError`
+ *      treats the first non-null return from onError as the **recovered
+ *      output** and yields it to the caller — meaning the caller will see
+ *      the input payload echoed back as the module's output.
+ *
+ * If you need real retries, wrap `Executor.call` in an outer retry loop
+ * that inspects `error.retryable` and the hint values above. A first-class
+ * pipeline-level retry primitive may be added in a future major version.
+ *
+ * After `maxRetries` attempts or for non-retryable errors, `onError`
+ * returns null so the original error propagates.
  */
 export class RetryMiddleware extends Middleware {
   private _config: RetryConfig;

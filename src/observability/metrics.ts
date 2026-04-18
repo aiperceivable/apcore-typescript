@@ -149,6 +149,17 @@ function parseLabels(lk: string): Record<string, string> {
   return result;
 }
 
+/**
+ * Escape a Prometheus exposition-format label value per
+ * https://prometheus.io/docs/instrumenting/exposition_formats/ :
+ *   backslash -> \\, double-quote -> \", newline -> \n.
+ * Without this, any label value containing `"`, `\` or `\n` silently breaks
+ * the exposition format and breaks downstream parsers.
+ */
+function escapeLabelValue(value: string): string {
+  return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
+}
+
 function formatLabels(labels: Record<string, string>): string {
   const entries = Object.entries(labels);
   if (entries.length === 0) return '';
@@ -157,7 +168,7 @@ function formatLabels(labels: Record<string, string>): string {
     if (b === 'le') return -1;
     return a.localeCompare(b);
   });
-  const pairs = sorted.map(([k, v]) => `${k}="${v}"`).join(',');
+  const pairs = sorted.map(([k, v]) => `${k}="${escapeLabelValue(v)}"`).join(',');
   return `{${pairs}}`;
 }
 

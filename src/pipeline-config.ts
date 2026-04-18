@@ -184,13 +184,25 @@ async function _importStep(handlerPath: string, config: Record<string, unknown>)
     );
   }
 
-  // Try constructor first (handles class exports), fall back to function call.
-  let step: unknown;
-  try {
-    step = new (resolved as new (cfg: Record<string, unknown>) => Step)(config);
-  } catch {
-    step = (resolved as (cfg: Record<string, unknown>) => Step)(config);
-  }
+  // Distinguish class export (has a prototype with a `constructor` pointing
+  // back to itself) from factory function. The previous implementation used
+  // try/new-then-fallback-to-call, which silently swallowed legitimate
+  // constructor errors (bad config, missing required field) and produced
+  // misleading secondary failures when the fallback call was invoked on a
+  // class that required `new`.
+  const isLikelyClass =
+    typeof resolved === 'function' &&
+    resolved.prototype != null &&
+    typeof resolved.prototype === 'object' &&
+    resolved.prototype.constructor === resolved &&
+    // Arrow functions have no prototype; factories with .prototype typically
+    // have the default Object constructor, so also require the function's
+    // name to start uppercase (class convention).
+    /^[A-Z]/.test(resolved.name ?? '');
+
+  const step: unknown = isLikelyClass
+    ? new (resolved as new (cfg: Record<string, unknown>) => Step)(config)
+    : (resolved as (cfg: Record<string, unknown>) => Step)(config);
   return step as Step;
 }
 

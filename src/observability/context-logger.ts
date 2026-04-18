@@ -176,7 +176,11 @@ export class ObsLoggingMiddleware extends Middleware {
       duration_ms: durationMs,
     };
     if (this._logOutputs) {
-      extra['output'] = output;
+      // Prefer the executor's schema-aware redacted output so x-sensitive
+      // fields (API keys, tokens) do not leak into logs. The executor has
+      // already applied the schema; falling back to `output` preserves
+      // behavior for callers invoking the middleware outside the pipeline.
+      extra['output'] = context.redactedOutput ?? output;
     }
     this._logger.info('Module call completed', extra);
     return null;

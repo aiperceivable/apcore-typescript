@@ -40,6 +40,7 @@ export class Context<T = null> {
   readonly services: T;
   readonly cancelToken: CancelToken | null;
   readonly globalDeadline: number | null;
+  private _logger: ContextLogger | null = null;
 
   constructor(
     traceId: string,
@@ -121,36 +122,13 @@ export class Context<T = null> {
    * Uses snake_case keys for cross-language consistency.
    * Excludes: executor, services, cancelToken, globalDeadline.
    * Filters `_`-prefixed keys from data.
+   *
+   * @deprecated Prefer {@link toJSON}. `serialize` will be removed in a
+   *   future major release; use `toJSON` (picked up automatically by
+   *   JSON.stringify) or call `toJSON()` directly.
    */
   serialize(): Record<string, unknown> {
-    const filteredData: Record<string, unknown> = {};
-    for (const [key, value] of Object.entries(this.data)) {
-      if (!key.startsWith('_')) {
-        filteredData[key] = value;
-      }
-    }
-    const result: Record<string, unknown> = {
-      _context_version: 1,
-      trace_id: this.traceId,
-      caller_id: this.callerId,
-      call_chain: [...this.callChain],
-      identity: this.identity
-        ? {
-            id: this.identity.id,
-            type: this.identity.type,
-            roles: [...this.identity.roles],
-            attrs: { ...this.identity.attrs },
-          }
-        : null,
-      data: filteredData,
-    };
-    if (this.redactedInputs !== undefined && this.redactedInputs !== null) {
-      result.redacted_inputs = { ...this.redactedInputs };
-    }
-    if (this.redactedOutput !== undefined && this.redactedOutput !== null) {
-      result.redacted_output = { ...this.redactedOutput };
-    }
-    return result;
+    return this.toJSON();
   }
 
   /**
@@ -160,6 +138,9 @@ export class Context<T = null> {
    * globalDeadline) are set to null after deserialization.
    * If `_context_version` is greater than 1, a warning is logged
    * but deserialization proceeds (forward compatibility).
+   *
+   * @deprecated Prefer {@link fromJSON}. `deserialize` will be removed in
+   *   a future major release.
    */
   static deserialize(data: Record<string, unknown>): Context {
     const version = (data._context_version as number) ?? 1;
@@ -197,23 +178,72 @@ export class Context<T = null> {
   }
 
   /**
-   * Alias for serialize() to ensure automatic JSON.stringify() produces snake_case.
+   * Canonical JSON encoding used by JSON.stringify(context). Produces the
+   * snake_case wire format documented on {@link serialize}.
    */
   toJSON(): Record<string, unknown> {
-    return this.serialize();
+    // Inline the serialization so `serialize()` becomes the deprecated alias,
+    // not the canonical implementation.
+    const filteredData: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(this.data)) {
+      if (!key.startsWith('_')) {
+        filteredData[key] = value;
+      }
+    }
+    const result: Record<string, unknown> = {
+      _context_version: 1,
+      trace_id: this.traceId,
+      caller_id: this.callerId,
+      call_chain: [...this.callChain],
+      identity: this.identity
+        ? {
+            id: this.identity.id,
+            type: this.identity.type,
+            roles: [...this.identity.roles],
+            attrs: { ...this.identity.attrs },
+          }
+        : null,
+      data: filteredData,
+    };
+    if (this.redactedInputs !== undefined && this.redactedInputs !== null) {
+      result.redacted_inputs = { ...this.redactedInputs };
+    }
+    if (this.redactedOutput !== undefined && this.redactedOutput !== null) {
+      result.redacted_output = { ...this.redactedOutput };
+    }
+    return result;
   }
 
   /**
-   * Alias for deserialize() to ensure consistency with toJSON().
+   * Canonical construction from the JSON-decoded wire format.
    */
   static fromJSON(data: Record<string, unknown>): Context {
     return this.deserialize(data);
   }
 
+  /**
+   * Lazily-built, cached ContextLogger for this Context. Reuses the same
+   * instance on subsequent accesses so middleware that logs repeatedly does
+   * not allocate a new logger per call.
+   */
   get logger(): ContextLogger {
-    return ContextLogger.fromContext(this, this.callerId ?? 'unknown');
+    if (this._logger === null) {
+      this._logger = ContextLogger.fromContext(this, this.callerId ?? 'unknown');
+    }
+    return this._logger;
   }
 
+  /**
+   * Create a child Context for a downstream module call.
+   *
+   * **Invariant — `data` is shared by reference.** The child inherits the
+   * parent's `data` map; writes in the child propagate to the parent and to
+   * every sibling child built from the same parent. This is intentional: it
+   * lets middleware state (retry counters, tracing spans) flow across the
+   * call chain within a single trace. Do NOT rely on sibling isolation.
+   *
+   * Everything else (`redactedInputs`, etc.) is per-call.
+   */
   child(targetModuleId: string): Context<T> {
     return new Context<T>(
       this.traceId,
@@ -222,7 +252,7 @@ export class Context<T = null> {
       this.executor,
       this.identity,
       null,
-      this.data, // shared reference
+      this.data, // shared reference — see JSDoc above
       this.cancelToken,
       this.services,
       this.globalDeadline,

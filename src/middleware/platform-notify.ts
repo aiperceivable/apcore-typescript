@@ -53,6 +53,10 @@ export class PlatformNotifyMiddleware extends Middleware {
     _context: Context,
   ): Record<string, unknown> | null {
     this._checkErrorRateThreshold(moduleId);
+    // Also check recovery on error paths so a module whose error rate is
+    // falling (e.g., because the histogram window is decaying) can clear
+    // the alert state even when no successful call arrives.
+    this._checkErrorRecovery(moduleId);
     return null;
   }
 

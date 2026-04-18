@@ -45,10 +45,15 @@ export class RolesHandler implements ACLConditionHandler {
 export class MaxCallDepthHandler implements ACLConditionHandler {
   evaluate(value: unknown, context: Context): boolean {
     let threshold: number;
-    if (typeof value === 'object' && value !== null && 'lte' in (value as any)) {
-      threshold = (value as any).lte;
-    } else if (typeof value === 'number') {
+    if (typeof value === 'number') {
       threshold = value;
+    } else if (
+      typeof value === 'object' &&
+      value !== null &&
+      'lte' in value &&
+      typeof (value as { lte: unknown }).lte === 'number'
+    ) {
+      threshold = (value as { lte: number }).lte;
     } else {
       return false;
     }

@@ -539,9 +539,30 @@ export class BindingSchemaInferenceFailedError extends ModuleError {
 /**
  * Deprecated alias for {@link BindingSchemaInferenceFailedError}.
  * Per DECLARATIVE_CONFIG_SPEC.md §7.1, the canonical name is
- * BindingSchemaInferenceFailedError.
+ * BindingSchemaInferenceFailedError. Scheduled for removal in 0.20.0;
+ * emits a one-shot deprecation warning on first construction.
+ *
+ * @deprecated Use {@link BindingSchemaInferenceFailedError}.
  */
-export const BindingSchemaMissingError = BindingSchemaInferenceFailedError;
+let _bindingSchemaMissingWarned = false;
+export class BindingSchemaMissingError extends BindingSchemaInferenceFailedError {
+  constructor(
+    target: string,
+    moduleId?: string,
+    filePath?: string,
+    remediation?: string,
+    options?: ErrorOptions,
+  ) {
+    super(target, moduleId, filePath, remediation, options);
+    if (!_bindingSchemaMissingWarned) {
+      _bindingSchemaMissingWarned = true;
+      console.warn(
+        '[apcore:errors] BindingSchemaMissingError is deprecated and scheduled for removal in 0.20.0. ' +
+          'Use BindingSchemaInferenceFailedError instead (DECLARATIVE_CONFIG_SPEC.md §7.1).',
+      );
+    }
+  }
+}
 
 export class BindingSchemaModeConflictError extends ModuleError {
   static override readonly DEFAULT_RETRYABLE: boolean | null = false;
@@ -734,6 +755,52 @@ export class ModuleLoadError extends ModuleError {
       options?.suggestion,
     );
     this.name = 'ModuleLoadError';
+  }
+}
+
+export class DependencyNotFoundError extends ModuleError {
+  static override readonly DEFAULT_RETRYABLE: boolean | null = false;
+
+  constructor(moduleId: string, dependencyId: string, options?: ErrorOptions) {
+    super(
+      'DEPENDENCY_NOT_FOUND',
+      `Module '${moduleId}' has unsatisfied required dependency '${dependencyId}'`,
+      { moduleId, dependencyId },
+      options?.cause,
+      options?.traceId,
+      options?.retryable,
+      options?.aiGuidance ??
+        `Module '${moduleId}' declares a required dependency on '${dependencyId}', but no such module is registered. Either register '${dependencyId}' before loading '${moduleId}', mark the dependency as optional, or remove it.`,
+      options?.userFixable,
+      options?.suggestion,
+    );
+    this.name = 'DependencyNotFoundError';
+  }
+}
+
+export class DependencyVersionMismatchError extends ModuleError {
+  static override readonly DEFAULT_RETRYABLE: boolean | null = false;
+
+  constructor(
+    moduleId: string,
+    dependencyId: string,
+    required: string,
+    actual: string,
+    options?: ErrorOptions,
+  ) {
+    super(
+      'DEPENDENCY_VERSION_MISMATCH',
+      `Module '${moduleId}' requires dependency '${dependencyId}' version '${required}', but registered version is '${actual}'`,
+      { moduleId, dependencyId, required, actual },
+      options?.cause,
+      options?.traceId,
+      options?.retryable,
+      options?.aiGuidance ??
+        `Module '${moduleId}' declares dependency '${dependencyId}' with version constraint '${required}', but the registered version is '${actual}'. Either upgrade the dependency, relax the constraint, or register a compatible version.`,
+      options?.userFixable,
+      options?.suggestion,
+    );
+    this.name = 'DependencyVersionMismatchError';
   }
 }
 
@@ -1071,6 +1138,7 @@ export const ErrorCodes = Object.freeze({
   ERROR_CODE_COLLISION: 'ERROR_CODE_COLLISION',
   GENERAL_NOT_IMPLEMENTED: 'GENERAL_NOT_IMPLEMENTED',
   DEPENDENCY_NOT_FOUND: 'DEPENDENCY_NOT_FOUND',
+  DEPENDENCY_VERSION_MISMATCH: 'DEPENDENCY_VERSION_MISMATCH',
 } as const);
 
 export type ErrorCode = (typeof ErrorCodes)[keyof typeof ErrorCodes];
