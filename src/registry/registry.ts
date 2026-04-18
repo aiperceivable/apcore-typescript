@@ -233,9 +233,29 @@ export class Registry {
     const rootPaths = this._extensionRoots.map((r) => r['root'] as string);
     const customModules = await this._customDiscoverer!.discover(rootPaths);
 
+    if (!Array.isArray(customModules)) {
+      console.warn(
+        `[apcore:registry] Custom discoverer returned non-array (${typeof customModules}); expected Array<{moduleId, module}>. Ignoring.`,
+      );
+      return 0;
+    }
+
     let count = 0;
     for (const entry of customModules) {
-      const { moduleId, module: mod } = entry;
+      if (entry === null || typeof entry !== 'object') {
+        console.warn(
+          `[apcore:registry] Malformed entry from custom discoverer (expected object, got ${entry === null ? 'null' : typeof entry}); skipping.`,
+        );
+        continue;
+      }
+
+      const { moduleId, module: mod } = entry as { moduleId?: unknown; module?: unknown };
+      if (typeof moduleId !== 'string' || mod === undefined) {
+        console.warn(
+          `[apcore:registry] Malformed entry from custom discoverer (missing 'moduleId' string or 'module'); skipping.`,
+        );
+        continue;
+      }
 
       // Apply custom validator if set
       if (this._customValidator !== null) {

@@ -1425,6 +1425,57 @@ describe('Registry custom discoverer', () => {
     expect(count).toBe(1);
     expect(registry.has('async.mod')).toBe(true);
   });
+
+  it('skips malformed entries and keeps registering valid ones', async () => {
+    const modOk = {
+      execute: async () => ({}),
+      description: 'Valid module',
+      inputSchema: { type: 'object' },
+      outputSchema: { type: 'object' },
+    };
+
+    const discoverer = {
+      discover(_roots: string[]) {
+        return [
+          { module: modOk },
+          { moduleId: 'only_id' },
+          'not-an-object',
+          null,
+          { moduleId: 'good.mod', module: modOk },
+        ] as Array<{ moduleId: string; module: unknown }>;
+      },
+    };
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const registry = new Registry();
+    registry.setDiscoverer(discoverer);
+    const count = await registry.discover();
+
+    expect(count).toBe(1);
+    expect(registry.has('good.mod')).toBe(true);
+    const malformedCalls = warnSpy.mock.calls.filter((call) =>
+      String(call[0]).includes('Malformed entry'),
+    );
+    expect(malformedCalls.length).toBe(4);
+    warnSpy.mockRestore();
+  });
+
+  it('handles non-array return from discoverer', async () => {
+    const discoverer = {
+      discover(_roots: string[]) {
+        return null as unknown as Array<{ moduleId: string; module: unknown }>;
+      },
+    };
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const registry = new Registry();
+    registry.setDiscoverer(discoverer);
+    const count = await registry.discover();
+
+    expect(count).toBe(0);
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('non-array'));
+    warnSpy.mockRestore();
+  });
 });
 
 /* -----------------------------------------------------------
