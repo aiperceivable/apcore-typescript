@@ -149,8 +149,11 @@ export async function _resolveStep(stepDef: StepDefinition): Promise<Step> {
 async function _importStep(handlerPath: string, config: Record<string, unknown>): Promise<Step> {
   // Security checks run on the whole path BEFORE the module:export split,
   // because 'file:' URLs contain a colon that would otherwise be misparsed.
-  if (handlerPath.startsWith('file:')) {
-    throw new Error(`Handler path '${handlerPath}' must not use file: URLs.`);
+  const FORBIDDEN_SCHEMES = ['file:', 'http:', 'https:', 'ftp:', 'data:', 'blob:'];
+  for (const scheme of FORBIDDEN_SCHEMES) {
+    if (handlerPath.startsWith(scheme)) {
+      throw new Error(`Handler path '${handlerPath}' must not use '${scheme}' URLs.`);
+    }
   }
   if (handlerPath.includes('..')) {
     throw new Error(`Handler path '${handlerPath}' must not contain '..' segments.`);

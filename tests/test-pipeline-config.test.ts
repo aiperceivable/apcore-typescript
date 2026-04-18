@@ -151,7 +151,19 @@ describe('_resolveStep', () => {
 
   it('rejects handler path using file: URLs', async () => {
     await expect(_resolveStep({ handler: 'file:///etc/passwd:fn' })).rejects.toThrow(
-      /must not use file: URLs/,
+      /must not use 'file:' URLs/,
+    );
+  });
+
+  it('rejects handler path using http: URLs', async () => {
+    await expect(_resolveStep({ handler: 'http://evil.com/mod.js:fn' })).rejects.toThrow(
+      /must not use 'http:' URLs/,
+    );
+  });
+
+  it('rejects handler path using data: URLs', async () => {
+    await expect(_resolveStep({ handler: 'data:text/javascript,export const x=1:fn' })).rejects.toThrow(
+      /must not use 'data:' URLs/,
     );
   });
 
