@@ -24,7 +24,8 @@ export function randomHex(byteLength: number): string {
   if (c) {
     c.getRandomValues(bytes);
   } else {
-    // Last-resort fallback (sufficient for trace/span IDs, not for security)
+    // Last-resort fallback for environments without crypto (e.g., legacy Node without webcrypto)
+    console.warn('[apcore:utils] crypto unavailable — falling back to Math.random for randomHex (not cryptographically secure)');
     for (let i = 0; i < bytes.length; i++) {
       bytes[i] = Math.floor(Math.random() * 256);
     }
