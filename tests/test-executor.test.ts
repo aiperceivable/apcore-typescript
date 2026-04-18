@@ -509,3 +509,34 @@ describe('Executor.fromRegistry', () => {
     expect(executor).toBeInstanceOf(Executor);
   });
 });
+
+describe('setAcl / setApprovalHandler on strategies without those steps', () => {
+  it('warns via console.warn when setAcl is called on a strategy without BuiltinACLCheck', () => {
+    const registry = new Registry();
+    const executor = new Executor({ registry, strategy: 'internal' });
+    const acl = new ACL([], 'deny');
+    const warns: string[] = [];
+    const origWarn = console.warn;
+    console.warn = (...args: unknown[]) => warns.push(String(args[0]));
+    try {
+      executor.setAcl(acl);
+      expect(warns.some(w => w.includes('setAcl') && w.includes('BuiltinACLCheck'))).toBe(true);
+    } finally {
+      console.warn = origWarn;
+    }
+  });
+
+  it('warns via console.warn when setApprovalHandler is called on a strategy without BuiltinApprovalGate', () => {
+    const registry = new Registry();
+    const executor = new Executor({ registry, strategy: 'internal' });
+    const warns: string[] = [];
+    const origWarn = console.warn;
+    console.warn = (...args: unknown[]) => warns.push(String(args[0]));
+    try {
+      executor.setApprovalHandler({ requestApproval: async () => ({ status: 'approved' as const, approvalId: 'x', approvedBy: null, reason: null, metadata: null }), checkApproval: async () => ({ status: 'approved' as const, approvalId: 'x', approvedBy: null, reason: null, metadata: null }) });
+      expect(warns.some(w => w.includes('setApprovalHandler') && w.includes('BuiltinApprovalGate'))).toBe(true);
+    } finally {
+      console.warn = origWarn;
+    }
+  });
+});

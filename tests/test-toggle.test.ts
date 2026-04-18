@@ -9,6 +9,7 @@ import {
 import { InvalidInputError, ModuleNotFoundError, ModuleDisabledError } from '../src/errors.js';
 import { Registry } from '../src/registry/registry.js';
 import { EventEmitter } from '../src/events/emitter.js';
+import { Executor } from '../src/executor.js';
 import type { ApCoreEvent } from '../src/events/emitter.js';
 
 describe('ToggleState', () => {
@@ -217,5 +218,36 @@ describe('ToggleFeatureModule', () => {
       module_id: 'test.dummy',
       enabled: true,
     });
+  });
+});
+
+describe('ToggleGate enforcement via Executor.call', () => {
+  let reg: Registry;
+  let executor: Executor;
+
+  beforeEach(() => {
+    reg = new Registry();
+    reg.registerInternal('test.toggled', { execute: () => ({ ok: true }) });
+    executor = new Executor({ registry: reg });
+    DEFAULT_TOGGLE_STATE.clear();
+  });
+
+  afterEach(() => {
+    DEFAULT_TOGGLE_STATE.clear();
+  });
+
+  it('throws ModuleDisabledError when a disabled module is called via the standard strategy', async () => {
+    DEFAULT_TOGGLE_STATE.disable('test.toggled');
+    await expect(executor.call('test.toggled', {})).rejects.toBeInstanceOf(ModuleDisabledError);
+  });
+
+  it('calls succeed when module is enabled', async () => {
+    await expect(executor.call('test.toggled', {})).resolves.toMatchObject({ ok: true });
+  });
+
+  it('calls succeed after a module is re-enabled', async () => {
+    DEFAULT_TOGGLE_STATE.disable('test.toggled');
+    DEFAULT_TOGGLE_STATE.enable('test.toggled');
+    await expect(executor.call('test.toggled', {})).resolves.toMatchObject({ ok: true });
   });
 });

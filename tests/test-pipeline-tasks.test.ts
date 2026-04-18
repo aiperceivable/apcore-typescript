@@ -144,11 +144,12 @@ describe('Preset strategy factories', () => {
     deps = makeDeps(makeRegistry());
   });
 
-  it('buildStandardStrategy creates 11-step strategy', () => {
+  it('buildStandardStrategy creates 12-step strategy including toggle_gate', () => {
     const strategy = buildStandardStrategy(deps);
     expect(strategy.name).toBe('standard');
-    expect(strategy.steps.length).toBe(11);
+    expect(strategy.steps.length).toBe(12);
     expect(strategy.stepNames()).toContain('context_creation');
+    expect(strategy.stepNames()).toContain('toggle_gate');
     expect(strategy.stepNames()).toContain('acl_check');
     expect(strategy.stepNames()).toContain('approval_gate');
     expect(strategy.stepNames()).toContain('output_validation');
@@ -235,7 +236,7 @@ describe('Executor.callWithTrace', () => {
     const [output, trace] = await executor.callWithTrace('test.greet', { name: 'Override' }, null, { strategy: stdStrategy });
     expect(output['greeting']).toBe('Hello, Override!');
     expect(trace.strategyName).toBe('standard');
-    expect(trace.steps.length).toBe(11);
+    expect(trace.steps.length).toBe(12);
   });
 
   it('uses default standard strategy when none explicitly set', async () => {

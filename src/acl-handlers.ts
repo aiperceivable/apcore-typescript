@@ -18,6 +18,12 @@ export type EvalFn = (
   context: Context,
 ) => boolean;
 
+/** Async variant of EvalFn for use under asyncCheck(). */
+export type AsyncEvalFn = (
+  conditions: Record<string, unknown>,
+  context: Context,
+) => Promise<boolean>;
+
 // ---------------------------------------------------------------------------
 // Basic handlers
 // ---------------------------------------------------------------------------
@@ -94,6 +100,38 @@ export class NotHandler implements ACLConditionHandler {
   evaluate(value: unknown, context: Context): boolean {
     if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
     return !this._evaluate(value as Record<string, unknown>, context);
+  }
+}
+
+/** $or async: list of condition dicts evaluated via the async evaluator. */
+export class OrHandlerAsync implements ACLConditionHandler {
+  private readonly _evaluate: AsyncEvalFn;
+
+  constructor(evaluateFn: AsyncEvalFn) {
+    this._evaluate = evaluateFn;
+  }
+
+  async evaluate(value: unknown, context: Context): Promise<boolean> {
+    if (!Array.isArray(value)) return false;
+    for (const sub of value) {
+      if (typeof sub !== 'object' || sub === null || Array.isArray(sub)) continue;
+      if (await this._evaluate(sub as Record<string, unknown>, context)) return true;
+    }
+    return false;
+  }
+}
+
+/** $not async: single condition dict evaluated via the async evaluator. */
+export class NotHandlerAsync implements ACLConditionHandler {
+  private readonly _evaluate: AsyncEvalFn;
+
+  constructor(evaluateFn: AsyncEvalFn) {
+    this._evaluate = evaluateFn;
+  }
+
+  async evaluate(value: unknown, context: Context): Promise<boolean> {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+    return !(await this._evaluate(value as Record<string, unknown>, context));
   }
 }
 

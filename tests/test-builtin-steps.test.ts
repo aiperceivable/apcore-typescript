@@ -606,7 +606,7 @@ describe('buildStandardStrategy', () => {
       middlewareManager: mm,
     });
     expect(strategy.name).toBe('standard');
-    expect(strategy.steps).toHaveLength(11);
+    expect(strategy.steps).toHaveLength(12);
   });
 
   it('has steps in the correct order', () => {
@@ -624,6 +624,7 @@ describe('buildStandardStrategy', () => {
       'context_creation',
       'call_chain_guard',
       'module_lookup',
+      'toggle_gate',
       'acl_check',
       'approval_gate',
       'middleware_before',
@@ -646,17 +647,17 @@ describe('buildStandardStrategy', () => {
       middlewareManager: mm,
     });
     const steps = strategy.steps;
-    // removable=false: context_creation, module_lookup, execute, return_result
+    // removable=false: context_creation[0], module_lookup[2], execute[8], return_result[11]
     expect(steps[0].removable).toBe(false);   // context_creation
     expect(steps[2].removable).toBe(false);   // module_lookup
-    expect(steps[7].removable).toBe(false);   // execute
-    expect(steps[10].removable).toBe(false);  // return_result
+    expect(steps[8].removable).toBe(false);   // execute
+    expect(steps[11].removable).toBe(false);  // return_result
 
-    // replaceable=false: context_creation, module_lookup, middleware_before, middleware_after, return_result
+    // replaceable=false: context_creation[0], module_lookup[2], middleware_before[6], middleware_after[10], return_result[11]
     expect(steps[0].replaceable).toBe(false);  // context_creation
     expect(steps[2].replaceable).toBe(false);  // module_lookup
-    expect(steps[5].replaceable).toBe(false);  // middleware_before (now index 5)
-    expect(steps[9].replaceable).toBe(false);  // middleware_after
-    expect(steps[10].replaceable).toBe(false); // return_result
+    expect(steps[6].replaceable).toBe(false);  // middleware_before
+    expect(steps[10].replaceable).toBe(false); // middleware_after
+    expect(steps[11].replaceable).toBe(false); // return_result
   });
 });

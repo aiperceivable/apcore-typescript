@@ -4,7 +4,7 @@ import { Executor } from '../src/executor.js';
 import { FunctionModule } from '../src/decorator.js';
 import { Registry } from '../src/registry/registry.js';
 import { Middleware } from '../src/middleware/base.js';
-import { ModuleNotFoundError } from '../src/errors.js';
+import { ModuleNotFoundError, SchemaValidationError } from '../src/errors.js';
 
 function createSimpleModule(id: string): FunctionModule {
   return new FunctionModule({
@@ -181,19 +181,12 @@ describe('Executor.stream()', () => {
     expect(afterOutput).toEqual({ a: 'test_a', b: 'test_b' });
   });
 
-  it('logs and routes to onError middleware when post-stream after() throws', async () => {
-    // Regression: post-stream validation / after-middleware exceptions were
-    // silently swallowed in Phase 3. At minimum the error should surface via
-    // console.warn and the onError middleware chain so telemetry sees it.
+  it('throws and routes to onError middleware when post-stream after() throws (Phase-3 rethrow)', async () => {
+    // Fix: post-stream validation / after-middleware exceptions are now re-thrown
+    // after running the onError middleware chain.
     const registry = new Registry();
     const mod = createStreamingModule('stream_after_fail');
     registry.register('stream_after_fail', mod);
-
-    const warnings: string[] = [];
-    const originalWarn = console.warn;
-    console.warn = (...args: unknown[]) => {
-      warnings.push(args.map((a) => String(a)).join(' '));
-    };
 
     let onErrorCalled = false;
     class FailingAfter extends Middleware {
@@ -206,19 +199,10 @@ describe('Executor.stream()', () => {
       }
     }
 
-    try {
-      const executor = new Executor({ registry, middlewares: [new FailingAfter()] });
-      const chunks = await collectChunks(executor.stream('stream_after_fail', { name: 'Test' }));
-      // Chunks should still be yielded (the error happens post-iteration)
-      expect(chunks.length).toBeGreaterThan(0);
-    } finally {
-      console.warn = originalWarn;
-    }
-
-    const matched = warnings.some(
-      (w) => w.includes('[apcore:executor]') && w.includes('Post-stream'),
-    );
-    expect(matched).toBe(true);
+    const executor = new Executor({ registry, middlewares: [new FailingAfter()] });
+    await expect(
+      collectChunks(executor.stream('stream_after_fail', { name: 'Test' })),
+    ).rejects.toThrow();
     expect(onErrorCalled).toBe(true);
   });
 
@@ -245,5 +229,26 @@ describe('Executor.stream()', () => {
     // The last chunk is used as the accumulated output for validation
     const chunks = await collectChunks(executor.stream('validated'));
     expect(chunks).toHaveLength(2);
+  });
+
+  it('throws SchemaValidationError after stream when accumulated output fails output schema (Phase-3 rethrow)', async () => {
+    // Module yields chunks that individually pass but accumulated output violates outputSchema
+    const registry = new Registry();
+    const streamingMod = new FunctionModule({
+      execute: () => ({ count: 1 }),
+      moduleId: 'phase3.fail',
+      inputSchema: Type.Object({}),
+      outputSchema: Type.Object({ count: Type.Number() }),
+      description: 'Streaming module with invalid accumulated output',
+    }) as FunctionModule & { stream: () => AsyncGenerator<Record<string, unknown>> };
+
+    streamingMod.stream = async function* () {
+      yield { count: 'not-a-number' }; // violates outputSchema
+    };
+
+    registry.register('phase3.fail', streamingMod);
+    const executor = new Executor({ registry });
+
+    await expect(collectChunks(executor.stream('phase3.fail'))).rejects.toBeInstanceOf(SchemaValidationError);
   });
 });

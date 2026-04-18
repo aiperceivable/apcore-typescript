@@ -21,10 +21,12 @@ import {
   ApprovalPendingError,
   ApprovalTimeoutError,
   InvalidInputError,
+  ModuleDisabledError,
   ModuleNotFoundError,
   ModuleTimeoutError,
   SchemaValidationError,
 } from './errors.js';
+import { DEFAULT_TOGGLE_STATE, type ToggleState } from './sys-modules/toggle.js';
 import { CTX_GLOBAL_DEADLINE, CTX_TRACING_SPANS, redactSensitive } from './executor.js';
 import { MiddlewareChainError, type MiddlewareManager } from './middleware/manager.js';
 import type { ModuleAnnotations } from './module.js';
@@ -219,7 +221,34 @@ export class BuiltinModuleLookup implements Step {
 }
 
 // ---------------------------------------------------------------------------
-// 4. BuiltinACLCheck
+// 4. BuiltinToggleGate
+// ---------------------------------------------------------------------------
+
+/** Blocks execution if the module has been disabled via the toggle system. */
+export class BuiltinToggleGate implements Step {
+  readonly name = 'toggle_gate';
+  readonly description = 'Block disabled modules before ACL and execution';
+  readonly removable = true;
+  readonly replaceable = true;
+  readonly pure = true;
+  readonly requires = ['context', 'module'] as const;
+
+  private readonly _toggleState: ToggleState;
+
+  constructor(toggleState?: ToggleState) {
+    this._toggleState = toggleState ?? DEFAULT_TOGGLE_STATE;
+  }
+
+  async execute(ctx: PipelineContext): Promise<StepResult> {
+    if (this._toggleState.isDisabled(ctx.moduleId)) {
+      throw new ModuleDisabledError(ctx.moduleId);
+    }
+    return { action: 'continue' };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 6. BuiltinACLCheck
 // ---------------------------------------------------------------------------
 
 /** Enforces access control via the ACL provider. */
@@ -255,7 +284,7 @@ export class BuiltinACLCheck implements Step {
 }
 
 // ---------------------------------------------------------------------------
-// 5. BuiltinApprovalGate
+// 7. BuiltinApprovalGate
 // ---------------------------------------------------------------------------
 
 /** Handles approval flow for modules that require explicit approval. */
@@ -356,7 +385,7 @@ export class BuiltinApprovalGate implements Step {
 }
 
 // ---------------------------------------------------------------------------
-// 6. BuiltinInputValidation
+// 8. BuiltinInputValidation
 // ---------------------------------------------------------------------------
 
 /** Validates inputs against module schema and redacts sensitive fields. */
@@ -390,7 +419,7 @@ export class BuiltinInputValidation implements Step {
 }
 
 // ---------------------------------------------------------------------------
-// 7. BuiltinMiddlewareBefore
+// 9. BuiltinMiddlewareBefore
 // ---------------------------------------------------------------------------
 
 /** Executes before-middleware chain via MiddlewareManager. */
@@ -440,7 +469,7 @@ export class BuiltinMiddlewareBefore implements Step {
 }
 
 // ---------------------------------------------------------------------------
-// 8. BuiltinExecute
+// 10. BuiltinExecute
 // ---------------------------------------------------------------------------
 
 /** Executes the module with timeout enforcement. Sets ctx.output. */
@@ -534,7 +563,7 @@ export class BuiltinExecute implements Step {
 }
 
 // ---------------------------------------------------------------------------
-// 9. BuiltinOutputValidation
+// 11. BuiltinOutputValidation
 // ---------------------------------------------------------------------------
 
 /** Validates output against module schema and redacts sensitive fields. */
@@ -582,7 +611,7 @@ export class BuiltinOutputValidation implements Step {
 }
 
 // ---------------------------------------------------------------------------
-// 10. BuiltinMiddlewareAfter
+// 12. BuiltinMiddlewareAfter
 // ---------------------------------------------------------------------------
 
 /** Executes after-middleware chain via MiddlewareManager. */
@@ -618,7 +647,7 @@ export class BuiltinMiddlewareAfter implements Step {
 }
 
 // ---------------------------------------------------------------------------
-// 11. BuiltinReturnResult
+// 13. BuiltinReturnResult
 // ---------------------------------------------------------------------------
 
 /** Finalizes the pipeline result. Output is already on ctx.output. */
@@ -646,14 +675,16 @@ export interface StandardStrategyDeps {
   acl: ACL | null;
   approvalHandler: ApprovalHandler | null;
   middlewareManager: MiddlewareManager;
+  toggleState?: ToggleState | null;
 }
 
-/** Build the standard 11-step execution strategy matching the current Executor. */
+/** Build the standard 12-step execution strategy matching the current Executor. */
 export function buildStandardStrategy(deps: StandardStrategyDeps): ExecutionStrategy {
   return new ExecutionStrategy('standard', [
     new BuiltinContextCreation(deps.config),
     new BuiltinCallChainGuard(deps.config),
     new BuiltinModuleLookup(deps.registry),
+    new BuiltinToggleGate(deps.toggleState ?? undefined),
     new BuiltinACLCheck(deps.acl),
     new BuiltinApprovalGate(deps.approvalHandler),
     new BuiltinMiddlewareBefore(deps.middlewareManager),
@@ -702,13 +733,14 @@ export function buildTestingStrategy(deps: StandardStrategyDeps): ExecutionStrat
 
 /**
  * Build a performance strategy: skips middleware before/after for reduced overhead.
- * Retains ACL, approval, and validation for correctness.
+ * Retains toggle gate, ACL, approval, and validation for correctness.
  */
 export function buildPerformanceStrategy(deps: StandardStrategyDeps): ExecutionStrategy {
   return new ExecutionStrategy('performance', [
     new BuiltinContextCreation(deps.config),
     new BuiltinCallChainGuard(deps.config),
     new BuiltinModuleLookup(deps.registry),
+    new BuiltinToggleGate(deps.toggleState ?? undefined),
     new BuiltinACLCheck(deps.acl),
     new BuiltinApprovalGate(deps.approvalHandler),
     new BuiltinInputValidation(),

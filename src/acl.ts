@@ -13,6 +13,8 @@ import {
   MaxCallDepthHandler,
   OrHandler,
   NotHandler,
+  OrHandlerAsync,
+  NotHandlerAsync,
   arraysEqual,
 } from './acl-handlers.js';
 
@@ -83,9 +85,15 @@ function parseAclRule(rawRule: unknown, index: number): ACLRule {
 
 export class ACL {
   private static conditionHandlers = new Map<string, ACLConditionHandler>();
+  private static asyncConditionHandlers = new Map<string, ACLConditionHandler>();
 
   static registerCondition(key: string, handler: ACLConditionHandler): void {
     ACL.conditionHandlers.set(key, handler);
+  }
+
+  /** Register an async-aware handler for use specifically under asyncCheck(). Falls back to conditionHandlers. */
+  static registerAsyncCondition(key: string, handler: ACLConditionHandler): void {
+    ACL.asyncConditionHandlers.set(key, handler);
   }
 
   static _evaluateConditions(conditions: Record<string, unknown>, context: Context): boolean {
@@ -115,7 +123,7 @@ export class ACL {
 
   static async _evaluateConditionsAsync(conditions: Record<string, unknown>, context: Context): Promise<boolean> {
     for (const [key, value] of Object.entries(conditions)) {
-      const handler = ACL.conditionHandlers.get(key);
+      const handler = ACL.asyncConditionHandlers.get(key) ?? ACL.conditionHandlers.get(key);
       if (handler === undefined) {
         console.warn(`[apcore:acl] Unknown ACL condition '${key}' — treated as unsatisfied`);
         return false;
@@ -391,3 +399,7 @@ ACL.registerCondition('roles', new RolesHandler());
 ACL.registerCondition('max_call_depth', new MaxCallDepthHandler());
 ACL.registerCondition('$or', new OrHandler(ACL._evaluateConditions.bind(ACL)));
 ACL.registerCondition('$not', new NotHandler(ACL._evaluateConditions.bind(ACL)));
+// Async-aware variants used by asyncCheck() so Promise-returning conditions
+// inside $or/$not are awaited rather than dropped via fail-closed.
+ACL.registerAsyncCondition('$or', new OrHandlerAsync(ACL._evaluateConditionsAsync.bind(ACL)));
+ACL.registerAsyncCondition('$not', new NotHandlerAsync(ACL._evaluateConditionsAsync.bind(ACL)));

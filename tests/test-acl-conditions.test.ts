@@ -362,3 +362,67 @@ describe('deepEqual', () => {
     expect(deepEqual(null, {})).toBe(false);
   });
 });
+
+describe('asyncCheck with async condition handler inside $or/$not', () => {
+  afterEach(() => {
+    // clean up any test-registered conditions
+  });
+
+  it('correctly evaluates a Promise-returning condition handler inside $or via asyncCheck()', async () => {
+    const asyncHandler: ACLConditionHandler = {
+      evaluate: (_value: unknown, context: Context): Promise<boolean> => {
+        return Promise.resolve(context.traceId === 'allowed-trace');
+      },
+    };
+    ACL.registerCondition('async_trace_check', asyncHandler);
+
+    const acl = new ACL([
+      {
+        callers: ['agent.*'],
+        targets: ['*.resource'],
+        effect: 'allow',
+        description: 'allow if any $or branch passes',
+        conditions: {
+          $or: [
+            { async_trace_check: true },
+          ],
+        },
+      },
+    ]);
+
+    const ctx = new Context('allowed-trace', null, [], null, null);
+    const result = await acl.asyncCheck('agent.foo', 'my.resource', ctx);
+    expect(result).toBe(true);
+
+    const ctxDenied = new Context('other-trace', null, [], null, null);
+    const resultDenied = await acl.asyncCheck('agent.foo', 'my.resource', ctxDenied);
+    expect(resultDenied).toBe(false);
+  });
+
+  it('correctly evaluates a Promise-returning condition inside $not via asyncCheck()', async () => {
+    const asyncBlockedHandler: ACLConditionHandler = {
+      evaluate: (_value: unknown, context: Context): Promise<boolean> => {
+        return Promise.resolve(context.traceId === 'blocked-trace');
+      },
+    };
+    ACL.registerCondition('async_blocked_check', asyncBlockedHandler);
+
+    const acl = new ACL([
+      {
+        callers: ['agent.*'],
+        targets: ['*.resource'],
+        effect: 'allow',
+        description: 'allow unless blocked',
+        conditions: {
+          $not: { async_blocked_check: true },
+        },
+      },
+    ]);
+
+    const ctxAllowed = new Context('other-trace', null, [], null, null);
+    expect(await acl.asyncCheck('agent.foo', 'my.resource', ctxAllowed)).toBe(true);
+
+    const ctxBlocked = new Context('blocked-trace', null, [], null, null);
+    expect(await acl.asyncCheck('agent.foo', 'my.resource', ctxBlocked)).toBe(false);
+  });
+});

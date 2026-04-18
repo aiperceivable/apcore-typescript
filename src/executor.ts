@@ -32,6 +32,7 @@ import {
   buildMinimalStrategy,
 } from './builtin-steps.js';
 import type { StandardStrategyDeps } from './builtin-steps.js';
+import type { ToggleState } from './sys-modules/toggle.js';
 import { propagateError } from './utils/error-propagation.js';
 
 export const REDACTED_VALUE: string = '***REDACTED***';
@@ -135,6 +136,7 @@ export class Executor {
   private _acl: ACL | null;
   private _config: Config | null;
   private _approvalHandler: ApprovalHandler | null;
+  private _toggleState: ToggleState | null;
   private _strategy: ExecutionStrategy;
   private _pipelineEngine: PipelineEngine;
 
@@ -148,12 +150,14 @@ export class Executor {
     acl?: ACL | null;
     config?: Config | null;
     approvalHandler?: ApprovalHandler | null;
+    toggleState?: ToggleState | null;
   }) {
     this._registry = options.registry;
     this._middlewareManager = new MiddlewareManager();
     this._acl = options.acl ?? null;
     this._config = options.config ?? null;
     this._approvalHandler = options.approvalHandler ?? null;
+    this._toggleState = options.toggleState ?? null;
 
     if (options.middlewares) {
       for (const mw of options.middlewares) {
@@ -204,6 +208,7 @@ export class Executor {
       acl: this._acl,
       approvalHandler: this._approvalHandler,
       middlewareManager: this._middlewareManager,
+      toggleState: this._toggleState,
     };
   }
 
@@ -252,22 +257,36 @@ export class Executor {
   /** Set the access control provider. Updates both the executor field and the strategy's ACL step. */
   setAcl(acl: ACL): void {
     this._acl = acl;
+    let found = false;
     for (const step of this._strategy.steps) {
       if (step.name === 'acl_check' && step instanceof BuiltinACLCheck) {
         step.setAcl(acl);
+        found = true;
         break;
       }
     }
+    if (!found) {
+      console.warn(
+        '[apcore:executor] setAcl() called but current strategy has no BuiltinACLCheck step — ACL will not be enforced',
+      );
+    }
   }
 
-  /** Set the approval handler for Step 5 gate. Updates both the executor field and the strategy's approval step. */
+  /** Set the approval handler. Updates both the executor field and the strategy's approval step. */
   setApprovalHandler(handler: ApprovalHandler): void {
     this._approvalHandler = handler;
+    let found = false;
     for (const step of this._strategy.steps) {
       if (step.name === 'approval_gate' && step instanceof BuiltinApprovalGate) {
         step.setApprovalHandler(handler);
+        found = true;
         break;
       }
+    }
+    if (!found) {
+      console.warn(
+        '[apcore:executor] setApprovalHandler() called but current strategy has no BuiltinApprovalGate step — approval will not be enforced',
+      );
     }
   }
 
@@ -486,16 +505,13 @@ export class Executor {
       try {
         await this._pipelineEngine.run(postStrategy, pipeCtx);
       } catch (exc) {
-        // Chunks were already yielded, so we can't re-throw without surprising
-        // the consumer mid-iteration. But silently swallowing hides real bugs
-        // (schema violations, after-middleware exceptions) — route through the
-        // onError chain so at least one observability surface sees the failure.
+        if (exc instanceof ExecutionCancelledError) throw exc;
+        // Chunks already yielded cannot be un-yielded, but silently swallowing
+        // hides real schema violations and after-middleware failures. Rethrow so
+        // the consumer's async-iteration loop surfaces the error on the final
+        // next() call (post-completion rejection in an async generator).
         const ctxObj = pipeCtx.context;
         const wrapped = propagateError(exc as Error, moduleId, ctxObj);
-        console.warn(
-          `[apcore:executor] Post-stream validation/after-middleware failed for '${moduleId}':`,
-          wrapped,
-        );
         if (pipeCtx.executedMiddlewares && pipeCtx.executedMiddlewares.length > 0) {
           this._middlewareManager.executeOnError(
             moduleId,
@@ -505,6 +521,7 @@ export class Executor {
             pipeCtx.executedMiddlewares as Middleware[],
           );
         }
+        throw wrapped;
       }
     }
   }
