@@ -151,22 +151,27 @@ export class Context<T = null> {
       );
     }
 
-    const identityData = data.identity as Record<string, unknown> | null | undefined;
+    const identityData =
+      data.identity != null && typeof data.identity === 'object' && !Array.isArray(data.identity)
+        ? (data.identity as Record<string, unknown>)
+        : null;
     const identity = identityData
       ? createIdentity(
-          identityData.id as string,
-          (identityData.type as string) ?? 'user',
-          Array.isArray(identityData.roles) ? (identityData.roles as string[]) : [],
-          identityData.attrs && typeof identityData.attrs === 'object'
+          typeof identityData.id === 'string' ? identityData.id : String(identityData.id ?? ''),
+          typeof identityData.type === 'string' ? identityData.type : 'user',
+          Array.isArray(identityData.roles)
+            ? identityData.roles.filter((r): r is string => typeof r === 'string')
+            : [],
+          identityData.attrs != null && typeof identityData.attrs === 'object' && !Array.isArray(identityData.attrs)
             ? (identityData.attrs as Record<string, unknown>)
             : {},
         )
       : null;
 
     return new Context(
-      (data.trace_id as string) ?? '',
-      (data.caller_id as string) ?? null,
-      (data.call_chain as string[]) ?? [],
+      typeof data.trace_id === 'string' ? data.trace_id : '',
+      typeof data.caller_id === 'string' ? data.caller_id : null,
+      Array.isArray(data.call_chain) ? data.call_chain.filter((s): s is string => typeof s === 'string') : [],
       null, // executor
       identity,
       (data.redacted_inputs as Record<string, unknown>) ?? null,
