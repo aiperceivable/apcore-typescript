@@ -92,6 +92,15 @@ describe('BindingLoader', () => {
       const modPath = writeTempModule('non_callable.mjs', 'export const MY_CONSTANT = 42;\n');
       await expect(loader.resolveTarget(`${modPath}:MY_CONSTANT`)).rejects.toThrow(BindingNotCallableError);
     });
+
+    it('throws BindingNotCallableError (not BindingCallableNotFoundError) when class constructor requires arguments', async () => {
+      const modPath = writeTempModule(
+        'class_requires_args.mjs',
+        `export class NeedsArgs {\n  constructor(required) {\n    if (required === undefined) throw new Error('required arg missing');\n  }\n  doThing() { return 42; }\n}\n`,
+      );
+      const error = await loader.resolveTarget(`${modPath}:NeedsArgs.doThing`).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(BindingNotCallableError);
+    });
   });
 
   describe('loadBindings', () => {

@@ -206,8 +206,8 @@ export class BindingLoader {
       let instance: Record<string, unknown>;
       try {
         instance = new (cls as new () => Record<string, unknown>)();
-      } catch {
-        throw new BindingCallableNotFoundError(callableName, modulePath);
+      } catch (e) {
+        throw new BindingNotCallableError(callableName, { cause: e as Error });
       }
       const method = instance[methodName];
       if (method == null) {
