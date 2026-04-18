@@ -321,7 +321,8 @@ export class BuiltinApprovalGate implements Step {
     let cleanInputs = ctx.inputs;
 
     if ('_approval_token' in ctx.inputs) {
-      const token = ctx.inputs['_approval_token'] as string;
+      const rawToken = ctx.inputs['_approval_token'];
+      const token = typeof rawToken === 'string' ? rawToken : String(rawToken ?? '');
       const { _approval_token: _, ...rest } = ctx.inputs;
       cleanInputs = rest;
       result = await this._handler.checkApproval(token);
