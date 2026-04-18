@@ -168,6 +168,34 @@ describe('EventEmitter', () => {
     expect(round2Done).toBe(false);
   });
 
+  it('drops async delivery and warns when _pending cap is reached', async () => {
+    const warnMessages: string[] = [];
+    const origWarn = console.warn;
+    console.warn = (...args: unknown[]) => { warnMessages.push(String(args[0])); };
+
+    try {
+      const emitter = new EventEmitter(2); // cap of 2
+      let resolved = 0;
+      // Each emit spawns an async handler that takes 50ms
+      const slowSubscriber = {
+        onEvent: () => new Promise<void>((r) => setTimeout(() => { resolved++; r(); }, 50)),
+      };
+      emitter.subscribe(slowSubscriber);
+
+      // First two should be tracked (cap=2)
+      emitter.emit(createEvent('test', null, 'info', {}));
+      emitter.emit(createEvent('test', null, 'info', {}));
+      // Third should be dropped (at cap)
+      emitter.emit(createEvent('test', null, 'info', {}));
+
+      expect(warnMessages.some((m) => m.includes('_pending cap'))).toBe(true);
+      await emitter.flush();
+      expect(resolved).toBe(2); // only 2 tracked, 1 dropped
+    } finally {
+      console.warn = origWarn;
+    }
+  });
+
   it('snapshot prevents mutation during delivery', () => {
     const emitter = new EventEmitter();
     const calls: string[] = [];

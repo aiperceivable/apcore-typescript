@@ -29,6 +29,8 @@ export function createEvent(
   };
 }
 
+const DEFAULT_MAX_PENDING = 1000;
+
 /**
  * Global event bus with non-blocking fan-out delivery.
  * Errors in one subscriber do not affect others.
@@ -36,6 +38,11 @@ export function createEvent(
 export class EventEmitter {
   private _subscribers: EventSubscriber[] = [];
   private _pending: Promise<void>[] = [];
+  private readonly _maxPending: number;
+
+  constructor(maxPending: number = DEFAULT_MAX_PENDING) {
+    this._maxPending = maxPending;
+  }
 
   subscribe(subscriber: EventSubscriber): void {
     this._subscribers.push(subscriber);
@@ -54,15 +61,21 @@ export class EventEmitter {
       try {
         const result = subscriber.onEvent(event);
         if (result instanceof Promise) {
-          const tracked = result.catch((err) => {
-            console.warn(`[apcore:events] Subscriber failed handling event ${event.eventType}:`, err);
-          });
-          this._pending.push(tracked);
-          // Auto-cleanup when resolved to prevent unbounded growth
-          tracked.then(() => {
-            const idx = this._pending.indexOf(tracked);
-            if (idx !== -1) this._pending.splice(idx, 1);
-          });
+          if (this._pending.length >= this._maxPending) {
+            console.warn(
+              `[apcore:events] _pending cap (${this._maxPending}) reached — dropping async delivery for event ${event.eventType}`,
+            );
+          } else {
+            const tracked = result.catch((err) => {
+              console.warn(`[apcore:events] Subscriber failed handling event ${event.eventType}:`, err);
+            });
+            this._pending.push(tracked);
+            // Auto-cleanup when resolved to prevent unbounded growth
+            tracked.then(() => {
+              const idx = this._pending.indexOf(tracked);
+              if (idx !== -1) this._pending.splice(idx, 1);
+            });
+          }
         }
       } catch (err) {
         console.warn(`[apcore:events] Subscriber failed handling event ${event.eventType}:`, err);
