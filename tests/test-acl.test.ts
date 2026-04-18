@@ -208,6 +208,29 @@ describe('ACL', () => {
     const acl = new ACL([]);
     expect(acl.removeRule(['x'], ['y'])).toBe(false);
   });
+
+  it('removeRule matches only when conditions parameter matches rule conditions', () => {
+    const acl = new ACL([
+      { callers: ['a'], targets: ['b'], effect: 'allow', description: '', conditions: { roles: ['admin'] } },
+      { callers: ['a'], targets: ['b'], effect: 'deny', description: '', conditions: null },
+    ]);
+    // Should not remove when conditions differ
+    const missedRemove = acl.removeRule(['a'], ['b'], { roles: ['user'] });
+    expect(missedRemove).toBe(false);
+    // Should remove the rule with matching conditions
+    const removed = acl.removeRule(['a'], ['b'], { roles: ['admin'] });
+    expect(removed).toBe(true);
+    // The deny rule (null conditions) should remain
+    expect(acl.check('a', 'b')).toBe(false);
+  });
+
+  it('removeRule with undefined conditions removes first caller+target match regardless of conditions', () => {
+    const acl = new ACL([
+      { callers: ['a'], targets: ['b'], effect: 'allow', description: '', conditions: { roles: ['admin'] } },
+    ]);
+    const removed = acl.removeRule(['a'], ['b']);
+    expect(removed).toBe(true);
+  });
 });
 
 describe('ACL.load', () => {

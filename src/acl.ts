@@ -16,6 +16,7 @@ import {
   OrHandlerAsync,
   NotHandlerAsync,
   arraysEqual,
+  deepEqual,
 } from './acl-handlers.js';
 
 // Lazy-load Node.js built-in modules for browser compatibility
@@ -249,7 +250,7 @@ export class ACL {
     return defaultDecision;
   }
 
-  private async _matchPatternsAsync(patterns: string[], value: string, context: Context | null): Promise<boolean> {
+  private _matchPatternsAsync(patterns: string[], value: string, context: Context | null): boolean {
     if (patterns.length === 0) return false;
 
     // Check for compound operators
@@ -270,8 +271,8 @@ export class ACL {
   }
 
   private async _matchesRuleAsync(rule: ACLRule, caller: string, target: string, context: Context | null): Promise<boolean> {
-    if (!await this._matchPatternsAsync(rule.callers, caller, context)) return false;
-    if (!await this._matchPatternsAsync(rule.targets, target, context)) return false;
+    if (!this._matchPatternsAsync(rule.callers, caller, context)) return false;
+    if (!this._matchPatternsAsync(rule.targets, target, context)) return false;
 
     if (rule.conditions != null) {
       if (context === null) return false;
@@ -364,13 +365,13 @@ export class ACL {
     this._rules.unshift(rule);
   }
 
-  removeRule(callers: string[], targets: string[]): boolean {
+  removeRule(callers: string[], targets: string[], conditions?: Record<string, unknown> | null): boolean {
     for (let i = 0; i < this._rules.length; i++) {
       const rule = this._rules[i];
-      if (arraysEqual(rule.callers, callers) && arraysEqual(rule.targets, targets)) {
-        this._rules.splice(i, 1);
-        return true;
-      }
+      if (!arraysEqual(rule.callers, callers) || !arraysEqual(rule.targets, targets)) continue;
+      if (conditions !== undefined && !deepEqual(rule.conditions ?? null, conditions ?? null)) continue;
+      this._rules.splice(i, 1);
+      return true;
     }
     return false;
   }
