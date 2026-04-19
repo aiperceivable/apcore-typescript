@@ -26,6 +26,7 @@ export class FunctionModule {
   readonly annotations: ModuleAnnotations | null;
   readonly metadata: Record<string, unknown> | null;
   readonly examples: ModuleExample[] | null;
+  readonly display: Record<string, unknown> | null;
 
   private _executeFn: (inputs: Record<string, unknown>, context: Context) => Promise<Record<string, unknown>> | Record<string, unknown>;
 
@@ -41,6 +42,7 @@ export class FunctionModule {
     annotations?: ModuleAnnotations | null;
     metadata?: Record<string, unknown> | null;
     examples?: ModuleExample[] | null;
+    display?: Record<string, unknown> | null;
   }) {
     this.moduleId = options.moduleId;
     this.inputSchema = options.inputSchema;
@@ -52,6 +54,7 @@ export class FunctionModule {
     this.annotations = options.annotations ?? null;
     this.metadata = options.metadata ?? null;
     this.examples = options.examples ?? null;
+    this.display = options.display ?? null;
     this._executeFn = options.execute;
   }
 
@@ -84,6 +87,7 @@ export function module(options: {
   version?: string;
   metadata?: Record<string, unknown> | null;
   examples?: ModuleExample[] | null;
+  display?: Record<string, unknown> | null;
   execute: (inputs: Record<string, unknown>, context: Context) => Promise<Record<string, unknown>> | Record<string, unknown>;
   registry?: { register(moduleId: string, module: unknown): void } | null;
 }): FunctionModule {
@@ -115,6 +119,7 @@ export function module(options: {
     annotations: options.annotations,
     metadata: options.metadata,
     examples: options.examples,
+    display: options.display,
   });
 
   if (options.registry) {
