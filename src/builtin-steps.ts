@@ -119,9 +119,12 @@ export class BuiltinContextCreation implements Step {
   }
 
   async execute(ctx: PipelineContext): Promise<StepResult> {
-    // If no context provided, create a fresh one
+    // Always wrap in a child context for this module call.
+    // If no parent context was provided, create a fresh root first.
     if (ctx.context == null) {
       ctx.context = Context.create(null).child(ctx.moduleId);
+    } else {
+      ctx.context = ctx.context.child(ctx.moduleId);
     }
 
     // Set global deadline on root call only

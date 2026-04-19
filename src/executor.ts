@@ -317,7 +317,7 @@ export class Executor {
   ): Promise<Record<string, unknown>> {
     this._validateModuleId(moduleId);
 
-    const ctx = context != null ? context.child(moduleId) : Context.create(this).child(moduleId);
+    const ctx = context != null ? context : Context.create(this);
     const pipeCtx: PipelineContext = {
       moduleId,
       inputs: inputs ?? {},
@@ -382,7 +382,7 @@ export class Executor {
   ): Promise<[Record<string, unknown>, PipelineTrace]> {
     const strategy = options?.strategy ?? this._strategy;
 
-    const ctx = context ?? Context.create(this).child(moduleId);
+    const ctx = context ?? Context.create(this);
     const pipelineCtx: PipelineContext = {
       moduleId,
       inputs: inputs ?? {},
@@ -430,7 +430,7 @@ export class Executor {
   ): AsyncGenerator<Record<string, unknown>> {
     this._validateModuleId(moduleId);
 
-    const ctx = context != null ? context.child(moduleId) : Context.create(this).child(moduleId);
+    const ctx = context != null ? context : Context.create(this);
     const pipeCtx: PipelineContext = {
       moduleId,
       inputs: inputs ?? {},
@@ -555,7 +555,7 @@ export class Executor {
     const pipeCtx: PipelineContext = {
       moduleId,
       inputs: effectiveInputs,
-      context: context ?? Context.create(this).child(moduleId),
+      context: context ?? Context.create(this),
       module: null,
       validatedInputs: null,
       output: null,
