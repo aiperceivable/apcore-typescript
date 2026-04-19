@@ -195,9 +195,12 @@ export class ACL {
   check(callerId: string | null, targetId: string, context?: Context | null): boolean {
     const effectiveCaller = callerId === null ? '@external' : callerId;
     const ctx = context ?? null;
+    // Snapshot rules so concurrent addRule/removeRule calls cannot mutate the
+    // list mid-evaluation (relevant for asyncCheck across await points).
+    const rules = this._rules.slice();
 
-    for (let idx = 0; idx < this._rules.length; idx++) {
-      const rule = this._rules[idx];
+    for (let idx = 0; idx < rules.length; idx++) {
+      const rule = rules[idx];
       if (this._matchesRule(rule, effectiveCaller, targetId, ctx)) {
         const decision = rule.effect === 'allow';
         if (this._auditLogger) {
@@ -212,7 +215,7 @@ export class ACL {
 
     const defaultDecision = this._defaultEffect === 'allow';
     if (this._auditLogger) {
-      const reason = this._rules.length === 0 ? 'no_rules' : 'default_effect';
+      const reason = rules.length === 0 ? 'no_rules' : 'default_effect';
       this._auditLogger(this._buildAuditEntry(
         effectiveCaller, targetId, defaultDecision ? 'allow' : 'deny',
         reason, null, null, ctx,
@@ -224,9 +227,10 @@ export class ACL {
   async asyncCheck(callerId: string | null, targetId: string, context?: Context | null): Promise<boolean> {
     const effectiveCaller = callerId === null ? '@external' : callerId;
     const ctx = context ?? null;
+    const rules = this._rules.slice();
 
-    for (let idx = 0; idx < this._rules.length; idx++) {
-      const rule = this._rules[idx];
+    for (let idx = 0; idx < rules.length; idx++) {
+      const rule = rules[idx];
       if (await this._matchesRuleAsync(rule, effectiveCaller, targetId, ctx)) {
         const decision = rule.effect === 'allow';
         if (this._auditLogger) {
@@ -241,7 +245,7 @@ export class ACL {
 
     const defaultDecision = this._defaultEffect === 'allow';
     if (this._auditLogger) {
-      const reason = this._rules.length === 0 ? 'no_rules' : 'default_effect';
+      const reason = rules.length === 0 ? 'no_rules' : 'default_effect';
       this._auditLogger(this._buildAuditEntry(
         effectiveCaller, targetId, defaultDecision ? 'allow' : 'deny',
         reason, null, null, ctx,
