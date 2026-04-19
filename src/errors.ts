@@ -542,7 +542,7 @@ export class BindingSchemaInferenceFailedError extends ModuleError {
  * BindingSchemaInferenceFailedError. Scheduled for removal in 0.20.0;
  * emits a one-shot deprecation warning on first construction.
  *
- * @deprecated Use {@link BindingSchemaInferenceFailedError}.
+ * @deprecated Will be removed in 1.0.0. Use {@link BindingSchemaInferenceFailedError} instead.
  */
 let _bindingSchemaMissingWarned = false;
 export class BindingSchemaMissingError extends BindingSchemaInferenceFailedError {
