@@ -6,6 +6,7 @@ import type { Config } from '../config.js';
 import { getDefault } from '../config.js';
 import { InvalidInputError, ModuleNotFoundError } from '../errors.js';
 import type { ModuleAnnotations, ModuleExample } from '../module.js';
+import { detectIdConflicts } from './conflicts.js';
 import { resolveDependencies } from './dependencies.js';
 import { resolveEntryPoint } from './entry-point.js';
 import { mergeModuleMetadata, parseDependencies } from './metadata.js';
@@ -162,6 +163,7 @@ export class Registry {
     [REGISTRY_EVENTS.UNREGISTER, []],
   ]);
   private _idMap: Record<string, Record<string, unknown>> = {};
+  private _lowercaseMap: Map<string, string> = new Map();
   private _schemaCache: Map<string, Record<string, unknown>> = new Map();
   private _config: Config | null;
   private _watchers?: Array<{ close(): void }>;
@@ -453,11 +455,23 @@ export class Registry {
   register(moduleId: string, module: unknown): void {
     validateModuleId(moduleId, false);
 
-    if (this._modules.has(moduleId)) {
-      throw new InvalidInputError(`Module ID '${moduleId}' is already registered`);
+    // Algorithm A03: detect ID conflicts (exact duplicate, reserved word, case collision)
+    const conflict = detectIdConflicts(
+      moduleId,
+      new Set(this._modules.keys()),
+      RESERVED_WORDS,
+      this._lowercaseMap,
+    );
+    if (conflict !== null) {
+      if (conflict.severity === 'error') {
+        throw new InvalidInputError(conflict.message);
+      } else {
+        console.warn(`[apcore:registry] ID conflict: ${conflict.message}`);
+      }
     }
 
     this._modules.set(moduleId, module);
+    this._lowercaseMap.set(moduleId.toLowerCase(), moduleId);
 
     // Populate metadata from the module object
     const modObj = module as Record<string, unknown>;
@@ -470,6 +484,7 @@ export class Registry {
       } catch (e) {
         this._modules.delete(moduleId);
         this._moduleMeta.delete(moduleId);
+        this._lowercaseMap.delete(moduleId.toLowerCase());
         throw e;
       }
     }
@@ -484,6 +499,7 @@ export class Registry {
     this._modules.delete(moduleId);
     this._moduleMeta.delete(moduleId);
     this._schemaCache.delete(moduleId);
+    this._lowercaseMap.delete(moduleId.toLowerCase());
 
     // Call onUnload if available
     const modObj = module as Record<string, unknown>;
