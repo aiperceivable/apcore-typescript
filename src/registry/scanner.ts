@@ -75,6 +75,12 @@ export function scanExtensions(
         if (!followSymlinks) continue;
         const real = realpathSync(entryPath);
         if (visitedRealPaths.has(real)) continue;
+        // Confinement check — reject symlinks that escape the extension root
+        const normalizedRoot = resolve(rootResolved);
+        if (!real.startsWith(normalizedRoot + sep) && real !== normalizedRoot) {
+          console.warn(`[apcore] Symlink target outside extension root, skipping: ${entryPath} -> ${real}`);
+          continue;
+        }
         visitedRealPaths.add(real);
         // Resolve the symlink target to check if it's a dir or file
         let targetStat;
