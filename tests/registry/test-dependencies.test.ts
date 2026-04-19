@@ -162,6 +162,19 @@ describe('resolveDependencies', () => {
     expect(matching[0]).toContain("'mod.a'");
   });
 
+  it('covers dfsFindCycle backtrack when first sorted start node has no edges in remaining subgraph', () => {
+    // 'a-leaf' sorts before 'b-cycle'/'c-cycle' and has no edges in the remaining
+    // subgraph (its only dep 'z-external' is not in remaining), so dfsFindCycle
+    // must backtrack out of 'a-leaf' (return null) before finding the real cycle.
+    const modules: Array<[string, Array<{ moduleId: string; optional: boolean; version: string | null }>]> = [
+      ['a-leaf', [{ moduleId: 'z-external', optional: false, version: null }]],
+      ['b-cycle', [{ moduleId: 'c-cycle', optional: false, version: null }]],
+      ['c-cycle', [{ moduleId: 'b-cycle', optional: false, version: null }]],
+    ];
+    const knownIds = new Set(['a-leaf', 'b-cycle', 'c-cycle', 'z-external']);
+    expect(() => resolveDependencies(modules, knownIds)).toThrow(CircularDependencyError);
+  });
+
   it('ignores version when moduleVersions is not provided', () => {
     const modules: Array<[string, Array<{ moduleId: string; optional: boolean; version: string | null }>]> = [
       ['mod.a', [{ moduleId: 'mod.b', optional: false, version: '>=99.0.0' }]],

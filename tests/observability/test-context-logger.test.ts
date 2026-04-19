@@ -81,6 +81,15 @@ describe('ContextLogger', () => {
     expect(parsed.extra.items[0].label).toBe('ok');
   });
 
+  it('logs text format with extra fields included in output', () => {
+    const { output, lines } = createBufferOutput();
+    const logger = new ContextLogger({ format: 'text', output });
+    logger.info('test message', { key1: 'val1', key2: 'val2' });
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain('key1=val1');
+    expect(lines[0]).toContain('key2=val2');
+  });
+
   it('fromContext sets trace/module/caller', () => {
     const { output, lines } = createBufferOutput();
     const ctx = Context.create(undefined, createIdentity('user1'));

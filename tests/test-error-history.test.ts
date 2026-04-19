@@ -91,6 +91,14 @@ describe('ErrorHistory', () => {
     expect(all.length).toBe(2);
     expect(all[0].lastOccurred >= all[1].lastOccurred).toBe(true);
   });
+
+  it('getAll respects limit argument', () => {
+    const history = new ErrorHistory();
+    for (let i = 0; i < 5; i++) {
+      history.record(`mod.${i}`, new ModuleError(`E${i}`, `msg ${i}`));
+    }
+    expect(history.getAll(3)).toHaveLength(3);
+  });
 });
 
 describe('ErrorHistoryMiddleware', () => {

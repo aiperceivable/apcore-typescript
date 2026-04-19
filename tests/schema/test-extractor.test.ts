@@ -124,8 +124,13 @@ describe('inferSchemasFromModule', () => {
     expect(inferSchemasFromModule({}, 'myFunc')).toBeNull();
   });
 
-  it('returns null when only one of input/output is found', () => {
+  it('returns null when only inputSchema is found', () => {
     const mod = { inputSchema: Type.String() };
+    expect(inferSchemasFromModule(mod, 'myFunc')).toBeNull();
+  });
+
+  it('returns null when only outputSchema is found', () => {
+    const mod = { outputSchema: Type.String() };
     expect(inferSchemasFromModule(mod, 'myFunc')).toBeNull();
   });
 
