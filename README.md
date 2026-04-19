@@ -46,6 +46,8 @@ For full documentation, including Quick Start guides and API reference, visit:
 npm install apcore-js
 ```
 
+> **Note:** The npm package is published as `apcore-js` (the `apcore` name is reserved on npm). Python uses `apcore`, Rust uses the `apcore` crate.
+
 ## Quick Start
 
 ### Simplified Client (Recommended)
