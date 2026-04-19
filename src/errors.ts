@@ -1085,6 +1085,46 @@ export class ErrorFormatterDuplicateError extends ModuleError {
   }
 }
 
+export class TaskLimitExceededError extends ModuleError {
+  static override readonly DEFAULT_RETRYABLE: boolean | null = true;
+
+  constructor(maxTasks: number, options?: ErrorOptions) {
+    super(
+      'TASK_LIMIT_EXCEEDED',
+      `Task limit reached (${maxTasks})`,
+      { maxTasks },
+      options?.cause,
+      options?.traceId,
+      options?.retryable,
+      options?.aiGuidance,
+      options?.userFixable,
+      options?.suggestion,
+    );
+    this.name = 'TaskLimitExceededError';
+  }
+}
+
+export class VersionConstraintError extends ModuleError {
+  static override readonly DEFAULT_RETRYABLE: boolean | null = false;
+
+  constructor(constraint: string, reason: string, options?: ErrorOptions) {
+    super(
+      'VERSION_CONSTRAINT_INVALID',
+      `Invalid version constraint '${constraint}': ${reason}`,
+      { constraint, reason },
+      options?.cause,
+      options?.traceId,
+      options?.retryable,
+      options?.aiGuidance ??
+        `Constraint '${constraint}' is not a valid semver expression. ` +
+          `Use forms like '1.2.3', '>=1.2.0,<2.0.0', '^1.2.3', or '~1.2'. ${reason}`,
+      options?.userFixable,
+      options?.suggestion,
+    );
+    this.name = 'VersionConstraintError';
+  }
+}
+
 /**
  * All framework error codes as constants.
  * Use these instead of hardcoding error code strings.
@@ -1139,6 +1179,8 @@ export const ErrorCodes = Object.freeze({
   GENERAL_NOT_IMPLEMENTED: 'GENERAL_NOT_IMPLEMENTED',
   DEPENDENCY_NOT_FOUND: 'DEPENDENCY_NOT_FOUND',
   DEPENDENCY_VERSION_MISMATCH: 'DEPENDENCY_VERSION_MISMATCH',
+  TASK_LIMIT_EXCEEDED: 'TASK_LIMIT_EXCEEDED',
+  VERSION_CONSTRAINT_INVALID: 'VERSION_CONSTRAINT_INVALID',
 } as const);
 
 export type ErrorCode = (typeof ErrorCodes)[keyof typeof ErrorCodes];

@@ -1,5 +1,17 @@
 /**
  * apcore - Schema-driven module standard.
+ *
+ * TypeScript SDK design note: this SDK exposes the APCore class as the primary
+ * entry point. Unlike the Python SDK, there are no module-level convenience
+ * functions (apcore.call(), apcore.module(), etc.) — all interaction goes
+ * through an APCore instance. This is an intentional design choice: TypeScript
+ * does not have a thread-safe global singleton model equivalent to Python's,
+ * and explicit instance management is idiomatic in TypeScript/Node.js.
+ *
+ * To get Python-style convenience, create a shared instance:
+ *   const apcore = new APCore();
+ *   export { apcore };
+ *   // then: apcore.call('module.id', inputs);
  */
 
 // Client
@@ -92,6 +104,8 @@ export {
   ConfigMountError,
   ConfigBindError,
   ErrorFormatterDuplicateError,
+  TaskLimitExceededError,
+  VersionConstraintError,
   ErrorCodes,
 } from './errors.js';
 export type { ErrorCode, ErrorOptions } from './errors.js';
@@ -126,7 +140,15 @@ export {
   isModuleDisabled,
   checkModuleDisabled,
   classifyHealthStatus,
-  UpdateConfigModule, // public: sys-module class needed for custom registration
+  UpdateConfigModule,
+  ReloadModule,
+  HealthModule,
+  HealthSummaryModule,
+  ManifestModule,
+  ManifestFullModule,
+  UsageModule,
+  UsageSummaryModule,
+  ToggleFeatureModule,
 } from './sys-modules/index.js';
 export type { SysModulesContext } from './sys-modules/index.js';
 

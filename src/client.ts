@@ -34,6 +34,7 @@ export interface ModuleOptions {
   version?: string;
   metadata?: Record<string, unknown> | null;
   examples?: ModuleExample[] | null;
+  display?: Record<string, unknown> | null;
   execute: (inputs: Record<string, unknown>, context: Context) => Promise<Record<string, unknown>> | Record<string, unknown>;
 }
 

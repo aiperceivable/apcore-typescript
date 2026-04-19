@@ -83,6 +83,11 @@ function _registerBuiltInFactories(): void {
 // Register built-in factories on module load
 _registerBuiltInFactories();
 
+/**
+ * @deprecated Internal use only. This function is not part of the public API
+ * and will be removed in a future release. Use the built-in webhook and a2a
+ * subscriber types, or contact the maintainers to add a new built-in type.
+ */
 export function registerSubscriberType(
   typeName: string,
   factory: SubscriberFactory,
@@ -90,6 +95,9 @@ export function registerSubscriberType(
   _subscriberFactories.set(typeName, factory);
 }
 
+/**
+ * @deprecated Internal use only. See {@link registerSubscriberType}.
+ */
 export function unregisterSubscriberType(typeName: string): void {
   if (!_subscriberFactories.has(typeName)) {
     throw new Error(`Subscriber type '${typeName}' is not registered`);
@@ -97,6 +105,10 @@ export function unregisterSubscriberType(typeName: string): void {
   _subscriberFactories.delete(typeName);
 }
 
+/**
+ * @deprecated Internal use only. Intended for test teardown only.
+ * See {@link registerSubscriberType}.
+ */
 export function resetSubscriberRegistry(): void {
   _subscriberFactories.clear();
   _registerBuiltInFactories();
