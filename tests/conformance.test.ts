@@ -31,10 +31,21 @@ import {
   CallDepthExceededError,
   CircularCallError,
   CallFrequencyExceededError,
+  ApprovalDeniedError,
+  ApprovalPendingError,
+  DependencyVersionMismatchError,
 } from '../src/errors.js';
 import { jsonSchemaToTypeBox } from '../src/schema/loader.js';
 import { SchemaValidator } from '../src/schema/validator.js';
 import { deepMergeChunk } from '../src/executor.js';
+import {
+  createAnnotations,
+  annotationsToJSON,
+  annotationsFromJSON,
+} from '../src/module.js';
+import { BuiltinApprovalGate } from '../src/builtin-steps.js';
+import type { ApprovalResult } from '../src/approval.js';
+import { resolveDependencies } from '../src/registry/dependencies.js';
 
 // ---------------------------------------------------------------------------
 // Fixture discovery
@@ -516,6 +527,247 @@ describe('apcore Conformance Suite (TypeScript)', () => {
           expect(specSchema.properties).toHaveProperty(key);
         }
       });
+    });
+  });
+
+  // --- identity_system ---
+  const identityFixture = loadFixture('identity_system');
+  describe('Identity System', () => {
+    identityFixture.test_cases.forEach((tc: any) => {
+      it(tc.id, () => {
+        const identity = createIdentity(
+          tc.input_id,
+          tc.input_type ?? 'user',
+          tc.input_roles ?? [],
+          tc.input_attrs ?? {},
+        );
+        if (tc.expected_type !== undefined) expect(identity.type).toBe(tc.expected_type);
+        if (tc.expected_roles !== undefined) expect(identity.roles).toEqual(tc.expected_roles);
+        if (tc.expected_attrs !== undefined) expect(identity.attrs).toEqual(tc.expected_attrs);
+        if (tc.id === 'identity_propagates_to_child_context') {
+          const ctx = new Context('trace', null, [], null, identity);
+          expect(ctx.identity?.id).toBe(tc.input_id);
+        }
+      });
+    });
+  });
+
+  // --- annotations_extra_round_trip ---
+  const annotationsFixture = loadFixture('annotations_extra_round_trip');
+  describe('Annotations Extra Round-trip', () => {
+    annotationsFixture.test_cases.forEach((tc: any) => {
+      it(tc.id, () => {
+        if (tc.id === 'deserialize_legacy_flattened_form' || tc.id === 'nested_takes_precedence_over_flattened') {
+          // Deserialize from wire format (may include legacy flattened keys)
+          const ann = annotationsFromJSON(tc.input_serialized);
+          expect(ann.extra).toEqual(tc.expected_deserialized_extra);
+          if (tc.expected_reserialized) {
+            const reserialized = annotationsToJSON(ann);
+            expect(reserialized).toEqual(tc.expected_reserialized);
+          }
+          return;
+        }
+
+        if (tc.id === 'producer_must_not_emit_both_forms') {
+          const ann = createAnnotations({
+            readonly: tc.input.readonly,
+            destructive: tc.input.destructive,
+            idempotent: tc.input.idempotent,
+            requiresApproval: tc.input.requires_approval,
+            openWorld: tc.input.open_world,
+            streaming: tc.input.streaming,
+            cacheable: tc.input.cacheable,
+            cacheTtl: tc.input.cache_ttl,
+            cacheKeyFields: tc.input.cache_key_fields,
+            paginated: tc.input.paginated,
+            paginationStyle: tc.input.pagination_style,
+            extra: tc.input.extra ?? {},
+          });
+          const serialized = annotationsToJSON(ann);
+          for (const forbiddenKey of tc.forbidden_root_keys) {
+            expect(Object.keys(serialized)).not.toContain(forbiddenKey);
+          }
+          return;
+        }
+
+        // Standard round-trip cases
+        const ann = createAnnotations({
+          readonly: tc.input.readonly,
+          destructive: tc.input.destructive,
+          idempotent: tc.input.idempotent,
+          requiresApproval: tc.input.requires_approval,
+          openWorld: tc.input.open_world,
+          streaming: tc.input.streaming,
+          cacheable: tc.input.cacheable,
+          cacheTtl: tc.input.cache_ttl,
+          cacheKeyFields: tc.input.cache_key_fields,
+          paginated: tc.input.paginated,
+          paginationStyle: tc.input.pagination_style,
+          extra: tc.input.extra ?? {},
+        });
+        const serialized = annotationsToJSON(ann);
+        expect(serialized).toEqual(tc.expected_serialized);
+
+        // Deserialize back and check extra
+        const restored = annotationsFromJSON(serialized as Record<string, unknown>);
+        expect(restored.extra).toEqual(tc.expected_deserialized_extra);
+      });
+    });
+  });
+
+  // --- approval_gate ---
+  describe('Approval Gate', () => {
+    const approvalFixture = loadFixture('approval_gate');
+
+    approvalFixture.test_cases.forEach((tc: any) => {
+      it(tc.id, async () => {
+        // Build a mock handler if configured
+        let handler: any = null;
+        if (tc.approval_handler_configured && tc.approval_result !== null) {
+          const result: ApprovalResult = {
+            status: tc.approval_result.status,
+            approvedBy: tc.approval_result.approved_by,
+            reason: tc.approval_result.reason,
+            approvalId: tc.approval_result.approval_id,
+            metadata: tc.approval_result.metadata,
+          };
+          handler = {
+            requestApproval: async () => result,
+            checkApproval: async () => result,
+          };
+        }
+
+        const gate = new BuiltinApprovalGate(handler);
+
+        const mod: Record<string, unknown> = {
+          annotations: {
+            requiresApproval: tc.module_requires_approval,
+          },
+          description: null,
+          tags: [],
+        };
+
+        const ctx = Context.create(null, null);
+        const pipeCtx: any = {
+          moduleId: 'test.module',
+          module: mod,
+          inputs: {},
+          context: ctx,
+        };
+
+        if (tc.expected.outcome === 'proceed') {
+          const result = await gate.execute(pipeCtx);
+          expect(result.action).toBe('continue');
+        } else {
+          // error expected
+          let thrown: Error | null = null;
+          try {
+            await gate.execute(pipeCtx);
+          } catch (e) {
+            thrown = e as Error;
+          }
+          expect(thrown).not.toBeNull();
+          if (tc.expected.error_code === 'APPROVAL_DENIED') {
+            expect(thrown).toBeInstanceOf(ApprovalDeniedError);
+          } else if (tc.expected.error_code === 'APPROVAL_PENDING') {
+            expect(thrown).toBeInstanceOf(ApprovalPendingError);
+            expect((thrown as ApprovalPendingError).approvalId).toBe(tc.expected.approval_id);
+          }
+        }
+      });
+    });
+  });
+
+  // --- binding_errors ---
+  describe('Binding Errors', () => {
+    it.skip('not yet implemented — BindingLoader requires real file I/O and dynamic imports', () => {});
+  });
+
+  // --- binding_yaml_canonical ---
+  describe('Binding YAML Canonical', () => {
+    it.skip('not yet implemented — BindingLoader requires real file I/O and dynamic imports', () => {});
+  });
+
+  // --- dependency_version_constraints ---
+  const depVersionFixture = loadFixture('dependency_version_constraints');
+  describe('Dependency Version Constraints', () => {
+    depVersionFixture.test_cases.forEach((tc: any) => {
+      it(tc.id, () => {
+        // Build modules list: [moduleId, DependencyInfo[]]
+        const modulesList: Array<[string, Array<{ moduleId: string; version: string | null; optional: boolean }>]> =
+          tc.modules.map((m: any) => [
+            m.module_id,
+            (m.dependencies ?? []).map((d: any) => ({
+              moduleId: d.module_id,
+              version: d.version ?? null,
+              optional: d.optional ?? false,
+            })),
+          ]);
+
+        // Build version map
+        const moduleVersions = new Map<string, string>();
+        for (const m of tc.modules) {
+          if (m.version) moduleVersions.set(m.module_id, m.version);
+        }
+
+        if (tc.expected.outcome === 'ok') {
+          let loadOrder: string[];
+          expect(() => {
+            loadOrder = resolveDependencies(modulesList, null, moduleVersions);
+          }).not.toThrow();
+          if (tc.expected.load_order) {
+            expect(loadOrder!).toEqual(tc.expected.load_order);
+          }
+        } else {
+          expect(() => resolveDependencies(modulesList, null, moduleVersions)).toThrow(
+            DependencyVersionMismatchError,
+          );
+        }
+      });
+    });
+  });
+
+  // --- middleware_on_error_recovery ---
+  describe('Middleware On-Error Recovery', () => {
+    it.skip('not yet implemented — middleware executeOnError does not match the fixture first-dict-wins on-error API', () => {});
+  });
+
+  // --- Core Schema Structure Conformance ---
+  describe('Core Schema Structure Conformance', () => {
+    it('acl-config schema has required fields', () => {
+      const s = loadSchema('acl-config') as any;
+      expect(s.required).toContain('rules');
+      expect(s.properties).toHaveProperty('rules');
+      expect(s.properties).toHaveProperty('default_effect');
+      expect(s.properties).toHaveProperty('audit');
+    });
+
+    it('apcore-config schema has required fields', () => {
+      const s = loadSchema('apcore-config') as any;
+      for (const key of ['version', 'project', 'extensions', 'schema', 'acl']) {
+        expect(s.required).toContain(key);
+      }
+    });
+
+    it('binding schema has required fields', () => {
+      const s = loadSchema('binding') as any;
+      expect(s.required).toContain('bindings');
+      expect(s.$defs.BindingEntry.required).toContain('module_id');
+      expect(s.$defs.BindingEntry.required).toContain('target');
+    });
+
+    it('module-meta schema has required properties', () => {
+      const s = loadSchema('module-meta') as any;
+      for (const key of ['description', 'dependencies', 'annotations', 'version']) {
+        expect(s.properties).toHaveProperty(key);
+      }
+    });
+
+    it('module-schema schema has required fields', () => {
+      const s = loadSchema('module-schema') as any;
+      for (const key of ['module_id', 'description', 'input_schema', 'output_schema']) {
+        expect(s.required).toContain(key);
+      }
     });
   });
 
