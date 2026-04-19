@@ -40,7 +40,7 @@ const DEFAULT_RETRY_CONFIG: RetryConfig = {
  * If you need real retries, wrap `Executor.call` in an outer retry loop
  * that inspects `error.retryable` and the hint values above.
  */
-export class RetryMiddleware extends Middleware {
+export class RetryHintMiddleware extends Middleware {
   private _config: RetryConfig;
 
   constructor(config?: Partial<RetryConfig>) {
@@ -100,3 +100,8 @@ export class RetryMiddleware extends Middleware {
     return delay;
   }
 }
+
+/**
+ * @deprecated Use {@link RetryHintMiddleware} instead. Will be removed in 1.0.0.
+ */
+export const RetryMiddleware = RetryHintMiddleware;

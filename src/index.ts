@@ -101,7 +101,7 @@ export { ACL } from './acl.js';
 export type { ACLRule, AuditEntry, AuditLogger } from './acl.js';
 
 // Middleware
-export { Middleware, MiddlewareManager, MiddlewareChainError, BeforeMiddleware, AfterMiddleware, LoggingMiddleware, RetryMiddleware, ErrorHistoryMiddleware, PlatformNotifyMiddleware } from './middleware/index.js';
+export { Middleware, MiddlewareManager, MiddlewareChainError, BeforeMiddleware, AfterMiddleware, LoggingMiddleware, RetryHintMiddleware, RetryMiddleware, ErrorHistoryMiddleware, PlatformNotifyMiddleware } from './middleware/index.js';
 export type { RetryConfig } from './middleware/index.js';
 
 // Decorator
