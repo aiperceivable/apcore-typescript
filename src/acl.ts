@@ -227,14 +227,18 @@ export class ACL {
   async asyncCheck(callerId: string | null, targetId: string, context?: Context | null): Promise<boolean> {
     const effectiveCaller = callerId === null ? '@external' : callerId;
     const ctx = context ?? null;
+    // Snapshot mutable fields before any await to prevent async-gap races
+    // (e.g. a concurrent setDefaultEffect() or addRule() call mid-evaluation).
     const rules = this._rules.slice();
+    const defaultEffect = this._defaultEffect;
+    const auditLogger = this._auditLogger;
 
     for (let idx = 0; idx < rules.length; idx++) {
       const rule = rules[idx];
       if (await this._matchesRuleAsync(rule, effectiveCaller, targetId, ctx)) {
         const decision = rule.effect === 'allow';
-        if (this._auditLogger) {
-          this._auditLogger(this._buildAuditEntry(
+        if (auditLogger) {
+          auditLogger(this._buildAuditEntry(
             effectiveCaller, targetId, decision ? 'allow' : 'deny',
             'rule_match', rule, idx, ctx,
           ));
@@ -243,10 +247,10 @@ export class ACL {
       }
     }
 
-    const defaultDecision = this._defaultEffect === 'allow';
-    if (this._auditLogger) {
+    const defaultDecision = defaultEffect === 'allow';
+    if (auditLogger) {
       const reason = rules.length === 0 ? 'no_rules' : 'default_effect';
-      this._auditLogger(this._buildAuditEntry(
+      auditLogger(this._buildAuditEntry(
         effectiveCaller, targetId, defaultDecision ? 'allow' : 'deny',
         reason, null, null, ctx,
       ));
