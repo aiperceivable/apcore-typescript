@@ -123,8 +123,7 @@ export class Context<T = null> {
    * Excludes: executor, services, cancelToken, globalDeadline.
    * Filters `_`-prefixed keys from data.
    *
-   * @deprecated Prefer {@link toJSON}. `serialize` will be removed in a
-   *   future major release; use `toJSON` (picked up automatically by
+   * @deprecated Prefer {@link toJSON}. `serialize` will be removed in 1.0.0; use `toJSON` (picked up automatically by
    *   JSON.stringify) or call `toJSON()` directly.
    */
   serialize(): Record<string, unknown> {
@@ -139,8 +138,7 @@ export class Context<T = null> {
    * If `_context_version` is greater than 1, a warning is logged
    * but deserialization proceeds (forward compatibility).
    *
-   * @deprecated Prefer {@link fromJSON}. `deserialize` will be removed in
-   *   a future major release.
+   * @deprecated Prefer {@link fromJSON}. `deserialize` will be removed in 1.0.0.
    */
   static deserialize(data: Record<string, unknown>): Context {
     const version = (data._context_version as number) ?? 1;
