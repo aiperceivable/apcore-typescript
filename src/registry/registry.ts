@@ -271,7 +271,7 @@ export class Registry {
       }
 
       try {
-        this.register(moduleId, mod);
+        this._registerImpl(moduleId, mod);
         count++;
       } catch (e) {
         console.warn(`[apcore:registry] Failed to register custom-discovered module '${moduleId}':`, e);
@@ -427,6 +427,7 @@ export class Registry {
 
       this._modules.set(modId, mod);
       this._moduleMeta.set(modId, mergedMeta);
+      this._lowercaseMap.set(modId.toLowerCase(), modId);
 
       if (typeof modObj['onLoad'] === 'function') {
         try {
@@ -435,6 +436,7 @@ export class Registry {
           console.warn(`[apcore:registry] onLoad failed for ${modId}, skipping:`, e);
           this._modules.delete(modId);
           this._moduleMeta.delete(modId);
+          this._lowercaseMap.delete(modId.toLowerCase());
           continue;
         }
       }
@@ -455,6 +457,23 @@ export class Registry {
   register(moduleId: string, module: unknown): void {
     validateModuleId(moduleId, false);
 
+    if (this._customValidator !== null) {
+      const result = this._customValidator.validate(module);
+      if (result instanceof Promise) {
+        throw new InvalidInputError(
+          `Custom validator for '${moduleId}' is async — use discover() which awaits the validator, or register after awaiting validation manually.`,
+        );
+      }
+      if (result.length > 0) {
+        throw new InvalidInputError(`Custom validator rejected module '${moduleId}': ${result.join('; ')}`);
+      }
+    }
+
+    this._registerImpl(moduleId, module);
+  }
+
+  /** Inner registration — no validator, no ID validation. Used by discover() paths that run their own checks. */
+  private _registerImpl(moduleId: string, module: unknown): void {
     // Algorithm A03: detect ID conflicts (exact duplicate, reserved word, case collision)
     const conflict = detectIdConflicts(
       moduleId,
