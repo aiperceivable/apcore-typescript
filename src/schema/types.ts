@@ -48,6 +48,10 @@ export interface SchemaValidationErrorDetail {
 export interface SchemaValidationResult {
   valid: boolean;
   errors: SchemaValidationErrorDetail[];
+  /** Set when format-annotated fields fail soft validation (SHOULD-level). */
+  warnLogged?: boolean;
+  /** Error code when validation fails (e.g. SCHEMA_UNION_NO_MATCH). */
+  errorCode?: string | null;
 }
 
 export function validationResultToError(result: SchemaValidationResult): SchemaValidationError {

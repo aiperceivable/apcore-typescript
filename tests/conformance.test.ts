@@ -35,7 +35,7 @@ import {
   ApprovalPendingError,
   DependencyVersionMismatchError,
 } from '../src/errors.js';
-import { jsonSchemaToTypeBox } from '../src/schema/loader.js';
+import { jsonSchemaToTypeBox, contentHash } from '../src/schema/loader.js';
 import { SchemaValidator } from '../src/schema/validator.js';
 import { deepMergeChunk } from '../src/executor.js';
 import {
@@ -814,6 +814,86 @@ describe('apcore Conformance Suite (TypeScript)', () => {
         expect(warnSeen).toBe(expected.warn_logged);
 
         warnSpy.mockRestore();
+      });
+    });
+  });
+
+  // --------------------------------------------------------------------------
+  // Schema System Hardening (Issue #44, §4.15)
+  // --------------------------------------------------------------------------
+
+  // --- SH-1. Union type: anyOf/oneOf/allOf exhaustive evaluation ---
+  describe('Schema Hardening: Union Type Evaluation', () => {
+    const fixture = loadFixture('schema_hardening_union');
+
+    fixture.test_cases.forEach((tc: any) => {
+      it(tc.id, () => {
+        const typeboxSchema = jsonSchemaToTypeBox(tc.schema);
+        const validator = new SchemaValidator(false);
+        const result = validator.validate(tc.input, typeboxSchema);
+        expect(result.valid).toBe(tc.expected.valid);
+        if (tc.expected.error_code !== null) {
+          expect(result.errorCode).toBe(tc.expected.error_code);
+        }
+      });
+    });
+  });
+
+  // --- SH-2. Recursive schema: TreeNode self-referencing $ref ---
+  describe('Schema Hardening: Recursive Schema', () => {
+    const fixture = loadFixture('schema_hardening_recursive');
+    const typeboxSchema = jsonSchemaToTypeBox(fixture.schema);
+
+    fixture.test_cases.forEach((tc: any) => {
+      it(tc.id, () => {
+        const validator = new SchemaValidator(false);
+        const result = validator.validate(tc.input, typeboxSchema);
+        expect(result.valid).toBe(tc.expected.valid);
+      });
+    });
+  });
+
+  // --- SH-3. Constraints: min/max, minLength/maxLength, pattern, not ---
+  describe('Schema Hardening: Constraint Enforcement', () => {
+    const fixture = loadFixture('schema_hardening_constraints');
+
+    fixture.test_cases.forEach((tc: any) => {
+      it(tc.id, () => {
+        const typeboxSchema = jsonSchemaToTypeBox(tc.schema);
+        const validator = new SchemaValidator(false);
+        const result = validator.validate(tc.input, typeboxSchema);
+        expect(result.valid).toBe(tc.expected.valid);
+      });
+    });
+  });
+
+  // --- SH-4. Semantic format mapping: warn on invalid format, pass structurally ---
+  describe('Schema Hardening: Semantic Format Mapping', () => {
+    const fixture = loadFixture('schema_hardening_formats');
+
+    fixture.test_cases.forEach((tc: any) => {
+      it(tc.id, () => {
+        const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        const typeboxSchema = jsonSchemaToTypeBox(tc.schema);
+        const validator = new SchemaValidator(false);
+        const result = validator.validate(tc.input, typeboxSchema);
+        const warnLogged = warnSpy.mock.calls.length > 0;
+        warnSpy.mockRestore();
+        expect(result.valid).toBe(tc.expected.valid);
+        expect(warnLogged).toBe(tc.expected.warn_logged);
+      });
+    });
+  });
+
+  // --- SH-5. Content-addressable cache: SHA-256 of canonical JSON ---
+  describe('Schema Hardening: Content Hash Cache', () => {
+    const fixture = loadFixture('schema_hardening_cache');
+
+    fixture.test_cases.forEach((tc: any) => {
+      it(tc.id, () => {
+        const hash1 = contentHash(tc.schemas[0]);
+        const hash2 = contentHash(tc.schemas[1]);
+        expect(hash1 === hash2).toBe(tc.expected.same_hash);
       });
     });
   });

@@ -1,8 +1,9 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { Type } from '@sinclair/typebox';
 import { SchemaValidator } from '../../src/schema/validator.js';
 import { SchemaValidationError } from '../../src/errors.js';
 import { validationResultToError } from '../../src/schema/types.js';
+import { jsonSchemaToTypeBox } from '../../src/schema/loader.js';
 
 describe('SchemaValidator', () => {
   it('validates correct data', () => {
@@ -82,6 +83,162 @@ describe('SchemaValidator', () => {
     const validator = new SchemaValidator(false);
     const schema = Type.Object({ x: Type.Number() });
     expect(() => validator.validateInput({ x: 'not-a-number' }, schema)).toThrow(SchemaValidationError);
+  });
+});
+
+describe('SchemaValidator — oneOf exhaustive validation', () => {
+  const validator = new SchemaValidator(false);
+
+  it('accepts input matching exactly one oneOf branch', () => {
+    const schema = jsonSchemaToTypeBox({
+      oneOf: [
+        { type: 'object', properties: { kind: { const: 'circle' }, radius: { type: 'number' } }, required: ['kind', 'radius'] },
+        { type: 'object', properties: { kind: { const: 'rect' }, width: { type: 'number' } }, required: ['kind', 'width'] },
+      ],
+    });
+    const result = validator.validate({ kind: 'circle', radius: 5 }, schema);
+    expect(result.valid).toBe(true);
+  });
+
+  it('rejects input matching zero oneOf branches with SCHEMA_UNION_NO_MATCH', () => {
+    const schema = jsonSchemaToTypeBox({
+      oneOf: [
+        { type: 'object', properties: { kind: { const: 'circle' } }, required: ['kind'] },
+        { type: 'object', properties: { kind: { const: 'rect' } }, required: ['kind'] },
+      ],
+    });
+    const result = validator.validate({ kind: 'triangle' }, schema);
+    expect(result.valid).toBe(false);
+    expect(result.errorCode).toBe('SCHEMA_UNION_NO_MATCH');
+  });
+
+  it('rejects input matching multiple oneOf branches with SCHEMA_UNION_AMBIGUOUS', () => {
+    // Both branches accept this input — regression test for short-circuit bug
+    const schema = jsonSchemaToTypeBox({
+      oneOf: [
+        { type: 'object', properties: { value: { type: 'integer' } }, required: ['value'] },
+        { type: 'object', properties: { value: { type: 'number' } }, required: ['value'] },
+      ],
+    });
+    const result = validator.validate({ value: 42 }, schema);
+    expect(result.valid).toBe(false);
+    expect(result.errorCode).toBe('SCHEMA_UNION_AMBIGUOUS');
+  });
+});
+
+describe('SchemaValidator — anyOf validation', () => {
+  const validator = new SchemaValidator(false);
+
+  it('accepts input matching the first anyOf branch', () => {
+    const schema = jsonSchemaToTypeBox({
+      anyOf: [
+        { type: 'object', properties: { kind: { const: 'circle' }, radius: { type: 'number' } }, required: ['kind', 'radius'] },
+        { type: 'object', properties: { kind: { const: 'rect' }, width: { type: 'number' } }, required: ['kind', 'width'] },
+      ],
+    });
+    const result = validator.validate({ kind: 'circle', radius: 5 }, schema);
+    expect(result.valid).toBe(true);
+  });
+
+  it('accepts input matching only the second anyOf branch', () => {
+    const schema = jsonSchemaToTypeBox({
+      anyOf: [
+        { type: 'object', properties: { kind: { const: 'circle' } }, required: ['kind', 'radius'] },
+        { type: 'object', properties: { kind: { const: 'rect' }, width: { type: 'number' } }, required: ['kind', 'width'] },
+      ],
+    });
+    const result = validator.validate({ kind: 'rect', width: 10 }, schema);
+    expect(result.valid).toBe(true);
+  });
+
+  it('rejects input matching no anyOf branches with SCHEMA_UNION_NO_MATCH', () => {
+    const schema = jsonSchemaToTypeBox({
+      anyOf: [
+        { type: 'object', properties: { kind: { const: 'circle' } }, required: ['kind'] },
+        { type: 'object', properties: { kind: { const: 'rect' } }, required: ['kind'] },
+      ],
+    });
+    const result = validator.validate({ kind: 'triangle' }, schema);
+    expect(result.valid).toBe(false);
+    expect(result.errorCode).toBe('SCHEMA_UNION_NO_MATCH');
+  });
+});
+
+describe('SchemaValidator — format warnings (SHOULD-level)', () => {
+  it('passes structurally valid data and does not warn for valid formats', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const validator = new SchemaValidator(false);
+    const schema = jsonSchemaToTypeBox({
+      type: 'object',
+      properties: { email: { type: 'string', format: 'email' } },
+      required: ['email'],
+    });
+    const result = validator.validate({ email: 'alice@example.com' }, schema);
+    expect(result.valid).toBe(true);
+    expect(warnSpy).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+
+  it('passes structurally but warns for invalid format (warn_logged: true)', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const validator = new SchemaValidator(false);
+    const schema = jsonSchemaToTypeBox({
+      type: 'object',
+      properties: { ts: { type: 'string', format: 'date-time' } },
+      required: ['ts'],
+    });
+    const result = validator.validate({ ts: 'not-a-date' }, schema);
+    expect(result.valid).toBe(true);
+    expect(result.warnLogged).toBe(true);
+    expect(warnSpy).toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+
+  it('emits format warning for invalid email inside oneOf branch (regression: union skipped _checkFormats)', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const validator = new SchemaValidator(false);
+    const schema = jsonSchemaToTypeBox({
+      oneOf: [
+        {
+          type: 'object',
+          properties: { contact: { type: 'string', format: 'email' } },
+          required: ['contact'],
+        },
+      ],
+    });
+    const result = validator.validate({ contact: 'not-an-email' }, schema);
+    expect(result.valid).toBe(true);
+    expect(result.warnLogged).toBe(true);
+    expect(warnSpy).toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+
+  it('emits format warning for invalid format inside array items (regression: _walkFormats array coverage)', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const validator = new SchemaValidator(false);
+    const schema = jsonSchemaToTypeBox({
+      type: 'object',
+      properties: {
+        emails: { type: 'array', items: { type: 'string', format: 'email' } },
+      },
+      required: ['emails'],
+    });
+    const result = validator.validate({ emails: ['valid@example.com', 'not-an-email'] }, schema);
+    expect(result.valid).toBe(true);
+    expect(result.warnLogged).toBe(true);
+    expect(warnSpy).toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+});
+
+describe('SchemaValidator — errorCode in results', () => {
+  const validator = new SchemaValidator(false);
+
+  it('sets errorCode SCHEMA_VALIDATION_FAILED on plain type failure', () => {
+    const schema = jsonSchemaToTypeBox({ type: 'object', properties: { x: { type: 'integer' } }, required: ['x'] });
+    const result = validator.validate({ x: 'not-an-int' }, schema);
+    expect(result.valid).toBe(false);
+    expect(result.errorCode).toBe('SCHEMA_VALIDATION_FAILED');
   });
 });
 

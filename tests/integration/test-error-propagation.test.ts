@@ -52,7 +52,7 @@ describe('Error Propagation', () => {
       const details = (error as SchemaValidationError).details;
       const errors = details['errors'] as Array<Record<string, unknown>>;
       expect(errors.length).toBeGreaterThan(0);
-      expect(errors[0]).toHaveProperty('field');
+      expect(errors[0]).toHaveProperty('path');
       expect(errors[0]).toHaveProperty('message');
     }
   });
@@ -252,8 +252,7 @@ describe('Error Propagation', () => {
       const errors = (error as SchemaValidationError).details['errors'] as Array<Record<string, unknown>>;
       expect(errors.length).toBeGreaterThanOrEqual(2);
       for (const err of errors) {
-        expect(err).toHaveProperty('field');
-        expect(err).toHaveProperty('code');
+        expect(err).toHaveProperty('path');
         expect(err).toHaveProperty('message');
       }
     }

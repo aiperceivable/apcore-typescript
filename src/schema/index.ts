@@ -9,7 +9,7 @@ export type {
 export { RefResolver } from './ref-resolver.js';
 export { toStrictSchema, applyLlmDescriptions, stripExtensions } from './strict.js';
 export { mergeAnnotations, mergeExamples, mergeMetadata } from './annotations.js';
-export { SchemaLoader, jsonSchemaToTypeBox } from './loader.js';
+export { SchemaLoader, jsonSchemaToTypeBox, contentHash } from './loader.js';
 export { SchemaValidator } from './validator.js';
 export { SchemaExporter } from './exporter.js';
 export type { SchemaAdapter } from './extractor.js';

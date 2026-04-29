@@ -6,7 +6,7 @@ import { Type } from '@sinclair/typebox';
 import { Value } from '@sinclair/typebox/value';
 import { Config } from '../../src/config.js';
 import { SchemaNotFoundError, SchemaParseError } from '../../src/errors.js';
-import { SchemaLoader, jsonSchemaToTypeBox } from '../../src/schema/loader.js';
+import { SchemaLoader, jsonSchemaToTypeBox, contentHash } from '../../src/schema/loader.js';
 
 describe('SchemaLoader', () => {
   let tmpDir: string;
@@ -304,6 +304,55 @@ output_schema:
       const second = loader.getSchema('cacheme');
       expect(first).toBe(second);
     });
+
+    it('returns distinct output schemas for modules with identical input but different output (regression: cache hash collision)', () => {
+      // Two modules: same input schema, different output schemas.
+      // Before the fix, both resolved to the first module's output schema.
+      writeSchema('mod-a.schema.yaml', `
+description: Module A
+input_schema:
+  type: object
+  properties:
+    name:
+      type: string
+  required: [name]
+output_schema:
+  type: object
+  properties:
+    result_a:
+      type: string
+  required: [result_a]
+`);
+      writeSchema('mod-b.schema.yaml', `
+description: Module B
+input_schema:
+  type: object
+  properties:
+    name:
+      type: string
+  required: [name]
+output_schema:
+  type: object
+  properties:
+    result_b:
+      type: integer
+  required: [result_b]
+`);
+      const loader = new SchemaLoader(makeConfig(), schemasDir);
+      const [, outputA] = loader.getSchema('mod-a');
+      const [, outputB] = loader.getSchema('mod-b');
+
+      expect(outputA.moduleId).toBe('mod-a');
+      expect(outputB.moduleId).toBe('mod-b');
+
+      // Module A's output accepts strings, not integers
+      expect(Value.Check(outputA.schema, { result_a: 'hello' })).toBe(true);
+      expect(Value.Check(outputA.schema, { result_b: 42 })).toBe(false);
+
+      // Module B's output accepts integers, not strings
+      expect(Value.Check(outputB.schema, { result_b: 42 })).toBe(true);
+      expect(Value.Check(outputB.schema, { result_a: 'hello' })).toBe(false);
+    });
   });
 
   describe('clearCache', () => {
@@ -457,5 +506,72 @@ describe('jsonSchemaToTypeBox', () => {
   it('converts array without items', () => {
     const schema = jsonSchemaToTypeBox({ type: 'array' });
     expect(Value.Check(schema, [1, 'two', true])).toBe(true);
+  });
+
+  it('converts oneOf and tags schema with ONEOF_MARKER', () => {
+    const schema = jsonSchemaToTypeBox({
+      oneOf: [
+        { type: 'object', properties: { kind: { const: 'a' } }, required: ['kind'] },
+        { type: 'object', properties: { kind: { const: 'b' } }, required: ['kind'] },
+      ],
+    });
+    // The marker is used by SchemaValidator to apply exhaustive oneOf semantics
+    expect((schema as Record<string, unknown>)['x-apcore-keyword']).toBe('oneOf');
+  });
+
+  it('converts allOf and validates all branches are satisfied', () => {
+    const schema = jsonSchemaToTypeBox({
+      allOf: [
+        { type: 'object', properties: { name: { type: 'string' } }, required: ['name'] },
+        { type: 'object', properties: { age: { type: 'integer' } }, required: ['age'] },
+      ],
+    });
+    expect(Value.Check(schema, { name: 'Alice', age: 30 })).toBe(true);
+    expect(Value.Check(schema, { name: 'Bob' })).toBe(false);
+  });
+
+  it('converts not keyword', () => {
+    const schema = jsonSchemaToTypeBox({
+      type: 'object',
+      properties: { status: { not: { const: 'deleted' } } },
+      required: ['status'],
+    });
+    expect(Value.Check(schema, { status: 'active' })).toBe(true);
+    expect(Value.Check(schema, { status: 'deleted' })).toBe(false);
+  });
+
+  it('converts const keyword', () => {
+    const schema = jsonSchemaToTypeBox({ const: 'fixed' });
+    expect(Value.Check(schema, 'fixed')).toBe(true);
+    expect(Value.Check(schema, 'other')).toBe(false);
+  });
+
+  it('converts recursive schema with $id and $ref: "#"', () => {
+    const schema = jsonSchemaToTypeBox({
+      $id: 'TreeNode',
+      type: 'object',
+      properties: {
+        value: { type: 'string' },
+        children: { type: 'array', items: { $ref: '#' } },
+      },
+      required: ['value'],
+    });
+    const root = { value: 'root', children: [{ value: 'child', children: [{ value: 'leaf' }] }] };
+    expect(Value.Check(schema, root)).toBe(true);
+    expect(Value.Check(schema, { value: 42 })).toBe(false);
+  });
+
+  it('converts numeric constraints (minimum, maximum, exclusiveMinimum)', () => {
+    const schema = jsonSchemaToTypeBox({
+      type: 'object',
+      properties: {
+        score: { type: 'integer', minimum: 1, maximum: 100 },
+        positive: { type: 'number', exclusiveMinimum: 0 },
+      },
+      required: ['score', 'positive'],
+    });
+    expect(Value.Check(schema, { score: 50, positive: 0.1 })).toBe(true);
+    expect(Value.Check(schema, { score: 0, positive: 0.1 })).toBe(false);
+    expect(Value.Check(schema, { score: 50, positive: 0 })).toBe(false);
   });
 });

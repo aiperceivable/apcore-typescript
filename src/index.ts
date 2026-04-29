@@ -172,7 +172,7 @@ export { ErrorCodeRegistry, ErrorCodeCollisionError, FRAMEWORK_ERROR_CODE_PREFIX
 export { negotiateVersion, VersionIncompatibleError } from './version.js';
 
 // Schema
-export { SchemaLoader, jsonSchemaToTypeBox } from './schema/loader.js';
+export { SchemaLoader, jsonSchemaToTypeBox, contentHash } from './schema/loader.js';
 export { SchemaValidator } from './schema/validator.js';
 export { SchemaExporter } from './schema/exporter.js';
 export { SchemaStrategy, ExportProfile } from './schema/types.js';

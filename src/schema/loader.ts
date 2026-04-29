@@ -12,19 +12,25 @@ import { SchemaNotFoundError, SchemaParseError } from '../errors.js';
 import { RefResolver } from './ref-resolver.js';
 import type { ResolvedSchema, SchemaDefinition } from './types.js';
 import { SchemaStrategy } from './types.js';
+import { ONEOF_MARKER } from './constants.js';
 
 // Lazy-load Node.js built-in modules for browser compatibility
 let _nodeFs: typeof import('node:fs') | null = null;
 let _nodePath: typeof import('node:path') | null = null;
+let _nodeCrypto: typeof import('node:crypto') | null = null;
 try { _nodeFs = await import('node:fs'); } catch { /* browser environment */ }
 try { _nodePath = await import('node:path'); } catch { /* browser environment */ }
+try { _nodeCrypto = await import('node:crypto'); } catch { /* browser environment */ }
+
 
 export class SchemaLoader {
   private _config: Config;
   private _schemasDir: string;
   private _resolver: RefResolver;
   private _schemaCache: Map<string, SchemaDefinition> = new Map();
-  private _modelCache: Map<string, [ResolvedSchema, ResolvedSchema]> = new Map();
+  // Two-level content-addressable cache (Issue #44 §5)
+  private _pathIndex: Map<string, string> = new Map();           // `${path}:${strategy}` → sha256hex
+  private _contentCache: Map<string, [ResolvedSchema, ResolvedSchema]> = new Map(); // sha256hex → model
 
   constructor(config: Config, schemasDir?: string | null) {
     const { resolve } = _nodePath!;
@@ -115,16 +121,20 @@ export class SchemaLoader {
     nativeInputSchema?: TSchema | null,
     nativeOutputSchema?: TSchema | null,
   ): [ResolvedSchema, ResolvedSchema] {
-    const cached = this._modelCache.get(moduleId);
-    if (cached) return cached;
-
+    const rawStrategy = this._config.get('schema.strategy', 'yaml_first') as string;
     const strategyMap: Record<string, SchemaStrategy> = {
       yaml_first: SchemaStrategy.YAML_FIRST,
       native_first: SchemaStrategy.NATIVE_FIRST,
       yaml_only: SchemaStrategy.YAML_ONLY,
     };
-    const rawStrategy = this._config.get('schema.strategy', 'yaml_first') as string;
     const strategy = strategyMap[rawStrategy] ?? SchemaStrategy.YAML_FIRST;
+
+    // Check path index first
+    const pathKey = `${moduleId}:${strategy}`;
+    const cachedHash = this._pathIndex.get(pathKey);
+    if (cachedHash) {
+      return this._contentCache.get(cachedHash)!;
+    }
 
     let result: [ResolvedSchema, ResolvedSchema] | null = null;
 
@@ -152,17 +162,20 @@ export class SchemaLoader {
       throw new SchemaNotFoundError(moduleId);
     }
 
-    this._modelCache.set(moduleId, result);
-    return result;
+    // Store in two-level cache — hash BOTH schemas to avoid cross-module collision
+    // when two distinct modules share an identical input schema but differ in output.
+    const digest = contentHash({ input: result[0].jsonSchema, output: result[1].jsonSchema });
+    if (!this._contentCache.has(digest)) {
+      this._contentCache.set(digest, result);
+    }
+    this._pathIndex.set(pathKey, digest);
+
+    return this._contentCache.get(digest)!;
   }
 
   private _loadAndResolve(moduleId: string): [ResolvedSchema, ResolvedSchema] {
-    const cached = this._modelCache.get(moduleId);
-    if (cached) return cached;
     const sd = this.load(moduleId);
-    const result = this.resolve(sd);
-    this._modelCache.set(moduleId, result);
-    return result;
+    return this.resolve(sd);
   }
 
   private _wrapNative(
@@ -187,44 +200,112 @@ export class SchemaLoader {
 
   clearCache(): void {
     this._schemaCache.clear();
-    this._modelCache.clear();
+    this._pathIndex.clear();
+    this._contentCache.clear();
     this._resolver.clearCache();
   }
 }
 
+// ---------------------------------------------------------------------------
+// Content-addressable hashing (Issue #44 §5)
+// ---------------------------------------------------------------------------
+
+function sortedKeysStringify(obj: unknown): string {
+  if (obj === null || typeof obj !== 'object') return JSON.stringify(obj);
+  if (Array.isArray(obj)) return `[${obj.map(sortedKeysStringify).join(',')}]`;
+  const sorted = Object.keys(obj as object).sort();
+  const pairs = sorted.map(
+    (k) => `${JSON.stringify(k)}:${sortedKeysStringify((obj as Record<string, unknown>)[k])}`,
+  );
+  return `{${pairs.join(',')}}`;
+}
+
+/**
+ * Compute the SHA-256 hex digest of the canonical JSON serialization of a schema.
+ * Canonical form: sorted keys, no extra whitespace.
+ */
+export function contentHash(schema: unknown): string {
+  const canonical = sortedKeysStringify(schema);
+  if (_nodeCrypto) {
+    return _nodeCrypto.createHash('sha256').update(canonical).digest('hex');
+  }
+  // Fallback for browser environments: use SubtleCrypto synchronously via a
+  // simple djb2-based hex string (not cryptographically strong, but stable).
+  // In practice, SchemaLoader is only used in Node.js environments.
+  let h = 5381;
+  for (let i = 0; i < canonical.length; i++) {
+    h = ((h << 5) + h) ^ canonical.charCodeAt(i);
+    h |= 0;
+  }
+  return (h >>> 0).toString(16).padStart(8, '0').repeat(8);
+}
+
+// ---------------------------------------------------------------------------
+// JSON Schema → TypeBox conversion
+// ---------------------------------------------------------------------------
+
 /**
  * Convert a JSON Schema dict to a TypeBox TSchema.
- * Since TypeBox schemas ARE JSON Schema, this wraps the raw object
- * so it can be used with Value.Check/Value.Decode.
+ * Supports recursive schemas via $id + $ref: "#", and oneOf/anyOf/allOf/not.
  */
 export function jsonSchemaToTypeBox(schema: Record<string, unknown>): TSchema {
+  // Recursive schema: $id present → wrap in Type.Recursive to support self-references
+  if ('$id' in schema && typeof schema['$id'] === 'string') {
+    const $id = schema['$id'] as string;
+    return Type.Recursive(
+      (self) => _convert(schema, self, $id),
+      { $id },
+    );
+  }
+  return _convert(schema, undefined, undefined);
+}
+
+function _convert(
+  schema: Record<string, unknown>,
+  self: TSchema | undefined,
+  selfId: string | undefined,
+): TSchema {
+  // Handle $ref — may be a self-reference in a recursive schema
+  if ('$ref' in schema) {
+    const ref = schema['$ref'] as string;
+    if (self !== undefined && (ref === '#' || ref === selfId)) {
+      return self;
+    }
+    // Unresolved external $ref (should have been inlined by RefResolver)
+    return Type.Unknown();
+  }
+
   const schemaType = schema['type'] as string | undefined;
 
   let result: TSchema;
-  if (schemaType === 'object') result = convertObjectSchema(schema);
-  else if (schemaType === 'array') result = convertArraySchema(schema);
-  else if (schemaType === 'string') result = convertStringSchema(schema);
-  else if (schemaType === 'integer') result = convertNumericSchema(schema, Type.Integer);
-  else if (schemaType === 'number') result = convertNumericSchema(schema, Type.Number);
+  if (schemaType === 'object') result = _convertObject(schema, self, selfId);
+  else if (schemaType === 'array') result = _convertArray(schema, self, selfId);
+  else if (schemaType === 'string') result = _convertString(schema);
+  else if (schemaType === 'integer') result = _convertNumeric(schema, Type.Integer);
+  else if (schemaType === 'number') result = _convertNumeric(schema, Type.Number);
   else if (schemaType === 'boolean') result = Type.Boolean();
   else if (schemaType === 'null') result = Type.Null();
-  else result = convertCombinatorSchema(schema);
+  else result = _convertCombinator(schema, self, selfId);
 
   // Preserve JSON Schema metadata
-  if (typeof schema['description'] === 'string') result['description'] = schema['description'];
-  if (typeof schema['title'] === 'string') result['title'] = schema['title'];
+  if (typeof schema['description'] === 'string') (result as Record<string, unknown>)['description'] = schema['description'];
+  if (typeof schema['title'] === 'string') (result as Record<string, unknown>)['title'] = schema['title'];
 
   return result;
 }
 
-function convertObjectSchema(schema: Record<string, unknown>): TSchema {
+function _convertObject(
+  schema: Record<string, unknown>,
+  self: TSchema | undefined,
+  selfId: string | undefined,
+): TSchema {
   const properties = schema['properties'] as Record<string, Record<string, unknown>> | undefined;
   const required = new Set((schema['required'] as string[]) ?? []);
 
   if (properties) {
     const typeboxProps: Record<string, TSchema> = {};
     for (const [name, propSchema] of Object.entries(properties)) {
-      const propType = jsonSchemaToTypeBox(propSchema);
+      const propType = _convert(propSchema, self, selfId);
       typeboxProps[name] = required.has(name) ? propType : Type.Optional(propType);
     }
     return Type.Object(typeboxProps);
@@ -232,12 +313,18 @@ function convertObjectSchema(schema: Record<string, unknown>): TSchema {
   return Type.Record(Type.String(), Type.Unknown());
 }
 
-function convertArraySchema(schema: Record<string, unknown>): TSchema {
+function _convertArray(
+  schema: Record<string, unknown>,
+  self: TSchema | undefined,
+  selfId: string | undefined,
+): TSchema {
   const items = schema['items'] as Record<string, unknown> | undefined;
-  return items ? Type.Array(jsonSchemaToTypeBox(items)) : Type.Array(Type.Unknown());
+  return items
+    ? Type.Array(_convert(items, self, selfId))
+    : Type.Array(Type.Unknown());
 }
 
-function convertStringSchema(schema: Record<string, unknown>): TSchema {
+function _convertString(schema: Record<string, unknown>): TSchema {
   const opts: Record<string, unknown> = {};
   for (const key of ['minLength', 'maxLength', 'pattern', 'format']) {
     if (key in schema) opts[key] = schema[key];
@@ -245,7 +332,7 @@ function convertStringSchema(schema: Record<string, unknown>): TSchema {
   return Type.String(opts);
 }
 
-function convertNumericSchema(
+function _convertNumeric(
   schema: Record<string, unknown>,
   factory: (opts?: Record<string, unknown>) => TSchema,
 ): TSchema {
@@ -256,7 +343,11 @@ function convertNumericSchema(
   return factory(opts);
 }
 
-function convertCombinatorSchema(schema: Record<string, unknown>): TSchema {
+function _convertCombinator(
+  schema: Record<string, unknown>,
+  self: TSchema | undefined,
+  selfId: string | undefined,
+): TSchema {
   if ('enum' in schema) {
     const values = schema['enum'] as unknown[];
     return Type.Union(values.map((v) =>
@@ -268,13 +359,21 @@ function convertCombinatorSchema(schema: Record<string, unknown>): TSchema {
     return value === null ? Type.Null() : Type.Literal(value as string | number | boolean);
   }
   if ('oneOf' in schema) {
-    return Type.Union((schema['oneOf'] as Record<string, unknown>[]).map(jsonSchemaToTypeBox));
+    const branches = (schema['oneOf'] as Record<string, unknown>[]).map((s) => _convert(s, self, selfId));
+    // Mark with ONEOF_MARKER so SchemaValidator can apply exhaustive oneOf semantics
+    const result = Type.Union(branches) as Record<string, unknown>;
+    result[ONEOF_MARKER] = 'oneOf';
+    return result as TSchema;
   }
   if ('anyOf' in schema) {
-    return Type.Union((schema['anyOf'] as Record<string, unknown>[]).map(jsonSchemaToTypeBox));
+    return Type.Union((schema['anyOf'] as Record<string, unknown>[]).map((s) => _convert(s, self, selfId)));
   }
   if ('allOf' in schema) {
-    return Type.Intersect((schema['allOf'] as Record<string, unknown>[]).map(jsonSchemaToTypeBox));
+    return Type.Intersect((schema['allOf'] as Record<string, unknown>[]).map((s) => _convert(s, self, selfId)));
+  }
+  if ('not' in schema) {
+    const inner = _convert(schema['not'] as Record<string, unknown>, self, selfId);
+    return Type.Not(inner);
   }
   return Type.Unknown();
 }

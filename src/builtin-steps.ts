@@ -8,7 +8,6 @@
 
 import type { TSchema } from '@sinclair/typebox';
 import { Kind } from '@sinclair/typebox';
-import { Value } from '@sinclair/typebox/value';
 import type { ACL } from './acl.js';
 import type { ApprovalHandler, ApprovalResult } from './approval.js';
 import { createApprovalRequest } from './approval.js';
@@ -35,6 +34,7 @@ import type { PipelineContext, Step, StepResult } from './pipeline.js';
 import { ExecutionStrategy } from './pipeline.js';
 import type { Registry } from './registry/registry.js';
 import { jsonSchemaToTypeBox } from './schema/loader.js';
+import { SchemaValidator } from './schema/validator.js';
 import { guardCallChain } from './utils/call-chain.js';
 
 // ---------------------------------------------------------------------------
@@ -50,17 +50,12 @@ function resolveSchema(mod: Record<string, unknown>, key: string): TSchema | nul
   return converted;
 }
 
+const _schemaValidator = new SchemaValidator(false);
+
 function validateSchema(schema: TSchema, data: Record<string, unknown>, direction: string): void {
-  if (Value.Check(schema, data)) return;
-  const errors: Array<Record<string, unknown>> = [];
-  for (const error of Value.Errors(schema, data)) {
-    errors.push({
-      field: error.path || '/',
-      code: String(error.type),
-      message: error.message,
-    });
-  }
-  throw new SchemaValidationError(`${direction} validation failed`, errors);
+  const result = _schemaValidator.validate(data, schema);
+  if (result.valid) return;
+  throw new SchemaValidationError(`${direction} validation failed`, result.errors as unknown as Array<Record<string, unknown>>);
 }
 
 function needsApproval(mod: Record<string, unknown>): boolean {

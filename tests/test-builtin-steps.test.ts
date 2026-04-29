@@ -353,6 +353,23 @@ describe('BuiltinInputValidation', () => {
     await expect(step.execute(pctx)).rejects.toThrow(/validation failed/i);
   });
 
+  it('enforces oneOf mutual exclusivity — rejects ambiguous input (regression: builtin-steps bypass)', async () => {
+    // Both branches of the oneOf schema match { value: 42 } — should be rejected.
+    // Before the fix, the local validateSchema used Value.Check which accepts anyOf semantics,
+    // silently passing ambiguous inputs.
+    const step = new BuiltinInputValidation();
+    const mod = makeModule({
+      inputSchema: {
+        oneOf: [
+          { type: 'object', properties: { value: { type: 'integer' } }, required: ['value'] },
+          { type: 'object', properties: { value: { type: 'number' } }, required: ['value'] },
+        ],
+      },
+    });
+    const pctx = makePipelineContext({ module: mod, inputs: { value: 42 } });
+    await expect(step.execute(pctx)).rejects.toThrow(/validation failed/i);
+  });
+
   it('redacts sensitive fields with _secret_ prefix convention', async () => {
     const step = new BuiltinInputValidation();
     const mod = makeModule({
