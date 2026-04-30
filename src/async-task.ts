@@ -14,6 +14,8 @@ export enum TaskStatus {
   CANCELLED = 'cancelled',
 }
 
+const TERMINAL_STATUSES = new Set([TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED]);
+
 export interface TaskInfo {
   readonly taskId: string;
   readonly moduleId: string;
@@ -23,15 +25,88 @@ export interface TaskInfo {
   readonly completedAt: number | null;
   readonly result: Record<string, unknown> | null;
   readonly error: string | null;
+  readonly retryCount: number;
+  readonly maxRetries: number;
 }
 
-type InternalTaskInfo = { -readonly [K in keyof TaskInfo]: TaskInfo[K] };
+export interface TaskStore {
+  save(task: TaskInfo): void;
+  get(taskId: string): TaskInfo | null;
+  list(status?: TaskStatus): TaskInfo[];
+  delete(taskId: string): void;
+  listExpired(beforeTimestamp: number): TaskInfo[];
+}
+
+export class InMemoryTaskStore implements TaskStore {
+  private readonly _data: Map<string, TaskInfo> = new Map();
+
+  save(task: TaskInfo): void {
+    this._data.set(task.taskId, task);
+  }
+
+  get(taskId: string): TaskInfo | null {
+    return this._data.get(taskId) ?? null;
+  }
+
+  list(status?: TaskStatus): TaskInfo[] {
+    const all = [...this._data.values()];
+    return status ? all.filter(t => t.status === status) : all;
+  }
+
+  delete(taskId: string): void {
+    this._data.delete(taskId);
+  }
+
+  listExpired(beforeTimestamp: number): TaskInfo[] {
+    return [...this._data.values()].filter(
+      t => TERMINAL_STATUSES.has(t.status) && t.completedAt !== null && t.completedAt < beforeTimestamp,
+    );
+  }
+}
+
+export class RetryConfig {
+  readonly maxRetries: number;
+  readonly retryDelayMs: number;
+  readonly backoffMultiplier: number;
+  readonly maxRetryDelayMs: number;
+
+  constructor(opts: {
+    maxRetries?: number;
+    retryDelayMs?: number;
+    backoffMultiplier?: number;
+    maxRetryDelayMs?: number;
+  } = {}) {
+    this.maxRetries = opts.maxRetries ?? 0;
+    this.retryDelayMs = opts.retryDelayMs ?? 1000;
+    this.backoffMultiplier = opts.backoffMultiplier ?? 2.0;
+    this.maxRetryDelayMs = opts.maxRetryDelayMs ?? 60000;
+  }
+
+  computeDelay(attempt: number): number {
+    return Math.min(
+      this.retryDelayMs * Math.pow(this.backoffMultiplier, attempt),
+      this.maxRetryDelayMs,
+    );
+  }
+}
+
+export interface ReaperHandle {
+  stop(): Promise<void>;
+}
+
+type MutableTaskInfo = { -readonly [K in keyof TaskInfo]: TaskInfo[K] };
 
 interface InternalTask {
-  info: InternalTaskInfo;
   promise: Promise<void>;
   cancelled: boolean;
   resolve: () => void;
+}
+
+interface AsyncTaskManagerOptions {
+  executor: Executor;
+  store?: TaskStore;
+  maxConcurrent?: number;
+  maxTasks?: number;
 }
 
 /**
@@ -41,16 +116,23 @@ interface InternalTask {
  */
 export class AsyncTaskManager {
   private readonly _executor: Executor;
+  private readonly _store: TaskStore;
   private readonly _maxConcurrent: number;
   private readonly _maxTasks: number;
-  private readonly _tasks: Map<string, InternalTask> = new Map();
+  private readonly _internal: Map<string, InternalTask> = new Map();
   private _runningCount: number = 0;
   private readonly _waitQueue: Array<() => void> = [];
+  private _reaper: ReaperHandle | null = null;
 
-  constructor(executor: Executor, maxConcurrent: number = 10, maxTasks: number = 1000) {
-    this._executor = executor;
-    this._maxConcurrent = maxConcurrent;
-    this._maxTasks = maxTasks;
+  constructor(opts: AsyncTaskManagerOptions) {
+    this._executor = opts.executor;
+    this._store = opts.store ?? new InMemoryTaskStore();
+    this._maxConcurrent = opts.maxConcurrent ?? 10;
+    this._maxTasks = opts.maxTasks ?? 1000;
+  }
+
+  get store(): TaskStore {
+    return this._store;
   }
 
   /**
@@ -61,13 +143,14 @@ export class AsyncTaskManager {
   async submit(
     moduleId: string,
     inputs: Record<string, unknown>,
-    context?: Context | null,
+    opts?: { context?: Context | null; retry?: RetryConfig },
   ): Promise<string> {
-    if (this._tasks.size >= this._maxTasks) {
+    if (this._internal.size >= this._maxTasks) {
       throw new Error(`Task limit reached (${this._maxTasks})`);
     }
     const taskId = uuidv4();
-    const info: InternalTaskInfo = {
+    const retry = opts?.retry ?? null;
+    const info: MutableTaskInfo = {
       taskId,
       moduleId,
       status: TaskStatus.PENDING,
@@ -76,7 +159,11 @@ export class AsyncTaskManager {
       completedAt: null,
       result: null,
       error: null,
+      retryCount: 0,
+      maxRetries: retry?.maxRetries ?? 0,
     };
+
+    this._store.save(info);
 
     let resolvePromise!: () => void;
     const promise = new Promise<void>((resolve) => {
@@ -84,14 +171,13 @@ export class AsyncTaskManager {
     });
 
     const internal: InternalTask = {
-      info,
       promise,
       cancelled: false,
       resolve: resolvePromise,
     };
 
-    this._tasks.set(taskId, internal);
-    this._enqueue(taskId, moduleId, inputs, context ?? null);
+    this._internal.set(taskId, internal);
+    this._enqueue(taskId, moduleId, inputs, opts?.context ?? null, retry);
     return taskId;
   }
 
@@ -99,8 +185,8 @@ export class AsyncTaskManager {
    * Return the TaskInfo for a task, or null if not found.
    */
   getStatus(taskId: string): TaskInfo | null {
-    const internal = this._tasks.get(taskId);
-    return internal ? { ...internal.info } : null;
+    const info = this._store.get(taskId);
+    return info ? { ...info } : null;
   }
 
   /**
@@ -109,38 +195,36 @@ export class AsyncTaskManager {
    * Throws if the task is not found or not in COMPLETED status.
    */
   getResult(taskId: string): Record<string, unknown> {
-    const internal = this._tasks.get(taskId);
-    if (!internal) {
+    const info = this._store.get(taskId);
+    if (!info) {
       throw new Error(`Task not found: ${taskId}`);
     }
-    if (internal.info.status !== TaskStatus.COMPLETED) {
-      throw new Error(`Task ${taskId} is not completed (status=${internal.info.status})`);
+    if (info.status !== TaskStatus.COMPLETED) {
+      throw new Error(`Task ${taskId} is not completed (status=${info.status})`);
     }
-    return internal.info.result!;
+    return info.result!;
   }
 
   /**
    * Cancel a running or pending task.
    *
-   * Sets the cancelled flag and updates status immediately.
-   * The underlying execution may still be in-flight but its result
-   * will be discarded when it completes.
-   *
    * Returns true if the task was successfully marked as cancelled.
-   * Async to satisfy the cross-SDK protocol contract.
    */
   async cancel(taskId: string): Promise<boolean> {
-    const internal = this._tasks.get(taskId);
-    if (!internal) return false;
+    const info = this._store.get(taskId) as MutableTaskInfo | null;
+    if (!info) return false;
 
-    const { info } = internal;
     if (info.status !== TaskStatus.PENDING && info.status !== TaskStatus.RUNNING) {
       return false;
     }
 
+    const internal = this._internal.get(taskId);
+    if (!internal) return false;
+
     internal.cancelled = true;
     info.status = TaskStatus.CANCELLED;
     info.completedAt = Date.now() / 1000;
+    this._store.save(info);
     return true;
   }
 
@@ -148,27 +232,24 @@ export class AsyncTaskManager {
    * Return all tasks, optionally filtered by status.
    */
   listTasks(status?: TaskStatus): TaskInfo[] {
-    const tasks = [...this._tasks.values()];
-    const filtered = status ? tasks.filter(t => t.info.status === status) : tasks;
-    return filtered.map(t => ({ ...t.info }));
+    return this._store.list(status).map(t => ({ ...t }));
   }
 
   /**
    * Remove terminal-state tasks older than maxAgeSeconds seconds.
    *
-   * Terminal states: COMPLETED, FAILED, CANCELLED.
    * Returns the number of tasks removed.
    */
   cleanup(maxAgeSeconds: number = 3600): number {
-    const terminal = new Set([TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED]);
-    const now = Date.now() / 1000;
+    const threshold = Date.now() / 1000 - maxAgeSeconds;
     let removed = 0;
 
-    for (const [taskId, internal] of this._tasks.entries()) {
-      if (!terminal.has(internal.info.status)) continue;
-      const refTime = internal.info.completedAt ?? internal.info.submittedAt;
-      if ((now - refTime) >= maxAgeSeconds) {
-        this._tasks.delete(taskId);
+    for (const task of this._store.list()) {
+      if (!TERMINAL_STATUSES.has(task.status)) continue;
+      const refTime = task.completedAt ?? task.submittedAt;
+      if (refTime <= threshold) {
+        this._store.delete(task.taskId);
+        this._internal.delete(task.taskId);
         removed++;
       }
     }
@@ -181,18 +262,69 @@ export class AsyncTaskManager {
    */
   async shutdown(): Promise<void> {
     const promises: Promise<void>[] = [];
-    for (const [taskId, task] of this._tasks) {
-      if (task.info.status === TaskStatus.PENDING || task.info.status === TaskStatus.RUNNING) {
-        void this.cancel(taskId);
-        promises.push(task.promise);
+    for (const task of this._store.list()) {
+      if (task.status === TaskStatus.PENDING || task.status === TaskStatus.RUNNING) {
+        const internal = this._internal.get(task.taskId);
+        void this.cancel(task.taskId);
+        if (internal) promises.push(internal.promise);
       }
+    }
+    if (this._reaper) {
+      await this._reaper.stop();
     }
     await Promise.allSettled(promises);
   }
 
   /**
-   * Acquire a concurrency slot. Resolves when a slot is available.
+   * Start a background reaper that periodically deletes expired terminal tasks.
+   *
+   * Returns a handle to stop the reaper. Throws if a reaper is already running.
    */
+  startReaper(opts: { ttlSeconds?: number; sweepIntervalMs?: number } = {}): ReaperHandle {
+    if (this._reaper !== null) {
+      throw new Error('[apcore:async-task] Reaper already running; call stop() before starting again');
+    }
+
+    const ttlSeconds = opts.ttlSeconds ?? 3600;
+    const sweepIntervalMs = opts.sweepIntervalMs ?? 300000;
+
+    let stopped = false;
+    let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+    let resolveStop!: () => void;
+    const stopPromise = new Promise<void>((resolve) => { resolveStop = resolve; });
+
+    const sweep = (): void => {
+      if (stopped) return;
+      const threshold = Date.now() / 1000 - ttlSeconds;
+      const expired = this._store.listExpired(threshold);
+      for (const task of expired) {
+        this._store.delete(task.taskId);
+        this._internal.delete(task.taskId);
+      }
+      if (!stopped) {
+        timeoutHandle = setTimeout(sweep, sweepIntervalMs);
+      }
+    };
+
+    timeoutHandle = setTimeout(sweep, sweepIntervalMs);
+
+    const handle: ReaperHandle = {
+      stop: async (): Promise<void> => {
+        stopped = true;
+        this._reaper = null;
+        if (timeoutHandle !== null) {
+          clearTimeout(timeoutHandle);
+          timeoutHandle = null;
+        }
+        resolveStop();
+        await stopPromise;
+      },
+    };
+
+    this._reaper = handle;
+    return handle;
+  }
+
   private _acquireSlot(): Promise<void> {
     if (this._runningCount < this._maxConcurrent) {
       this._runningCount++;
@@ -206,9 +338,6 @@ export class AsyncTaskManager {
     });
   }
 
-  /**
-   * Release a concurrency slot and notify the next waiter.
-   */
   private _releaseSlot(): void {
     this._runningCount--;
     if (this._waitQueue.length > 0) {
@@ -217,53 +346,83 @@ export class AsyncTaskManager {
     }
   }
 
-  /**
-   * Enqueue the task for execution under the concurrency limit.
-   */
   private _enqueue(
     taskId: string,
     moduleId: string,
     inputs: Record<string, unknown>,
     context: Context | null,
+    retry: RetryConfig | null,
   ): void {
     const run = async (): Promise<void> => {
-      const internal = this._tasks.get(taskId);
+      const internal = this._internal.get(taskId);
       if (!internal) return;
 
+      // slotHeld tracks whether we currently hold a concurrency slot.
+      // We release it during backoff waits so other tasks can run.
+      let slotHeld = false;
+
       try {
-        await this._acquireSlot();
+        // eslint-disable-next-line no-constant-condition
+        while (true) {
+          await this._acquireSlot();
+          slotHeld = true;
 
-        // Check if cancelled while waiting for a slot
-        if (internal.cancelled) {
-          return; // finally block handles releaseSlot + resolve
-        }
+          if (internal.cancelled) return;
 
-        internal.info.status = TaskStatus.RUNNING;
-        internal.info.startedAt = Date.now() / 1000;
+          const info = this._store.get(taskId) as MutableTaskInfo | null;
+          if (!info) return;
 
-        const result = await this._executor.call(moduleId, inputs, context);
+          info.status = TaskStatus.RUNNING;
+          info.startedAt = Date.now() / 1000;
+          this._store.save(info);
 
-        // Check if cancelled during execution
-        if (internal.cancelled) {
-          return; // finally block handles releaseSlot + resolve
-        }
+          let execError: unknown = null;
+          let succeeded = false;
 
-        internal.info.status = TaskStatus.COMPLETED;
-        internal.info.completedAt = Date.now() / 1000;
-        internal.info.result = result;
-      } catch (err) {
-        if (!internal.cancelled) {
-          internal.info.status = TaskStatus.FAILED;
-          internal.info.completedAt = Date.now() / 1000;
-          internal.info.error = err instanceof Error ? err.message : String(err);
+          try {
+            const result = await this._executor.call(moduleId, inputs, context);
+            if (!internal.cancelled) {
+              info.status = TaskStatus.COMPLETED;
+              info.completedAt = Date.now() / 1000;
+              info.result = result;
+              this._store.save(info);
+              succeeded = true;
+            }
+          } catch (err) {
+            execError = err;
+          }
+
+          this._releaseSlot();
+          slotHeld = false;
+
+          if (succeeded || internal.cancelled) return;
+
+          if (retry && info.retryCount < retry.maxRetries) {
+            const delay = retry.computeDelay(info.retryCount);
+            info.retryCount += 1;
+            info.status = TaskStatus.PENDING;
+            info.startedAt = null;
+            info.completedAt = null;
+            this._store.save(info);
+
+            await new Promise<void>((resolve) => setTimeout(resolve, delay));
+
+            if (internal.cancelled) return;
+            // Loop continues: re-acquire slot and retry
+          } else {
+            info.status = TaskStatus.FAILED;
+            info.completedAt = Date.now() / 1000;
+            info.error = execError instanceof Error ? execError.message : String(execError);
+            this._store.save(info);
+            return;
+          }
         }
       } finally {
-        this._releaseSlot();
+        if (slotHeld) this._releaseSlot();
         internal.resolve();
       }
     };
 
-    // Fire and forget -- errors are captured inside run()
     run().catch((err) => {
       console.warn('[apcore:async-task] Unexpected error in task runner:', err);
     });

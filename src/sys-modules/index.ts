@@ -2,6 +2,9 @@ export { ToggleState, ToggleFeatureModule, DEFAULT_TOGGLE_STATE, isModuleDisable
 export { HealthSummaryModule, HealthModule, classifyHealthStatus } from './health.js';
 export { ManifestModule, ManifestFullModule } from './manifest.js';
 export { UpdateConfigModule, ReloadModule } from './control.js';
+export type { UpdateConfigOptions } from './control.js';
 export { UsageSummaryModule, UsageModule } from './usage.js';
-export { registerSysModules, registerSubscriberType, unregisterSubscriberType, resetSubscriberRegistry } from './registration.js';
-export type { SysModulesContext } from './registration.js';
+export { registerSysModules, registerSubscriberType, unregisterSubscriberType, resetSubscriberRegistry, createSubscriberFromConfig } from './registration.js';
+export type { SysModulesContext, RegisterSysModulesOptions } from './registration.js';
+export { InMemoryAuditStore, buildAuditEntry } from './audit.js';
+export type { AuditEntry, AuditStore, AuditFilter, AuditAction } from './audit.js';

@@ -12,8 +12,10 @@ import {
   StepNotReplaceableError,
   StepNameDuplicateError,
   StrategyNotFoundError,
+  PipelineStepError,
+  PipelineStepNotFoundError,
 } from '../src/pipeline.js';
-import type { Step, StepResult, PipelineContext } from '../src/pipeline.js';
+import type { Step, StepResult, PipelineContext, PipelineState } from '../src/pipeline.js';
 import { Context } from '../src/context.js';
 
 // ---------------------------------------------------------------------------
@@ -509,5 +511,268 @@ describe('Pipeline error types', () => {
     const err = new StrategyNotFoundError('Strategy not found');
     expect(err.code).toBe('STRATEGY_NOT_FOUND');
     expect(err.name).toBe('StrategyNotFoundError');
+  });
+
+  it('PipelineStepError has correct code, name, stepName', () => {
+    const cause = new Error('step broke');
+    const err = new PipelineStepError('my_step', cause, null);
+    expect(err.code).toBe('PIPELINE_STEP_ERROR');
+    expect(err.name).toBe('PipelineStepError');
+    expect(err.stepName).toBe('my_step');
+    expect(err.cause).toBe(cause);
+    expect(err.pipelineTrace).toBeNull();
+  });
+
+  it('PipelineStepNotFoundError has correct code, name, stepName', () => {
+    const err = new PipelineStepNotFoundError('missing_step');
+    expect(err.code).toBe('PIPELINE_STEP_NOT_FOUND');
+    expect(err.name).toBe('PipelineStepNotFoundError');
+    expect(err.stepName).toBe('missing_step');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Pipeline Hardening (Issue #33)
+// ---------------------------------------------------------------------------
+
+describe('Pipeline Hardening §1.1 — Fail-fast', () => {
+  it('wraps step exception in PipelineStepError (not raw rethrow)', async () => {
+    const engine = new PipelineEngine();
+    const ctx = makeContext();
+    const s = new ExecutionStrategy('s', [makeStep('bad', { throws: true })]);
+    await expect(engine.run(s, ctx)).rejects.toBeInstanceOf(PipelineStepError);
+  });
+
+  it('PipelineStepError carries step name and cause', async () => {
+    const engine = new PipelineEngine();
+    const ctx = makeContext();
+    const s = new ExecutionStrategy('s', [makeStep('failing_step', { throws: true })]);
+    try {
+      await engine.run(s, ctx);
+    } catch (e) {
+      expect(e).toBeInstanceOf(PipelineStepError);
+      const err = e as PipelineStepError;
+      expect(err.stepName).toBe('failing_step');
+      expect(err.cause).toBeInstanceOf(Error);
+      expect((err.cause as Error).message).toContain('failing_step');
+    }
+  });
+
+  it('PipelineStepError carries pipeline trace', async () => {
+    const engine = new PipelineEngine();
+    const ctx = makeContext();
+    const s = new ExecutionStrategy('s', [makeStep('a'), makeStep('b', { throws: true })]);
+    try {
+      await engine.run(s, ctx);
+    } catch (e) {
+      const err = e as PipelineStepError;
+      expect(err.pipelineTrace).not.toBeNull();
+      expect(err.pipelineTrace!.steps).toHaveLength(2);
+    }
+  });
+
+  it('stops pipeline on error and does not run subsequent steps', async () => {
+    const executed: string[] = [];
+    const trackStep = (name: string, throws = false): Step => ({
+      name,
+      description: name,
+      removable: true,
+      replaceable: true,
+      execute: async (): Promise<StepResult> => {
+        executed.push(name);
+        if (throws) throw new Error(`${name} failed`);
+        return { action: 'continue' };
+      },
+    });
+    const engine = new PipelineEngine();
+    const ctx = makeContext();
+    const s = new ExecutionStrategy('s', [trackStep('a'), trackStep('b', true), trackStep('c')]);
+    await expect(engine.run(s, ctx)).rejects.toBeInstanceOf(PipelineStepError);
+    expect(executed).toEqual(['a', 'b']);
+  });
+
+  it('does NOT throw PipelineStepError when ignoreErrors=true', async () => {
+    const engine = new PipelineEngine();
+    const ctx = makeContext();
+    const s = new ExecutionStrategy('s', [
+      makeStep('risky', { throws: true, ignoreErrors: true }),
+      makeStep('after'),
+    ]);
+    const [, trace] = await engine.run(s, ctx);
+    expect(trace.success).toBe(true);
+  });
+});
+
+describe('Pipeline Hardening §1.2 — Replace Semantic (configureStep)', () => {
+  it('configureStep replaces existing step at same position', () => {
+    const s = new ExecutionStrategy('s', [makeStep('a'), makeStep('b'), makeStep('c')]);
+    const newB = makeStep('b-v2');
+    s.configureStep('b', newB);
+    expect(s.stepNames()).toEqual(['a', 'b-v2', 'c']);
+  });
+
+  it('configureStep called twice leaves exactly one step at that position', () => {
+    const s = new ExecutionStrategy('s', [makeStep('validate_input')]);
+    s.configureStep('validate_input', makeStep('validate_input'));
+    s.configureStep('validate_input', makeStep('validate_input'));
+    expect(s.steps.filter((st) => st.name === 'validate_input')).toHaveLength(1);
+    expect(s.steps).toHaveLength(1);
+  });
+
+  it('configureStep throws PipelineStepNotFoundError for unknown step', () => {
+    const s = new ExecutionStrategy('s', [makeStep('a')]);
+    expect(() => s.configureStep('nonexistent', makeStep('x'))).toThrow(PipelineStepNotFoundError);
+  });
+
+  it('configureStep throws StepNotReplaceableError for non-replaceable step', () => {
+    const s = new ExecutionStrategy('s', [makeStep('locked', { replaceable: false })]);
+    expect(() => s.configureStep('locked', makeStep('new'))).toThrow(StepNotReplaceableError);
+  });
+
+  it('configureStep throws StepNameDuplicateError when newStep name collides with a different existing step', () => {
+    const s = new ExecutionStrategy('s', [makeStep('a'), makeStep('b')]);
+    // Replacing 'a' with a step named 'b' would create a duplicate
+    expect(() => s.configureStep('a', makeStep('b'))).toThrow(StepNameDuplicateError);
+    // _steps and _nameToIdx must remain intact after the rejected call
+    expect(s.stepNames()).toEqual(['a', 'b']);
+    expect(s.findStepIndex('a')).toBe(0);
+    expect(s.findStepIndex('b')).toBe(1);
+  });
+
+  it('configureStep index map stays consistent after replace with different name', () => {
+    const s = new ExecutionStrategy('s', [makeStep('a'), makeStep('b'), makeStep('c')]);
+    s.configureStep('b', makeStep('b-new'));
+    // Old name 'b' must be gone from the index
+    expect(s.findStepIndex('b')).toBeUndefined();
+    // New name 'b-new' must occupy position 1
+    expect(s.findStepIndex('b-new')).toBe(1);
+    // Other steps unchanged
+    expect(s.findStepIndex('a')).toBe(0);
+    expect(s.findStepIndex('c')).toBe(2);
+  });
+});
+
+describe('Pipeline Hardening §1.4 — run_until', () => {
+  it('halts pipeline after step where predicate returns true', async () => {
+    const executed: string[] = [];
+    const trackStep = (name: string): Step => ({
+      name,
+      description: name,
+      removable: true,
+      replaceable: true,
+      execute: async (): Promise<StepResult> => {
+        executed.push(name);
+        return { action: 'continue' };
+      },
+    });
+    const engine = new PipelineEngine();
+    const ctx = makeContext();
+    ctx.runUntil = (state: PipelineState) => state.stepName === 'b';
+    const s = new ExecutionStrategy('s', [trackStep('a'), trackStep('b'), trackStep('c')]);
+    const [, trace] = await engine.run(s, ctx);
+    expect(trace.success).toBe(true);
+    expect(executed).toEqual(['a', 'b']);
+  });
+
+  it('returns accumulated output when run_until fires', async () => {
+    const engine = new PipelineEngine();
+    const ctx = makeContext();
+    ctx.output = { value: 42 };
+    ctx.runUntil = (state: PipelineState) => state.stepName === 'first';
+    const s = new ExecutionStrategy('s', [makeStep('first'), makeStep('second')]);
+    const [output, trace] = await engine.run(s, ctx);
+    expect(output).toEqual({ value: 42 });
+    expect(trace.success).toBe(true);
+  });
+
+  it('runs full pipeline when run_until never fires', async () => {
+    const executed: string[] = [];
+    const trackStep = (name: string): Step => ({
+      name,
+      description: name,
+      removable: true,
+      replaceable: true,
+      execute: async (): Promise<StepResult> => {
+        executed.push(name);
+        return { action: 'continue' };
+      },
+    });
+    const engine = new PipelineEngine();
+    const ctx = makeContext();
+    ctx.runUntil = () => false;
+    const s = new ExecutionStrategy('s', [trackStep('a'), trackStep('b'), trackStep('c')]);
+    await engine.run(s, ctx);
+    expect(executed).toEqual(['a', 'b', 'c']);
+  });
+});
+
+describe('Pipeline Hardening §1.5 — O(1) step lookup', () => {
+  it('findStepIndex returns correct index for each step', () => {
+    const s = new ExecutionStrategy('s', [makeStep('x'), makeStep('y'), makeStep('z')]);
+    expect(s.findStepIndex('x')).toBe(0);
+    expect(s.findStepIndex('y')).toBe(1);
+    expect(s.findStepIndex('z')).toBe(2);
+  });
+
+  it('findStepIndex returns undefined for unknown step', () => {
+    const s = new ExecutionStrategy('s', [makeStep('a')]);
+    expect(s.findStepIndex('missing')).toBeUndefined();
+  });
+
+  it('findStepIndex updates correctly after insertAfter', () => {
+    const s = new ExecutionStrategy('s', [makeStep('a'), makeStep('c')]);
+    s.insertAfter('a', makeStep('b'));
+    expect(s.findStepIndex('a')).toBe(0);
+    expect(s.findStepIndex('b')).toBe(1);
+    expect(s.findStepIndex('c')).toBe(2);
+  });
+
+  it('findStepIndex updates correctly after remove', () => {
+    const s = new ExecutionStrategy('s', [makeStep('a'), makeStep('b'), makeStep('c')]);
+    s.remove('b');
+    expect(s.findStepIndex('a')).toBe(0);
+    expect(s.findStepIndex('c')).toBe(1);
+    expect(s.findStepIndex('b')).toBeUndefined();
+  });
+
+  it('PipelineEngine uses O(1) lookup for skip_to (findStepIndex)', async () => {
+    const executed: string[] = [];
+    const engine = new PipelineEngine();
+    const ctx = makeContext();
+    const steps: Step[] = [
+      {
+        name: 'a',
+        description: 'a',
+        removable: true,
+        replaceable: true,
+        execute: async (): Promise<StepResult> => {
+          executed.push('a');
+          return { action: 'skip_to', skipTo: 'c' };
+        },
+      },
+      {
+        name: 'b',
+        description: 'b',
+        removable: true,
+        replaceable: true,
+        execute: async (): Promise<StepResult> => {
+          executed.push('b');
+          return { action: 'continue' };
+        },
+      },
+      {
+        name: 'c',
+        description: 'c',
+        removable: true,
+        replaceable: true,
+        execute: async (): Promise<StepResult> => {
+          executed.push('c');
+          return { action: 'continue' };
+        },
+      },
+    ];
+    const s = new ExecutionStrategy('s', steps);
+    await engine.run(s, ctx);
+    expect(executed).toEqual(['a', 'c']);
   });
 });

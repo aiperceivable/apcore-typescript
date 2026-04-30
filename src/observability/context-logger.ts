@@ -1,9 +1,72 @@
 /**
- * Structured logging: ContextLogger and ObsLoggingMiddleware.
+ * Structured logging: ContextLogger, RedactionConfig, and ObsLoggingMiddleware.
  */
 
 import type { Context } from '../context.js';
 import { Middleware } from '../middleware/base.js';
+import { matchPattern } from '../utils/pattern.js';
+
+// ---------------------------------------------------------------------------
+// RedactionConfig
+// ---------------------------------------------------------------------------
+
+const PROTECTED_LOG_FIELDS = new Set(['trace_id', 'caller_id', 'module_id']);
+
+/**
+ * Runtime-configurable redaction rules for ObsLoggingMiddleware.
+ * Applied in addition to schema-level x-sensitive annotations.
+ */
+export class RedactionConfig {
+  readonly fieldPatterns: readonly string[];
+  readonly valuePatterns: readonly (RegExp | string)[];
+  readonly replacement: string;
+
+  constructor(
+    options: {
+      fieldPatterns?: string[];
+      valuePatterns?: (RegExp | string)[];
+      replacement?: string;
+    } = {},
+  ) {
+    this.fieldPatterns = options.fieldPatterns ?? [];
+    this.valuePatterns = options.valuePatterns ?? [];
+    this.replacement = options.replacement ?? '***REDACTED***';
+  }
+
+  /** Apply redaction rules to a flat object of field name → value. */
+  apply(obj: Record<string, unknown>): Record<string, unknown> {
+    const result: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(obj)) {
+      if (this._shouldRedact(k, v)) {
+        result[k] = this.replacement;
+      } else {
+        result[k] = v;
+      }
+    }
+    return result;
+  }
+
+  private _shouldRedact(fieldName: string, value: unknown): boolean {
+    if (PROTECTED_LOG_FIELDS.has(fieldName)) return false;
+
+    for (const pattern of this.fieldPatterns) {
+      if (matchPattern(pattern, fieldName)) return true;
+    }
+
+    if (typeof value === 'string') {
+      for (const pattern of this.valuePatterns) {
+        const re = pattern instanceof RegExp ? pattern : new RegExp(pattern);
+        if (re.test(value)) return true;
+      }
+    }
+
+    return false;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// ContextLogger
+// ---------------------------------------------------------------------------
 
 const LEVELS: Record<string, number> = {
   trace: 0,
@@ -137,16 +200,19 @@ export class ObsLoggingMiddleware extends Middleware {
   private _logger: ContextLogger;
   private _logInputs: boolean;
   private _logOutputs: boolean;
+  private _redactionConfig: RedactionConfig | null;
 
   constructor(options?: {
     logger?: ContextLogger;
     logInputs?: boolean;
     logOutputs?: boolean;
+    redactionConfig?: RedactionConfig | null;
   }) {
     super();
     this._logger = options?.logger ?? new ContextLogger({ name: 'apcore.obs_logging' });
     this._logInputs = options?.logInputs ?? true;
     this._logOutputs = options?.logOutputs ?? true;
+    this._redactionConfig = options?.redactionConfig ?? null;
   }
 
   override before(
@@ -163,7 +229,11 @@ export class ObsLoggingMiddleware extends Middleware {
       caller_id: context.callerId,
     };
     if (this._logInputs) {
-      extra['inputs'] = context.redactedInputs ?? inputs;
+      let loggableInputs = (context.redactedInputs ?? inputs) as Record<string, unknown>;
+      if (this._redactionConfig !== null) {
+        loggableInputs = this._redactionConfig.apply(loggableInputs);
+      }
+      extra['inputs'] = loggableInputs;
     }
     this._logger.info('Module call started', extra);
     return null;
@@ -189,7 +259,11 @@ export class ObsLoggingMiddleware extends Middleware {
       // fields (API keys, tokens) do not leak into logs. The executor has
       // already applied the schema; falling back to `output` preserves
       // behavior for callers invoking the middleware outside the pipeline.
-      extra['output'] = context.redactedOutput ?? output;
+      let loggableOutput = (context.redactedOutput ?? output) as Record<string, unknown>;
+      if (this._redactionConfig !== null) {
+        loggableOutput = this._redactionConfig.apply(loggableOutput);
+      }
+      extra['output'] = loggableOutput;
     }
     this._logger.info('Module call completed', extra);
     return null;

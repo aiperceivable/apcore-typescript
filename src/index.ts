@@ -106,6 +106,12 @@ export {
   ErrorFormatterDuplicateError,
   TaskLimitExceededError,
   VersionConstraintError,
+  ModuleIdConflictError,
+  InvalidSegmentError,
+  IdTooLongError,
+  CircuitBreakerOpenError,
+  ModuleReloadConflictError,
+  SysModuleRegistrationError,
   ErrorCodes,
 } from './errors.js';
 export type { ErrorCode, ErrorOptions } from './errors.js';
@@ -115,8 +121,22 @@ export { ACL } from './acl.js';
 export type { ACLRule, AuditEntry, AuditLogger } from './acl.js';
 
 // Middleware
-export { Middleware, MiddlewareManager, MiddlewareChainError, BeforeMiddleware, AfterMiddleware, LoggingMiddleware, RetryHintMiddleware, RetryMiddleware, ErrorHistoryMiddleware, PlatformNotifyMiddleware } from './middleware/index.js';
-export type { RetryConfig } from './middleware/index.js';
+export {
+  Middleware, MiddlewareManager, MiddlewareChainError,
+  BeforeMiddleware, AfterMiddleware,
+  LoggingMiddleware,
+  RetryHintMiddleware, RetryMiddleware,
+  ErrorHistoryMiddleware, PlatformNotifyMiddleware,
+  CircuitBreakerMiddleware, MiddlewareCircuitState, CTX_CIRCUIT_STATE,
+  CTX_TRACING_SPAN_ID,
+  validateContextKey, isAsyncHandler,
+} from './middleware/index.js';
+export type {
+  RetryConfig,
+  CircuitBreakerOptions,
+  OtelTracer, OtelSpan, TracingMiddlewareOptions,
+  ContextKeyWriter, ContextKeyValidation,
+} from './middleware/index.js';
 
 // Decorator
 export { module, FunctionModule } from './decorator.js';
@@ -126,8 +146,18 @@ export { ExtensionManager } from './extensions.js';
 export type { ExtensionPoint } from './extensions.js';
 
 // Events
-export { EventEmitter, createEvent, WebhookSubscriber, A2ASubscriber } from './events/index.js';
-export type { ApCoreEvent, EventSubscriber } from './events/index.js';
+export {
+  EventEmitter,
+  createEvent,
+  WebhookSubscriber,
+  A2ASubscriber,
+  FileSubscriber,
+  StdoutSubscriber,
+  FilterSubscriber,
+  CircuitBreakerWrapper,
+  CircuitState,
+} from './events/index.js';
+export type { ApCoreEvent, EventSubscriber, CircuitBreakerConfig } from './events/index.js';
 
 // System Modules
 export {
@@ -135,6 +165,7 @@ export {
   registerSubscriberType,
   unregisterSubscriberType,
   resetSubscriberRegistry,
+  createSubscriberFromConfig,
   ToggleState,
   DEFAULT_TOGGLE_STATE,
   isModuleDisabled,
@@ -153,8 +184,8 @@ export {
 export type { SysModulesContext } from './sys-modules/index.js';
 
 // Async tasks
-export { AsyncTaskManager, TaskStatus } from './async-task.js';
-export type { TaskInfo } from './async-task.js';
+export { AsyncTaskManager, TaskStatus, InMemoryTaskStore, RetryConfig as AsyncRetryConfig } from './async-task.js';
+export type { TaskInfo, TaskStore, ReaperHandle } from './async-task.js';
 
 // Bindings
 export { BindingLoader } from './bindings.js';
@@ -164,6 +195,10 @@ export { matchPattern, calculateSpecificity } from './utils/pattern.js';
 export { normalizeToCanonicalId } from './utils/normalize.js';
 export { guardCallChain, DEFAULT_MAX_CALL_DEPTH, DEFAULT_MAX_MODULE_REPEAT } from './utils/call-chain.js';
 export { propagateError } from './utils/error-propagation.js';
+
+// Multi-class discovery
+export { classNameToSegment, discoverMultiClass } from './registry/multi-class.js';
+export type { ClassDescriptor, MultiClassEntry } from './registry/multi-class.js';
 
 // Error Code Registry
 export { ErrorCodeRegistry, ErrorCodeCollisionError, FRAMEWORK_ERROR_CODE_PREFIXES } from './error-code-registry.js';
@@ -203,8 +238,8 @@ export { TraceContext } from './trace-context.js';
 export type { TraceParent } from './trace-context.js';
 
 // Pipeline
-export { ExecutionStrategy, PipelineEngine, PipelineAbortError, StepNotFoundError, StepNotRemovableError, StepNotReplaceableError, StepNameDuplicateError, StrategyNotFoundError } from './pipeline.js';
-export type { Step, StepResult, PipelineContext, StepTrace, PipelineTrace, StrategyInfo } from './pipeline.js';
+export { ExecutionStrategy, PipelineEngine, PipelineAbortError, StepNotFoundError, StepNotRemovableError, StepNotReplaceableError, StepNameDuplicateError, StrategyNotFoundError, PipelineStepError, PipelineStepNotFoundError } from './pipeline.js';
+export type { Step, StepResult, PipelineContext, PipelineState, StepTrace, PipelineTrace, StrategyInfo } from './pipeline.js';
 
 // Built-in Steps
 export {

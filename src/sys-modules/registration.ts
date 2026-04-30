@@ -2,16 +2,20 @@
  * Auto-registration of sys.* modules and middleware from config.
  */
 
+import * as fs from 'node:fs';
+import * as yaml from 'js-yaml';
 import type { Registry } from '../registry/registry.js';
 import type { Executor } from '../executor.js';
 import type { Config } from '../config.js';
 import type { MetricsCollector } from '../observability/metrics.js';
+import type { AuditStore } from './audit.js';
+import { SysModuleRegistrationError } from '../errors.js';
 import { ErrorHistory } from '../observability/error-history.js';
 import { ErrorHistoryMiddleware } from '../middleware/error-history.js';
 import { UsageCollector, UsageMiddleware } from '../observability/usage.js';
 import type { EventSubscriber } from '../events/emitter.js';
 import { EventEmitter, createEvent } from '../events/emitter.js';
-import { WebhookSubscriber, A2ASubscriber } from '../events/subscribers.js';
+import { WebhookSubscriber, A2ASubscriber, FileSubscriber, StdoutSubscriber, FilterSubscriber } from '../events/subscribers.js';
 import { PlatformNotifyMiddleware } from '../middleware/platform-notify.js';
 import { HealthSummaryModule, HealthModule } from './health.js';
 import { ManifestFullModule, ManifestModule } from './manifest.js';
@@ -78,16 +82,45 @@ function _registerBuiltInFactories(): void {
     const timeoutMs = config['timeout_ms'] as number | undefined;
     return new A2ASubscriber(platformUrl, auth, timeoutMs);
   });
+
+  _subscriberFactories.set('file', (config: Record<string, unknown>): EventSubscriber => {
+    const path = config['path'];
+    if (typeof path !== 'string' || path.length === 0) {
+      throw new Error(`file subscriber requires a non-empty "path" string field`);
+    }
+    const append = config['append'] as boolean | undefined;
+    const format = config['format'] as string | undefined;
+    const rotateBytes = config['rotate_bytes'] as number | undefined;
+    return new FileSubscriber(path, append, format, rotateBytes);
+  });
+
+  _subscriberFactories.set('stdout', (config: Record<string, unknown>): EventSubscriber => {
+    const format = config['format'] as string | undefined;
+    const levelFilter = config['level_filter'] as string | undefined;
+    return new StdoutSubscriber(format, levelFilter);
+  });
+
+  _subscriberFactories.set('filter', (config: Record<string, unknown>): EventSubscriber => {
+    const delegateType = config['delegate_type'];
+    if (typeof delegateType !== 'string') {
+      throw new Error(`filter subscriber requires a "delegate_type" string field`);
+    }
+    const delegateConfig = (config['delegate_config'] ?? {}) as Record<string, unknown>;
+    const delegateFactory = _subscriberFactories.get(delegateType);
+    if (delegateFactory === undefined) {
+      throw new Error(`Unknown delegate subscriber type '${delegateType}' for filter subscriber`);
+    }
+    const delegate = delegateFactory(delegateConfig);
+    const includeEvents = config['include_events'] as string[] | undefined;
+    const excludeEvents = config['exclude_events'] as string[] | undefined;
+    return new FilterSubscriber(delegate, includeEvents, excludeEvents);
+  });
 }
 
 // Register built-in factories on module load
 _registerBuiltInFactories();
 
-/**
- * @deprecated Internal use only. This function is not part of the public API
- * and will be removed in a future release. Use the built-in webhook and a2a
- * subscriber types, or contact the maintainers to add a new built-in type.
- */
+/** Register a custom subscriber type for config-driven instantiation. */
 export function registerSubscriberType(
   typeName: string,
   factory: SubscriberFactory,
@@ -95,9 +128,7 @@ export function registerSubscriberType(
   _subscriberFactories.set(typeName, factory);
 }
 
-/**
- * @deprecated Internal use only. See {@link registerSubscriberType}.
- */
+/** Remove a previously registered subscriber type. */
 export function unregisterSubscriberType(typeName: string): void {
   if (!_subscriberFactories.has(typeName)) {
     throw new Error(`Subscriber type '${typeName}' is not registered`);
@@ -105,13 +136,26 @@ export function unregisterSubscriberType(typeName: string): void {
   _subscriberFactories.delete(typeName);
 }
 
-/**
- * @deprecated Internal use only. Intended for test teardown only.
- * See {@link registerSubscriberType}.
- */
+/** Reset the registry to built-in types only. Intended for test teardown. */
 export function resetSubscriberRegistry(): void {
   _subscriberFactories.clear();
   _registerBuiltInFactories();
+}
+
+/**
+ * Instantiate a single subscriber from a config object.
+ * The `type` field selects the factory; all other fields are passed as config.
+ */
+export function createSubscriberFromConfig(config: Record<string, unknown>): EventSubscriber {
+  const typeName = config['type'] as string | undefined;
+  if (typeof typeName !== 'string') {
+    throw new Error('Subscriber config missing "type" field');
+  }
+  const factory = _subscriberFactories.get(typeName);
+  if (factory === undefined) {
+    throw new Error(`Unknown subscriber type '${typeName}'`);
+  }
+  return factory(config);
 }
 
 /**
@@ -156,6 +200,12 @@ export interface SysModulesContext {
   platformNotifyMiddleware?: PlatformNotifyMiddleware;
 }
 
+export interface RegisterSysModulesOptions {
+  failOnError?: boolean;
+  overridesPath?: string;
+  auditStore?: AuditStore;
+}
+
 /**
  * Auto-register all sys.* modules and middleware based on config.
  */
@@ -164,8 +214,12 @@ export function registerSysModules(
   executor: Executor,
   config: Config,
   metricsCollector?: MetricsCollector | null,
+  options?: RegisterSysModulesOptions,
 ): SysModulesContext {
   const result: SysModulesContext = {};
+  const failOnError = options?.failOnError ?? false;
+  const overridesPath = options?.overridesPath ?? null;
+  const auditStore = options?.auditStore ?? null;
 
   // §9.15.3: prefer config.namespace('sys_modules') in namespace mode
   const sysCfg = _resolveSysCfg(config);
@@ -174,10 +228,25 @@ export function registerSysModules(
     return result;
   }
 
+  // Load overrides file and apply after base config
+  if (overridesPath !== null && fs.existsSync(overridesPath)) {
+    try {
+      const content = fs.readFileSync(overridesPath, 'utf-8');
+      const parsed = yaml.load(content);
+      if (typeof parsed === 'object' && parsed !== null) {
+        for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+          config.set(key, value);
+        }
+      }
+    } catch (err) {
+      console.warn('[apcore:sys-modules] Failed to load overrides file:', err);
+    }
+  }
+
   // Error history
   const maxPerModule = Number(_cfgGet(sysCfg, config, 'error_history.max_entries_per_module', 50));
   const maxTotal = Number(_cfgGet(sysCfg, config, 'error_history.max_total_entries', 1000));
-  const errorHistory = new ErrorHistory(maxPerModule, maxTotal);
+  const errorHistory = new ErrorHistory({ maxEntriesPerModule: maxPerModule, maxTotalEntries: maxTotal });
   result.errorHistory = errorHistory;
 
   const ehMiddleware = new ErrorHistoryMiddleware(errorHistory);
@@ -193,7 +262,15 @@ export function registerSysModules(
 
   // Register sys modules via registerInternal to bypass reserved-word checks
   const reg = (id: string, mod: unknown): void => {
-    registry.registerInternal(id, mod);
+    try {
+      registry.registerInternal(id, mod);
+    } catch (err) {
+      const cause = err instanceof Error ? err : new Error(String(err));
+      if (failOnError) {
+        throw new SysModuleRegistrationError(id, cause);
+      }
+      console.error(`[apcore:sys-modules] Failed to register system module '${id}':`, err);
+    }
   };
 
   // Health modules
@@ -224,9 +301,12 @@ export function registerSysModules(
     result.platformNotifyMiddleware = pnMiddleware;
 
     // Control modules (require EventEmitter)
-    reg('system.control.toggle_feature', new ToggleFeatureModule(registry, eventEmitter));
-    reg('system.control.update_config', new UpdateConfigModule(config, eventEmitter));
-    reg('system.control.reload_module', new ReloadModule(registry, eventEmitter));
+    reg('system.control.toggle_feature', new ToggleFeatureModule(registry, eventEmitter, undefined, auditStore ?? undefined));
+    reg('system.control.update_config', new UpdateConfigModule(config, eventEmitter, {
+      auditStore: auditStore ?? undefined,
+      overridesPath: overridesPath ?? undefined,
+    }));
+    reg('system.control.reload_module', new ReloadModule(registry, eventEmitter, auditStore ?? undefined));
 
     // Bridge registry events
     registry.on('register', (moduleId: string) => {

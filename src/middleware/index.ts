@@ -8,3 +8,13 @@ export { RetryHintMiddleware, RetryMiddleware, CTX_RETRY_COUNT_PREFIX, CTX_RETRY
 export type { RetryConfig } from './retry.js';
 export { ErrorHistoryMiddleware } from './error-history.js';
 export { PlatformNotifyMiddleware } from './platform-notify.js';
+export {
+  CircuitBreakerMiddleware,
+  CircuitState as MiddlewareCircuitState,
+  CTX_CIRCUIT_STATE,
+} from './circuit-breaker.js';
+export type { CircuitBreakerOptions } from './circuit-breaker.js';
+export { TracingMiddleware, CTX_TRACING_SPAN_ID } from './tracing.js';
+export type { OtelTracer, OtelSpan, TracingMiddlewareOptions } from './tracing.js';
+export { validateContextKey, isAsyncHandler } from './context-namespace.js';
+export type { ContextKeyWriter, ContextKeyValidation } from './context-namespace.js';

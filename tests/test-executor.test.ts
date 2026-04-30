@@ -540,3 +540,13 @@ describe('setAcl / setApprovalHandler on strategies without those steps', () => 
     }
   });
 });
+
+describe('Executor.callWithTrace — PipelineStepError unwrap', () => {
+  it('surfaces original typed error (not PipelineStepError) for unknown module', async () => {
+    const registry = new Registry();
+    const executor = new Executor({ registry });
+    await expect(
+      executor.callWithTrace('nonexistent', {}),
+    ).rejects.toThrow(ModuleNotFoundError);
+  });
+});

@@ -49,6 +49,17 @@ export interface StepResult {
 }
 
 // ---------------------------------------------------------------------------
+// PipelineState
+// ---------------------------------------------------------------------------
+
+/** Snapshot passed to runUntil predicates after each step completes (§1.4). */
+export interface PipelineState {
+  readonly stepName: string;
+  readonly outputs: Record<string, unknown>;
+  readonly context: PipelineContext;
+}
+
+// ---------------------------------------------------------------------------
 // PipelineContext
 // ---------------------------------------------------------------------------
 
@@ -72,6 +83,8 @@ export interface PipelineContext {
   versionHint?: string | null;
   /** Tracks which middleware ran, enabling on_error recovery chain. */
   executedMiddlewares?: unknown[];
+  /** When set, pipeline halts after the first step where predicate returns true (§1.4). */
+  runUntil?: ((state: PipelineState) => boolean) | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -122,10 +135,12 @@ export interface StrategyInfo {
 export class ExecutionStrategy {
   readonly name: string;
   private _steps: Step[];
+  private _nameToIdx: Map<string, number>;
 
   constructor(name: string, steps: Step[]) {
     this.name = name;
     this._steps = [...steps];
+    this._nameToIdx = new Map();
     // Validate unique step names
     const names = this._steps.map((s) => s.name);
     const seen = new Set<string>();
@@ -141,7 +156,13 @@ export class ExecutionStrategy {
         `Duplicate step names: ${[...dupes].join(', ')}`,
       );
     }
+    this._rebuildIndex();
     this._validateDependencies();
+  }
+
+  /** Rebuild the O(1) name→index map. Call after any mutation (§1.5). */
+  private _rebuildIndex(): void {
+    this._nameToIdx = new Map(this._steps.map((s, i) => [s.name, i]));
   }
 
   /** Warn if any step's requires are not provided by a preceding step. */
@@ -166,66 +187,95 @@ export class ExecutionStrategy {
     return this._steps;
   }
 
+  /** Return the index of a step by name, or undefined if not found. O(1). */
+  findStepIndex(name: string): number | undefined {
+    return this._nameToIdx.get(name);
+  }
+
   /** Insert a step after the named anchor step. */
   insertAfter(anchor: string, step: Step): void {
-    if (this._steps.some((s) => s.name === step.name)) {
+    if (this._nameToIdx.has(step.name)) {
       throw new StepNameDuplicateError(`Step '${step.name}' already exists`);
     }
-    for (let i = 0; i < this._steps.length; i++) {
-      if (this._steps[i].name === anchor) {
-        this._steps.splice(i + 1, 0, step);
-        this._validateDependencies();
-        return;
-      }
+    const anchorIdx = this._nameToIdx.get(anchor);
+    if (anchorIdx === undefined) {
+      throw new StepNotFoundError(`Anchor step '${anchor}' not found`);
     }
-    throw new StepNotFoundError(`Anchor step '${anchor}' not found`);
+    this._steps.splice(anchorIdx + 1, 0, step);
+    this._rebuildIndex();
+    this._validateDependencies();
   }
 
   /** Insert a step before the named anchor step. */
   insertBefore(anchor: string, step: Step): void {
-    if (this._steps.some((s) => s.name === step.name)) {
+    if (this._nameToIdx.has(step.name)) {
       throw new StepNameDuplicateError(`Step '${step.name}' already exists`);
     }
-    for (let i = 0; i < this._steps.length; i++) {
-      if (this._steps[i].name === anchor) {
-        this._steps.splice(i, 0, step);
-        this._validateDependencies();
-        return;
-      }
+    const anchorIdx = this._nameToIdx.get(anchor);
+    if (anchorIdx === undefined) {
+      throw new StepNotFoundError(`Anchor step '${anchor}' not found`);
     }
-    throw new StepNotFoundError(`Anchor step '${anchor}' not found`);
+    this._steps.splice(anchorIdx, 0, step);
+    this._rebuildIndex();
+    this._validateDependencies();
   }
 
   /** Remove a step by name. Raises if the step is not removable. */
   remove(stepName: string): void {
-    for (let i = 0; i < this._steps.length; i++) {
-      if (this._steps[i].name === stepName) {
-        if (!this._steps[i].removable) {
-          throw new StepNotRemovableError(
-            `Step '${stepName}' is not removable`,
-          );
-        }
-        this._steps.splice(i, 1);
-        return;
-      }
+    const idx = this._nameToIdx.get(stepName);
+    if (idx === undefined) {
+      throw new StepNotFoundError(`Step '${stepName}' not found`);
     }
-    throw new StepNotFoundError(`Step '${stepName}' not found`);
+    if (!this._steps[idx].removable) {
+      throw new StepNotRemovableError(
+        `Step '${stepName}' is not removable`,
+      );
+    }
+    this._steps.splice(idx, 1);
+    this._rebuildIndex();
   }
 
   /** Replace a step by name. Raises if the step is not replaceable. */
   replace(stepName: string, newStep: Step): void {
-    for (let i = 0; i < this._steps.length; i++) {
-      if (this._steps[i].name === stepName) {
-        if (!this._steps[i].replaceable) {
-          throw new StepNotReplaceableError(
-            `Step '${stepName}' is not replaceable`,
-          );
-        }
-        this._steps[i] = newStep;
-        return;
-      }
+    const idx = this._nameToIdx.get(stepName);
+    if (idx === undefined) {
+      throw new StepNotFoundError(`Step '${stepName}' not found`);
     }
-    throw new StepNotFoundError(`Step '${stepName}' not found`);
+    if (!this._steps[idx].replaceable) {
+      throw new StepNotReplaceableError(
+        `Step '${stepName}' is not replaceable`,
+      );
+    }
+    this._steps[idx] = newStep;
+    this._rebuildIndex();
+  }
+
+  /**
+   * Replace a step by name using replace semantics (§1.2).
+   *
+   * Calling configureStep twice with the same stepName always leaves exactly
+   * one step at that position — idempotent, never duplicates.
+   */
+  configureStep(stepName: string, newStep: Step): void {
+    const idx = this._nameToIdx.get(stepName);
+    if (idx === undefined) {
+      throw new PipelineStepNotFoundError(stepName);
+    }
+    if (!this._steps[idx].replaceable) {
+      throw new StepNotReplaceableError(
+        `Step '${stepName}' is not replaceable`,
+      );
+    }
+    // Guard: reject if newStep.name already exists at a different position.
+    // Allowing it would silently produce duplicate names in _steps and corrupt
+    // _nameToIdx (the second entry for that name would shadow the first).
+    if (newStep.name !== stepName && this._nameToIdx.has(newStep.name)) {
+      throw new StepNameDuplicateError(
+        `Step '${newStep.name}' already exists at a different position`,
+      );
+    }
+    this._steps[idx] = newStep;
+    this._rebuildIndex();
   }
 
   /** Return the ordered list of step names. */
@@ -239,7 +289,7 @@ export class ExecutionStrategy {
       name: this.name,
       stepCount: this._steps.length,
       stepNames: this.stepNames(),
-      description: this.stepNames().join(' \u2192 '),
+      description: this.stepNames().join(' → '),
     };
   }
 }
@@ -363,6 +413,65 @@ export class StepNameDuplicateError extends ModuleError {
   }
 }
 
+/**
+ * Raised when a pipeline step fails (fail-fast, §1.1).
+ *
+ * Wraps the original exception from the failing step. When ignore_errors is
+ * true on the step, this error is NOT raised — execution continues instead.
+ */
+export class PipelineStepError extends ModuleError {
+  static override readonly DEFAULT_RETRYABLE: boolean | null = false;
+
+  readonly stepName: string;
+  readonly pipelineTrace: PipelineTrace | null;
+
+  constructor(
+    stepName: string,
+    cause?: Error | null,
+    trace?: PipelineTrace | null,
+    options?: ErrorOptions,
+  ) {
+    const causeMsg = cause?.message ?? 'unknown error';
+    super(
+      'PIPELINE_STEP_ERROR',
+      `Pipeline step '${stepName}' failed: ${causeMsg}`,
+      { stepName },
+      cause ?? undefined,
+      options?.traceId,
+      options?.retryable,
+      options?.aiGuidance,
+      options?.userFixable,
+      options?.suggestion,
+    );
+    this.name = 'PipelineStepError';
+    this.stepName = stepName;
+    this.pipelineTrace = trace ?? null;
+  }
+}
+
+/** Raised when configureStep targets a step name that does not exist. */
+export class PipelineStepNotFoundError extends ModuleError {
+  static override readonly DEFAULT_RETRYABLE: boolean | null = false;
+
+  readonly stepName: string;
+
+  constructor(stepName: string = '', options?: ErrorOptions) {
+    super(
+      'PIPELINE_STEP_NOT_FOUND',
+      `Pipeline step not found: '${stepName}'`,
+      { stepName },
+      options?.cause,
+      options?.traceId,
+      options?.retryable,
+      options?.aiGuidance,
+      options?.userFixable,
+      options?.suggestion,
+    );
+    this.name = 'PipelineStepNotFoundError';
+    this.stepName = stepName;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // PipelineEngine
 // ---------------------------------------------------------------------------
@@ -384,6 +493,8 @@ export class PipelineEngine {
       success: false,
     };
     ctx.trace = trace;
+
+    const stepOutputs: Record<string, unknown> = {};
 
     let idx = 0;
     while (idx < steps.length) {
@@ -449,6 +560,10 @@ export class PipelineEngine {
         const durationMs = performance.now() - stepStart;
         // ④ ignore_errors: log and continue
         if (stepIgnoreErrors) {
+          console.warn(
+            `[apcore:pipeline] Step '${step.name}' failed (ignored):`,
+            exc instanceof Error ? exc.message : String(exc),
+          );
           trace.steps.push({
             name: step.name,
             durationMs,
@@ -463,7 +578,7 @@ export class PipelineEngine {
           idx += 1;
           continue;
         }
-        // Not ignored: record and raise
+        // Fail-fast (§1.1): wrap in PipelineStepError with step name and cause
         trace.steps.push({
           name: step.name,
           durationMs,
@@ -475,7 +590,8 @@ export class PipelineEngine {
           decisionPoint: false,
         });
         trace.totalDurationMs = performance.now() - pipelineStart;
-        throw exc;
+        const cause = exc instanceof Error ? exc : new Error(String(exc));
+        throw new PipelineStepError(step.name, cause, trace);
       }
 
       const durationMs = performance.now() - stepStart;
@@ -489,8 +605,25 @@ export class PipelineEngine {
         decisionPoint: result.confidence != null,
       });
 
-      // ⑥ Handle abort / skip_to
+      // ⑥ Handle abort / skip_to / continue
       if (result.action === 'continue') {
+        // Snapshot output for run_until predicates (§1.4)
+        stepOutputs[step.name] = ctx.output != null ? { ...ctx.output } : null;
+
+        // ⑦ run_until: evaluate predicate after each successful continue (§1.4)
+        if (ctx.runUntil != null) {
+          const state: PipelineState = {
+            stepName: step.name,
+            outputs: stepOutputs,
+            context: ctx,
+          };
+          if (ctx.runUntil(state)) {
+            trace.totalDurationMs = performance.now() - pipelineStart;
+            trace.success = true;
+            return [ctx.output ?? null, trace];
+          }
+        }
+
         idx += 1;
       } else if (result.action === 'abort') {
         trace.totalDurationMs = performance.now() - pipelineStart;
@@ -503,10 +636,9 @@ export class PipelineEngine {
         );
       } else if (result.action === 'skip_to') {
         const target = result.skipTo ?? '';
-        const targetIdx = steps.findIndex(
-          (s, i) => i > idx && s.name === target,
-        );
-        if (targetIdx === -1) {
+        // O(1) step index lookup (§1.5)
+        const targetIdx = strategy.findStepIndex(target);
+        if (targetIdx === undefined || targetIdx <= idx) {
           throw new StepNotFoundError(
             `skip_to target '${target}' not found after step '${step.name}'`,
           );

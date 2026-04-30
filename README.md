@@ -20,12 +20,15 @@ apcore is an AI-Perceivable module standard that makes every interface naturally
 
 - **Schema-driven modules** — Define input/output schemas with TypeBox for runtime validation
 - **Executor pipeline** — Secured execution lifecycle: context → call chain guard → lookup → ACL → approval gate → middleware before → validation → execute → output validation → middleware after → return
-- **Registry system** — File-based module discovery with metadata, dependencies, and topological ordering
+- **Registry system** — File-based module discovery with metadata, dependencies, and topological ordering; multi-class discovery from a single file
 - **Binding loader** — YAML-based module registration for no-code integration
 - **Access control (ACL)** — Pattern-based rules with identity types, roles, and call-depth conditions
 - **Approval system** — Pluggable approval gate in the executor pipeline with sync and async (polling) flows, built-in handlers, and tracing integration
-- **Middleware** — Onion-model middleware with before/after/onError hooks and error recovery
-- **Observability** — Tracing (spans + exporters), metrics (counters + histograms + Prometheus export), structured logging with redaction
+- **Middleware** — Onion-model middleware with before/after/onError hooks and error recovery; built-in `CircuitBreakerMiddleware` (CLOSED/OPEN/HALF_OPEN) and OTel-compatible `TracingMiddleware`
+- **Observability** — Tracing (spans + `BatchSpanProcessor` + exporters), metrics (counters + histograms + Prometheus export with `/metrics`/`/healthz`/`/readyz`), structured logging with `RedactionConfig`
+- **System modules** — Built-in `system.*` modules for AI bidirectional introspection: health, manifest, usage, and runtime control (`update_config`, `reload_module`, `toggle_feature`). Audit trail via `AuditStore`, config persistence via `overridesPath`, usage metrics in Prometheus, bulk reload via `path_filter` glob
+- **Event system** — `EventEmitter` with subscriber-level `CircuitBreakerWrapper`, built-in `FileSubscriber`, `StdoutSubscriber`, `FilterSubscriber`, and pluggable custom types
+- **Async tasks** — `AsyncTaskManager` with injectable `TaskStore` (bring your own Redis/Postgres backend), `RetryConfig` with exponential backoff, and opt-in background reaper
 - **Schema export** — JSON/YAML schema export with strict and compact modes
 - **Caching & pagination annotations** — `cacheable`, `cacheTtl`, `cacheKeyFields` for result caching; `paginated`, `paginationStyle` for paginated modules
 - **Config Bus** — Namespace-based configuration registry with typed access, env prefix dispatch, hot-reload, and external config mounting (`Config.registerNamespace()`, `config.namespace()`, `config.bind<T>()`, `config.mount()`)
@@ -110,7 +113,13 @@ const result = await executor.call('example.greet', { name: 'World' });
 | `Config` | Configuration — load from YAML, namespace bus, get/set/bind values |
 | `ACL` | Access control — rule-based caller/target authorization |
 | `Middleware` | Pipeline hooks — before/after/onError interception |
+| `CircuitBreakerMiddleware` | Per-(module, caller) circuit breaker — CLOSED/OPEN/HALF_OPEN with configurable threshold and cooldown |
+| `TracingMiddleware` | OTel-compatible span tracing — accepts any `OtelTracer`/`OtelSpan` without runtime `@opentelemetry/*` dependency |
 | `EventEmitter` | Event system — subscribe, emit, flush |
+| `CircuitBreakerWrapper` | Subscriber-level circuit breaker — protects `EventEmitter` subscribers from cascading failures |
+| `AsyncTaskManager` | Background task execution — injectable store, retry with backoff, opt-in reaper |
+| `PrometheusExporter` | HTTP metrics server — `/metrics`, `/healthz`, `/readyz`; optional `usageCollector` for usage gauges |
+| `InMemoryAuditStore` | Control module audit log — records actor, action, before/after change for every control call |
 
 ## Configuration
 
@@ -199,7 +208,7 @@ Configuration files support two modes. **Legacy mode** (no `apcore:` key) is ful
 ```yaml
 # Namespace mode
 apcore:
-  version: "0.18.0"
+  version: "0.20.0"
 
 _config:
   strict: true
@@ -214,6 +223,51 @@ myPlugin:
   retries: 5
 ```
 
+### System Modules
+
+`registerSysModules()` auto-registers the built-in `system.*` modules that let AI agents query, monitor, and control the apcore runtime. Enable them via `sys_modules.enabled: true` in config, and pass the optional hardening options for production use:
+
+```typescript
+import { registerSysModules, InMemoryAuditStore } from 'apcore-js';
+
+const auditStore = new InMemoryAuditStore();
+
+registerSysModules(registry, executor, config, null, {
+  failOnError: true,              // throw on any registration failure (default: false)
+  overridesPath: '/etc/apcore/overrides.yaml',  // persist runtime changes across restarts
+  auditStore,                     // record every control-module action with actor + change
+});
+
+// Available system modules:
+// system.health.summary / system.health.module     — health status + error rates
+// system.manifest.module / system.manifest.full    — module introspection
+// system.usage.summary / system.usage.module       — call counts + latency trends
+// system.control.update_config                     — hot-patch config values
+// system.control.reload_module                     — hot-reload from disk; supports path_filter glob
+// system.control.toggle_feature                    — disable/enable modules at runtime
+
+// Query the audit log after control calls:
+const entries = auditStore.query({ moduleId: 'system.control.update_config' });
+// entries[0] = { timestamp, action, targetModuleId, actorId, actorType, traceId, change }
+```
+
+**Prometheus usage metrics** — wire `PrometheusExporter` with the `UsageCollector` returned by `registerSysModules`:
+
+```typescript
+import { PrometheusExporter, MetricsCollector } from 'apcore-js';
+
+const ctx = registerSysModules(registry, executor, config);
+const exporter = new PrometheusExporter({
+  collector: new MetricsCollector(),
+  usageCollector: ctx.usageCollector,  // adds apcore_usage_* metrics to /metrics
+});
+exporter.start({ port: 9090 });
+// GET /metrics now includes:
+//   apcore_usage_calls_total{module_id="math.add",status="success"} 5000
+//   apcore_usage_error_rate{module_id="math.add"} 0.0004
+//   apcore_usage_p99_latency_ms{module_id="math.add"} 45.0
+```
+
 ### Error Codes
 
 New error codes added in v0.15.0:
@@ -226,6 +280,17 @@ New error codes added in v0.15.0:
 | `CONFIG_MOUNT_ERROR` | `config.mount()` cannot read or parse the external source |
 | `CONFIG_BIND_ERROR` | `config.bind<T>()` or `config.getTyped<T>()` type guard fails |
 | `ERROR_FORMATTER_DUPLICATE` | `ErrorFormatterRegistry.register()` called for an already-registered surface |
+
+New error codes added in v0.20.0:
+
+| Code | Description |
+|------|-------------|
+| `CIRCUIT_BREAKER_OPEN` | `CircuitBreakerMiddleware` short-circuited a call because the circuit is OPEN |
+| `MODULE_RELOAD_CONFLICT` | Both `module_id` and `path_filter` supplied to `system.control.reload_module` |
+| `SYS_MODULE_REGISTRATION_FAILED` | `registerSysModules()` with `failOnError: true` and a module failed to register |
+| `MODULE_ID_CONFLICT` | Two classes in the same file produce the same module ID segment (`discoverMultiClass`) |
+| `INVALID_SEGMENT` | A derived class segment does not match `^[a-z][a-z0-9_]*$` |
+| `ID_TOO_LONG` | A derived module ID exceeds 192 characters |
 
 ### Event Type Canonical Names
 
@@ -445,12 +510,15 @@ npm run build
 
 - Core executor pipeline
 - Schema validation (strict mode, type coercion)
-- Middleware chain (ordering, transforms, error recovery)
+- Middleware chain (ordering, transforms, error recovery, circuit breaker)
 - ACL enforcement (patterns, conditions, identity types)
-- Registry system (scanner, metadata, entry points, dependencies)
+- Registry system (scanner, metadata, entry points, dependencies, multi-class discovery)
 - Binding loader (YAML loading, target resolution, schema modes)
-- Observability (tracing, metrics, structured logging)
-- Integration tests (end-to-end flows, error propagation, safety checks)
+- Observability (tracing, BatchSpanProcessor, metrics, Prometheus export, structured logging with redaction)
+- Event system (circuit breaker wrapper, subscriber types, filter/file/stdout)
+- System modules (health, manifest, usage, control, audit trail, overrides persistence, Prometheus usage metrics)
+- Async tasks (pluggable store, retry backoff, reaper)
+- Cross-language conformance suite (`tests/conformance.test.ts`) — canonical JSON fixtures from `apcore/conformance/fixtures/` run identically across Python, TypeScript, and Rust SDKs
 
 ## Links
 

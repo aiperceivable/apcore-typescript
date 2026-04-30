@@ -44,7 +44,7 @@ describe('ErrorHistory', () => {
   });
 
   it('evicts when per-module limit exceeded', () => {
-    const history = new ErrorHistory(3, 1000);
+    const history = new ErrorHistory({ maxEntriesPerModule: 3, maxTotalEntries: 1000 });
     for (let i = 0; i < 5; i++) {
       history.record('mod.a', new ModuleError(`E${i}`, `msg ${i}`));
     }
@@ -52,7 +52,7 @@ describe('ErrorHistory', () => {
   });
 
   it('evicts when total limit exceeded', () => {
-    const history = new ErrorHistory(50, 3);
+    const history = new ErrorHistory({ maxEntriesPerModule: 50, maxTotalEntries: 3 });
     history.record('mod.a', new ModuleError('E1', 'msg'));
     history.record('mod.b', new ModuleError('E2', 'msg'));
     history.record('mod.c', new ModuleError('E3', 'msg'));

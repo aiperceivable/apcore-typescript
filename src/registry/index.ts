@@ -10,3 +10,5 @@ export { getSchema } from './schema-export.js';
 export { VersionedStore, parseSemver, compareSemver, selectBestVersion } from './version.js';
 export { detectIdConflicts } from './conflicts.js';
 export type { ConflictResult, ConflictType, ConflictSeverity } from './conflicts.js';
+export { classNameToSegment, discoverMultiClass } from './multi-class.js';
+export type { ClassDescriptor, MultiClassEntry } from './multi-class.js';

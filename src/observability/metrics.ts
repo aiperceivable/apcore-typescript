@@ -5,6 +5,7 @@
 import type { Context } from '../context.js';
 import { ModuleError } from '../errors.js';
 import { Middleware } from '../middleware/base.js';
+import { InMemoryObservabilityStore, type ObservabilityStore } from './store.js';
 
 const DESCRIPTIONS: Record<string, string> = {
   apcore_module_calls_total: 'Total module calls',
@@ -16,19 +17,36 @@ function labelsKey(labels: Record<string, string>): string {
   return Object.entries(labels).sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => `${k}=${v}`).join(',');
 }
 
+export interface MetricsCollectorOptions {
+  buckets?: number[];
+  store?: ObservabilityStore;
+}
+
 export class MetricsCollector {
   static readonly DEFAULT_BUCKETS: number[] = [
     0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0,
   ];
 
   private _buckets: number[];
+  private readonly _store: ObservabilityStore;
   private _counters: Map<string, number> = new Map();
   private _histogramSums: Map<string, number> = new Map();
   private _histogramCounts: Map<string, number> = new Map();
   private _histogramBuckets: Map<string, number> = new Map();
 
-  constructor(buckets?: number[]) {
-    this._buckets = buckets ? [...buckets].sort((a, b) => a - b) : [...MetricsCollector.DEFAULT_BUCKETS];
+  constructor(optionsOrBuckets?: MetricsCollectorOptions | number[]) {
+    if (Array.isArray(optionsOrBuckets)) {
+      this._buckets = [...optionsOrBuckets].sort((a, b) => a - b);
+      this._store = new InMemoryObservabilityStore();
+    } else {
+      const buckets = optionsOrBuckets?.buckets;
+      this._buckets = buckets ? [...buckets].sort((a, b) => a - b) : [...MetricsCollector.DEFAULT_BUCKETS];
+      this._store = optionsOrBuckets?.store ?? new InMemoryObservabilityStore();
+    }
+  }
+
+  get store(): ObservabilityStore {
+    return this._store;
   }
 
   get buckets(): readonly number[] {

@@ -11,6 +11,9 @@ import { InvalidInputError, ModuleNotFoundError, ModuleDisabledError } from '../
 import type { Registry } from '../registry/registry.js';
 import type { EventEmitter } from '../events/emitter.js';
 import { createEvent } from '../events/emitter.js';
+import type { Context } from '../context.js';
+import type { AuditStore } from './audit.js';
+import { buildAuditEntry } from './audit.js';
 
 /**
  * Toggle state container. Tracks which modules are disabled.
@@ -81,26 +84,41 @@ export class ToggleFeatureModule {
   private readonly _registry: Registry;
   private readonly _emitter: EventEmitter;
   private readonly _toggleState: ToggleState;
+  private readonly _auditStore: AuditStore | null;
 
-  constructor(registry: Registry, eventEmitter: EventEmitter, toggleState?: ToggleState) {
+  constructor(registry: Registry, eventEmitter: EventEmitter, toggleState?: ToggleState, auditStore?: AuditStore) {
     this._registry = registry;
     this._emitter = eventEmitter;
     this._toggleState = toggleState ?? DEFAULT_TOGGLE_STATE;
+    this._auditStore = auditStore ?? null;
   }
 
-  execute(inputs: Record<string, unknown>, _context: unknown): Record<string, unknown> {
+  execute(inputs: Record<string, unknown>, context: unknown): Record<string, unknown> {
     const { moduleId, enabled, reason } = this._validateInputs(inputs);
+    const ctx = context as Context | null;
+
     if (!this._registry.has(moduleId)) {
       throw new ModuleNotFoundError(moduleId);
     }
+
+    const before = !this._toggleState.isDisabled(moduleId);
     if (enabled) {
       this._toggleState.enable(moduleId);
     } else {
       this._toggleState.disable(moduleId);
     }
+
+    const entry = buildAuditEntry('toggle_feature', moduleId, ctx, { before, after: enabled });
+    if (this._auditStore !== null) {
+      this._auditStore.append(entry);
+    } else {
+      console.warn(`[apcore:audit] toggle_feature ${moduleId} actor=${entry.actorId} before=${before} after=${enabled} reason=${reason}`);
+    }
+
     // W-12: Event payload carries only { enabled } to match Python reference implementation.
     // `reason` is returned in the module output but not emitted in the event.
     this._emitter.emit(createEvent('apcore.module.toggled', moduleId, 'info', { enabled }));
+    console.warn(`[apcore:control] Feature toggled: module_id=${moduleId} enabled=${enabled} reason=${reason}`);
     return { success: true, module_id: moduleId, enabled };
   }
 

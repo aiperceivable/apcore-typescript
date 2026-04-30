@@ -1125,6 +1125,139 @@ export class VersionConstraintError extends ModuleError {
   }
 }
 
+export class ModuleIdConflictError extends ModuleError {
+  static override readonly DEFAULT_RETRYABLE: boolean | null = false;
+
+  constructor(
+    filePath: string,
+    classNames: [string, string],
+    conflictingSegment: string,
+    options?: ErrorOptions,
+  ) {
+    super(
+      'MODULE_ID_CONFLICT',
+      `Module ID conflict in '${filePath}': classes '${classNames[0]}' and '${classNames[1]}' both produce segment '${conflictingSegment}'`,
+      { filePath, classNames, conflictingSegment },
+      options?.cause,
+      options?.traceId,
+      options?.retryable,
+      options?.aiGuidance,
+      options?.userFixable,
+      options?.suggestion,
+    );
+    this.name = 'ModuleIdConflictError';
+  }
+}
+
+export class InvalidSegmentError extends ModuleError {
+  static override readonly DEFAULT_RETRYABLE: boolean | null = false;
+
+  constructor(
+    filePath: string,
+    className: string,
+    segment: string,
+    options?: ErrorOptions,
+  ) {
+    super(
+      'INVALID_SEGMENT',
+      `Class '${className}' in '${filePath}' produces invalid segment '${segment}' — does not match ^[a-z][a-z0-9_]*$`,
+      { filePath, className, segment },
+      options?.cause,
+      options?.traceId,
+      options?.retryable,
+      options?.aiGuidance,
+      options?.userFixable,
+      options?.suggestion,
+    );
+    this.name = 'InvalidSegmentError';
+  }
+}
+
+export class CircuitBreakerOpenError extends ModuleError {
+  static override readonly DEFAULT_RETRYABLE: boolean | null = false;
+
+  constructor(moduleId: string, callerId: string | null = null, options?: ErrorOptions) {
+    super(
+      'CIRCUIT_BREAKER_OPEN',
+      `Circuit breaker OPEN for module '${moduleId}' (caller: ${callerId ?? 'unknown'}). Wait for the recovery window.`,
+      { moduleId, callerId },
+      options?.cause,
+      options?.traceId,
+      options?.retryable,
+      options?.aiGuidance ??
+        `The circuit breaker for '${moduleId}' is open due to high error rates. The module call was short-circuited. Wait for the recovery window to elapse before retrying.`,
+      options?.userFixable,
+      options?.suggestion,
+    );
+    this.name = 'CircuitBreakerOpenError';
+  }
+
+  get moduleId(): string {
+    return this.details['moduleId'] as string;
+  }
+
+  get callerId(): string | null {
+    return this.details['callerId'] as string | null;
+  }
+}
+
+export class IdTooLongError extends ModuleError {
+  static override readonly DEFAULT_RETRYABLE: boolean | null = false;
+
+  constructor(filePath: string, moduleId: string, options?: ErrorOptions) {
+    super(
+      'ID_TOO_LONG',
+      `Derived module ID exceeds 192 characters in '${filePath}': '${moduleId}' (${moduleId.length} chars)`,
+      { filePath, moduleId },
+      options?.cause,
+      options?.traceId,
+      options?.retryable,
+      options?.aiGuidance,
+      options?.userFixable,
+      options?.suggestion,
+    );
+    this.name = 'IdTooLongError';
+  }
+}
+
+export class ModuleReloadConflictError extends ModuleError {
+  static override readonly DEFAULT_RETRYABLE: boolean | null = false;
+
+  constructor(options?: ErrorOptions) {
+    super(
+      'MODULE_RELOAD_CONFLICT',
+      "'module_id' and 'path_filter' are mutually exclusive; provide exactly one",
+      {},
+      options?.cause,
+      options?.traceId,
+      options?.retryable,
+      options?.aiGuidance,
+      options?.userFixable,
+      options?.suggestion,
+    );
+    this.name = 'ModuleReloadConflictError';
+  }
+}
+
+export class SysModuleRegistrationError extends ModuleError {
+  static override readonly DEFAULT_RETRYABLE: boolean | null = false;
+
+  constructor(moduleId: string, cause?: Error, options?: ErrorOptions) {
+    super(
+      'SYS_MODULE_REGISTRATION_FAILED',
+      `System module registration failed: ${moduleId}`,
+      { moduleId },
+      cause ?? options?.cause,
+      options?.traceId,
+      options?.retryable,
+      options?.aiGuidance,
+      options?.userFixable,
+      options?.suggestion,
+    );
+    this.name = 'SysModuleRegistrationError';
+  }
+}
+
 /**
  * All framework error codes as constants.
  * Use these instead of hardcoding error code strings.
@@ -1181,6 +1314,12 @@ export const ErrorCodes = Object.freeze({
   DEPENDENCY_VERSION_MISMATCH: 'DEPENDENCY_VERSION_MISMATCH',
   TASK_LIMIT_EXCEEDED: 'TASK_LIMIT_EXCEEDED',
   VERSION_CONSTRAINT_INVALID: 'VERSION_CONSTRAINT_INVALID',
+  MODULE_ID_CONFLICT: 'MODULE_ID_CONFLICT',
+  INVALID_SEGMENT: 'INVALID_SEGMENT',
+  ID_TOO_LONG: 'ID_TOO_LONG',
+  CIRCUIT_BREAKER_OPEN: 'CIRCUIT_BREAKER_OPEN',
+  MODULE_RELOAD_CONFLICT: 'MODULE_RELOAD_CONFLICT',
+  SYS_MODULE_REGISTRATION_FAILED: 'SYS_MODULE_REGISTRATION_FAILED',
 } as const);
 
 export type ErrorCode = (typeof ErrorCodes)[keyof typeof ErrorCodes];

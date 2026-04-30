@@ -21,7 +21,7 @@ import { createPreflightResult } from './module.js';
 import { MODULE_ID_PATTERN } from './registry/registry.js';
 import type { Registry } from './registry/registry.js';
 import type { PipelineContext, PipelineTrace, StrategyInfo } from './pipeline.js';
-import { ExecutionStrategy, PipelineEngine, PipelineAbortError, StrategyNotFoundError } from './pipeline.js';
+import { ExecutionStrategy, PipelineEngine, PipelineAbortError, PipelineStepError, StrategyNotFoundError } from './pipeline.js';
 import {
   BuiltinACLCheck,
   BuiltinApprovalGate,
@@ -338,12 +338,17 @@ export class Executor {
       return (output ?? {}) as Record<string, unknown>;
     } catch (exc) {
       if (exc instanceof ExecutionCancelledError) throw exc;
-      // Pipeline errors propagate with their original types (ModuleNotFoundError, etc.)
-      // because builtin steps now throw directly. MiddlewareChainError wraps the
-      // original; unwrap it so callers see the real error class/code instead of a
-      // generic MODULE_EXECUTE_ERROR.
+      // PipelineStepError is the engine-level contract (§1.1). Unwrap the cause
+      // so the executor's public API surfaces the original typed error.
+      const unwrapped = exc instanceof PipelineStepError
+        ? (exc.cause instanceof Error ? exc.cause : exc)
+        : exc;
+      // MiddlewareChainError wraps the original; unwrap it so callers see the
+      // real error class/code instead of a generic MODULE_EXECUTE_ERROR.
       const ctxObj = pipeCtx.context;
-      const underlying = exc instanceof MiddlewareChainError ? exc.original : (exc as Error);
+      const underlying = unwrapped instanceof MiddlewareChainError
+        ? unwrapped.original
+        : (unwrapped as Error);
       const wrapped = propagateError(underlying, moduleId, ctxObj);
       const executedMw = pipeCtx.executedMiddlewares;
       if (executedMw && executedMw.length > 0) {
@@ -397,8 +402,17 @@ export class Executor {
       trace: null,
     };
 
-    const [output, trace] = await this._pipelineEngine.run(strategy, pipelineCtx);
-    return [(output ?? {}) as Record<string, unknown>, trace];
+    try {
+      const [output, trace] = await this._pipelineEngine.run(strategy, pipelineCtx);
+      return [(output ?? {}) as Record<string, unknown>, trace];
+    } catch (exc) {
+      // Unwrap PipelineStepError so callers see the original typed cause, consistent
+      // with call() behaviour (§1.1 engine-level contract vs public API surface).
+      if (exc instanceof PipelineStepError && exc.cause instanceof Error) {
+        throw exc.cause;
+      }
+      throw exc;
+    }
   }
 
   /**
@@ -452,7 +466,11 @@ export class Executor {
     } catch (exc) {
       if (exc instanceof ExecutionCancelledError) throw exc;
       const ctxObj = pipeCtx.context;
-      const wrapped = propagateError(exc as Error, moduleId, ctxObj);
+      // Unwrap PipelineStepError to expose the original typed cause (§1.1).
+      const unwrapped = exc instanceof PipelineStepError
+        ? (exc.cause instanceof Error ? exc.cause : exc)
+        : exc;
+      const wrapped = propagateError(unwrapped as Error, moduleId, ctxObj);
       if (pipeCtx.executedMiddlewares && pipeCtx.executedMiddlewares.length > 0) {
         const recovery = this._middlewareManager.executeOnError(
           moduleId, pipeCtx.inputs, wrapped as Error, ctxObj, pipeCtx.executedMiddlewares as Middleware[],
@@ -511,7 +529,10 @@ export class Executor {
         // the consumer's async-iteration loop surfaces the error on the final
         // next() call (post-completion rejection in an async generator).
         const ctxObj = pipeCtx.context;
-        const wrapped = propagateError(exc as Error, moduleId, ctxObj);
+        const unwrappedPost = exc instanceof PipelineStepError
+          ? (exc.cause instanceof Error ? exc.cause : exc)
+          : exc;
+        const wrapped = propagateError(unwrappedPost as Error, moduleId, ctxObj);
         if (pipeCtx.executedMiddlewares && pipeCtx.executedMiddlewares.length > 0) {
           this._middlewareManager.executeOnError(
             moduleId,
@@ -576,10 +597,14 @@ export class Executor {
       if (e instanceof PipelineAbortError) {
         trace = e.pipelineTrace;
       } else {
-        const errorDict = (e instanceof ModuleError)
-          ? { code: e.code, message: e.message }
-          : { code: (e as Error).constructor?.name ?? 'Error', message: String(e) };
-        const code = (e instanceof ModuleError) ? e.code : (e as Error).constructor?.name ?? 'Error';
+        // Unwrap PipelineStepError to expose the original typed cause (§1.1).
+        const underlying = e instanceof PipelineStepError
+          ? (e.cause instanceof Error ? e.cause : e)
+          : e;
+        const errorDict = (underlying instanceof ModuleError)
+          ? { code: underlying.code, message: underlying.message }
+          : { code: (underlying as Error).constructor?.name ?? 'Error', message: String(underlying) };
+        const code = (underlying instanceof ModuleError) ? underlying.code : (underlying as Error).constructor?.name ?? 'Error';
 
         let checkName: string;
         if (code === 'MODULE_NOT_FOUND') checkName = 'module_lookup';

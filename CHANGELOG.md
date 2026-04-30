@@ -6,6 +6,82 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [0.20.0] - 2026-04-30
+
+### Added
+
+#### Event Management Hardening (Issue #36)
+
+- **`CircuitBreakerWrapper`** — Subscriber-level circuit breaker for `EventEmitter` with configurable failure threshold, timeout (backoff), and automatic OPEN → HALF_OPEN → CLOSED recovery. Exported from `apcore-js/events`.
+- **`CircuitState`** enum — `CLOSED`, `OPEN`, `HALF_OPEN` states for `CircuitBreakerWrapper`.
+- **`FileSubscriber`** — Event subscriber that appends to a log file with optional rotation (`rotate_bytes`) and format (`json`/`text`). Registered as built-in type `"file"` in the subscriber factory.
+- **`StdoutSubscriber`** — Event subscriber that writes to stdout with optional level filtering. Registered as built-in type `"stdout"`.
+- **`FilterSubscriber`** — Decorator subscriber filtering events by `include_events`/`exclude_events` lists. Registered as built-in type `"filter"`, accepting any `delegate_type`.
+- `registerSubscriberType` / `unregisterSubscriberType` / `resetSubscriberRegistry` / `createSubscriberFromConfig` — now public, documented, and no longer marked deprecated. Custom subscriber types can be registered and used in config-driven instantiation.
+
+#### Middleware Architecture Hardening (Issue #42)
+
+- **`CircuitBreakerMiddleware`** — Per-`(module_id, caller_id)` circuit breaker middleware. Opens on consecutive failures beyond a configurable threshold; enters HALF_OPEN after cooldown; probes with one request and closes on success. Throws `CircuitBreakerOpenError` (code `CIRCUIT_BREAKER_OPEN`) when open.
+- **`CircuitBreakerOpenError`** (code `CIRCUIT_BREAKER_OPEN`) — new error class; `DEFAULT_RETRYABLE = false`. Carries `moduleId` and `callerId` details.
+- **`MiddlewareCircuitState`** enum — `CLOSED`, `OPEN`, `HALF_OPEN` states for `CircuitBreakerMiddleware`.
+- **`validateContextKey()`** — validates that a context key string is non-empty and does not collide with apcore reserved keys.
+- **`ContextKeyWriter`** / **`ContextKeyValidation`** interfaces — typed context-key contract for middleware that writes into execution context.
+- **`TracingMiddleware`** — OTel-compatible span tracing middleware. Accepts any tracer implementing the `OtelTracer` / `OtelSpan` interfaces. Configurable via `TracingMiddlewareOptions` (sampler, span name builder, attribute extractor). Does not depend on `@opentelemetry/*` packages at runtime.
+- **`isAsyncHandler()`** utility — detects whether a middleware method returns a `Promise`.
+
+#### Observability Hardening (Issue #43)
+
+- **`BatchSpanProcessor`** — Buffered async span exporter with configurable `maxQueueSize`, `scheduleDelayMs`, `maxExportBatchSize`. Drops spans when queue is full and tracks `spansDropped`. Exported `BatchSpanProcessorOptions`.
+- **`SimpleSpanProcessor`** — Synchronous pass-through processor for testing.
+- **`InMemoryObservabilityStore`** — Default pluggable backing store for `ErrorHistory` and `MetricsCollector`. Implements `ObservabilityStore` interface (`record`, `query`, `count`, `clear`).
+- **`ObservabilityStore`** interface + **`MetricPoint`** type — public contracts for custom store implementations.
+- **`RedactionConfig`** — Field-pattern and value-pattern based input redaction for `ContextLogger`/`ObsLoggingMiddleware`. Configurable `fieldPatterns` (glob), `valuePatterns` (RegExp), and `replacement` string.
+- **`PrometheusExporter`** — HTTP server serving Prometheus text format at `/metrics`, liveness at `/healthz`, and readiness at `/readyz`. New optional `usageCollector` constructor option enables usage metrics (see System Modules Hardening below).
+- `ErrorHistory` constructor now accepts an options object `{ maxEntriesPerModule?, maxTotalEntries? }` (positional args still accepted for backward compatibility).
+- `MetricsCollector` constructor now accepts `MetricsCollectorOptions { buckets?, store? }` in addition to positional args.
+
+#### Registry — Multi-Class Discovery
+
+- **`discoverMultiClass(filePath, options?)`** — discovers multiple module classes from a single file by PascalCase-to-dotted-id naming convention.
+- **`classNameToSegment(className)`** — converts a PascalCase class name to a lowercase dotted-id segment.
+- **`ModuleIdConflictError`** (code `MODULE_ID_CONFLICT`) — thrown when two classes in the same file produce the same module ID segment.
+- **`InvalidSegmentError`** (code `INVALID_SEGMENT`) — thrown when a derived segment does not match `^[a-z][a-z0-9_]*$`.
+- **`IdTooLongError`** (code `ID_TOO_LONG`) — thrown when a derived module ID exceeds 192 characters.
+
+#### Async Task Evolution
+
+- **`InMemoryTaskStore`** — default in-memory `TaskStore` implementation, now injectable via `AsyncTaskManager({ executor, store })` for custom backends (Redis, Postgres, etc.). Implements `TaskStore` interface.
+- **`RetryConfig`** — configurable retry policy with `maxRetries`, `retryDelayMs`, `backoffMultiplier`, `maxRetryDelayMs`, and `computeDelay(attemptIndex)` for exponential backoff with jitter. Pass to `manager.submit(moduleId, inputs, { retry })`.
+- **`AsyncTaskManager.startReaper({ ttlSeconds, sweepIntervalMs })`** — starts a background reaper that deletes expired completed/failed tasks after `ttlSeconds`. Returns a `{ stop() }` handle. Reaper is opt-in; the manager remains zero-dependency when no reaper is configured. Skips `RUNNING` tasks regardless of age.
+
+#### System Modules Hardening (Issue #45)
+
+- **`AuditStore`** interface with `append(entry)` / `query(filter?)` — pluggable audit log for control module actions. Exported from `apcore-js`.
+- **`InMemoryAuditStore`** — default in-memory implementation of `AuditStore`. Supports filtering by `moduleId`, `actorId`, and `since` timestamp.
+- **`AuditEntry`** type — `{ timestamp, action, targetModuleId, actorId, actorType, traceId, change: { before, after } }`. Actor is extracted from `context.identity`.
+- **`buildAuditEntry(action, targetModuleId, context, change)`** — helper that extracts actor information from `Context.identity`.
+- **`registerSysModules()`** now accepts an optional 5th `options` parameter (`RegisterSysModulesOptions`):
+  - `overridesPath?: string` — YAML file for persisting `update_config` and `toggle_feature` changes. Loaded on startup after base config so overrides survive restarts without modifying the base config file.
+  - `auditStore?: AuditStore` — routes all control module audit entries to the store; falls back to `console.warn` when absent.
+  - `failOnError?: boolean` (default `false`) — when `true`, first registration failure throws `SysModuleRegistrationError` immediately; when `false`, logs at ERROR level and continues registering remaining modules.
+- **`system.control.reload_module`** — new `path_filter: string` input field. When provided, reloads all registered modules whose IDs match the glob pattern, in topological (sorted) order. Mutually exclusive with `module_id`.
+- **`system.control.update_config`** / **`system.control.toggle_feature`** — now record a structured `AuditEntry` (actor, timestamp, trace ID, before/after change) when an `AuditStore` is configured; otherwise logs at INFO/WARN level.
+- **`PrometheusExporter`** — `usageCollector?: UsageCollector` constructor option. When set, appends usage metrics to `/metrics` output: `apcore_usage_calls_total{module_id, status}` (counter), `apcore_usage_error_rate{module_id}` (gauge), `apcore_usage_p50_latency_ms{module_id}`, `apcore_usage_p95_latency_ms{module_id}`, `apcore_usage_p99_latency_ms{module_id}` (gauges). Prometheus text format is valid (HELP/TYPE lines immediately precede each metric family).
+- **`ModuleReloadConflictError`** (code `MODULE_RELOAD_CONFLICT`) — thrown when both `module_id` and `path_filter` are supplied to `system.control.reload_module`.
+- **`SysModuleRegistrationError`** (code `SYS_MODULE_REGISTRATION_FAILED`) — thrown by `registerSysModules()` when `failOnError: true` and any system module fails to register.
+
+### Changed
+
+- **`registerSysModules()`** 5th parameter changed from (none) to optional `RegisterSysModulesOptions`. Fully backward-compatible — existing calls with 3–4 arguments are unaffected.
+- **`UpdateConfigModule`** constructor now accepts optional `UpdateConfigOptions { auditStore?, overridesPath? }` as third argument. Existing two-argument construction is unchanged.
+- **`ReloadModule`** constructor now accepts optional `auditStore?: AuditStore` as third argument.
+- **`ToggleFeatureModule`** constructor now accepts optional `auditStore?: AuditStore` as fourth argument (after the existing optional `toggleState`).
+- **`ReloadModule` input schema** — `module_id` is no longer statically `required`; validation is enforced at runtime to support mutual exclusion with `path_filter`. Callers that previously relied on schema-level rejection of missing `module_id` will now receive the same `InvalidInputError` from runtime validation.
+- **`system.control.toggle_feature`** now emits an `[apcore:control]` INFO-level log on every toggle, consistent with `update_config` and `reload_module`.
+- **`ErrorCodes`** — added `MODULE_RELOAD_CONFLICT`, `SYS_MODULE_REGISTRATION_FAILED`, `MODULE_ID_CONFLICT`, `INVALID_SEGMENT`, `ID_TOO_LONG`, `CIRCUIT_BREAKER_OPEN`.
+
+---
+
 ## [0.19.0] - 2026-04-19
 
 ### Added
@@ -667,6 +743,18 @@ Built-in `system.*` modules that allow AI agents to query, monitor
 
 ---
 
+[0.20.0]: https://github.com/aiperceivable/apcore-typescript/compare/v0.19.0...v0.20.0
+[0.19.0]: https://github.com/aiperceivable/apcore-typescript/compare/v0.18.0...v0.19.0
+[0.18.0]: https://github.com/aiperceivable/apcore-typescript/compare/v0.17.1...v0.18.0
+[0.17.1]: https://github.com/aiperceivable/apcore-typescript/compare/v0.17.0...v0.17.1
+[0.17.0]: https://github.com/aiperceivable/apcore-typescript/compare/v0.16.0...v0.17.0
+[0.16.0]: https://github.com/aiperceivable/apcore-typescript/compare/v0.15.1...v0.16.0
+[0.15.1]: https://github.com/aiperceivable/apcore-typescript/compare/v0.15.0...v0.15.1
+[0.15.0]: https://github.com/aiperceivable/apcore-typescript/compare/v0.14.1...v0.15.0
+[0.14.1]: https://github.com/aiperceivable/apcore-typescript/compare/v0.14.0...v0.14.1
+[0.14.0]: https://github.com/aiperceivable/apcore-typescript/compare/v0.13.1...v0.14.0
+[0.13.1]: https://github.com/aiperceivable/apcore-typescript/compare/v0.13.0...v0.13.1
+[0.13.0]: https://github.com/aiperceivable/apcore-typescript/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/aiperceivable/apcore-typescript/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/aiperceivable/apcore-typescript/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/aiperceivable/apcore-typescript/compare/v0.9.0...v0.10.0

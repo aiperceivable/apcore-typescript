@@ -7,6 +7,7 @@ import {
   ExecutionStrategy,
   PipelineEngine,
   PipelineAbortError,
+  PipelineStepError,
   StepNotFoundError,
   StepNotRemovableError,
   StepNotReplaceableError,
@@ -737,7 +738,8 @@ describe('PipelineEngine', () => {
     const ctx = makePipelineContext();
     const engine = new PipelineEngine();
 
-    await expect(engine.run(strategy, ctx)).rejects.toBe('direct string error');
+    // Per §1.1, non-Error throws are wrapped in PipelineStepError (not propagated raw).
+    await expect(engine.run(strategy, ctx)).rejects.toBeInstanceOf(PipelineStepError);
   });
 
   it('abort step without explanation or alternatives uses null defaults', async () => {

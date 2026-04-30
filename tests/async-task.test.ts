@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { Type } from '@sinclair/typebox';
-import { AsyncTaskManager, TaskStatus } from '../src/async-task.js';
+import { AsyncTaskManager, TaskStatus, InMemoryTaskStore, RetryConfig } from '../src/async-task.js';
 import type { TaskInfo } from '../src/async-task.js';
 import { Executor } from '../src/executor.js';
 import { FunctionModule } from '../src/decorator.js';
@@ -47,7 +47,7 @@ function createRegistry(): Registry {
 function createManager(maxConcurrent: number = 10): { manager: AsyncTaskManager; executor: Executor } {
   const registry = createRegistry();
   const executor = new Executor({ registry });
-  const manager = new AsyncTaskManager(executor, maxConcurrent);
+  const manager = new AsyncTaskManager({ executor, maxConcurrent });
   return { manager, executor };
 }
 
@@ -91,6 +91,15 @@ describe('AsyncTaskManager', () => {
       const id1 = await manager.submit('test.simple', { x: 1 });
       const id2 = await manager.submit('test.simple', { x: 2 });
       expect(id1).not.toBe(id2);
+    });
+
+    it('forwards context via opts.context', async () => {
+      const { manager } = createManager();
+      const taskId = await manager.submit('test.simple', { x: 7 }, { context: null });
+      await wait(100);
+      const info = manager.getStatus(taskId)!;
+      expect(info.status).toBe(TaskStatus.COMPLETED);
+      expect(info.result).toEqual({ value: 7 });
     });
   });
 
@@ -233,7 +242,7 @@ describe('AsyncTaskManager', () => {
       // Create a manager with a small limit
       const registry = createRegistry();
       const executor = new Executor({ registry });
-      const limitedManager = new AsyncTaskManager(executor, 10, 3);
+      const limitedManager = new AsyncTaskManager({ executor, maxConcurrent: 10, maxTasks: 3 });
 
       await limitedManager.submit('test.simple', { x: 1 });
       await limitedManager.submit('test.simple', { x: 2 });
@@ -247,7 +256,7 @@ describe('AsyncTaskManager', () => {
     it('allows submissions after cleanup frees slots', async () => {
       const registry = createRegistry();
       const executor = new Executor({ registry });
-      const limitedManager = new AsyncTaskManager(executor, 10, 2);
+      const limitedManager = new AsyncTaskManager({ executor, maxConcurrent: 10, maxTasks: 2 });
 
       await limitedManager.submit('test.simple', { x: 1 });
       await limitedManager.submit('test.simple', { x: 2 });
@@ -271,7 +280,7 @@ describe('AsyncTaskManager', () => {
       // test files run in parallel.
       const registry = createRegistry();
       const executor = new Executor({ registry });
-      const mgr = new AsyncTaskManager(executor, 1);
+      const mgr = new AsyncTaskManager({ executor, maxConcurrent: 1 });
 
       // Submit a long-enough task to fill the single slot
       const firstId = await mgr.submit('test.slow', { delay: 500 });

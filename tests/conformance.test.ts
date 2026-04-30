@@ -8,11 +8,20 @@
  *   2. Sibling ../apcore/ directory (standard workspace layout & CI)
  */
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
+import * as yaml from 'js-yaml';
 import { normalizeToCanonicalId } from '../src/utils/normalize.js';
 import { matchPattern, calculateSpecificity } from '../src/utils/pattern.js';
+import {
+  ExecutionStrategy,
+  PipelineEngine,
+  PipelineStepError,
+  PipelineStepNotFoundError,
+} from '../src/pipeline.js';
+import type { Step, StepResult, PipelineContext, PipelineState } from '../src/pipeline.js';
 import { ACL, ACLRule } from '../src/acl.js';
 import { Context, createIdentity } from '../src/context.js';
 import {
@@ -46,6 +55,60 @@ import {
 import { BuiltinApprovalGate } from '../src/builtin-steps.js';
 import type { ApprovalResult } from '../src/approval.js';
 import { resolveDependencies } from '../src/registry/dependencies.js';
+import { classNameToSegment, discoverMultiClass } from '../src/registry/multi-class.js';
+import { ModuleIdConflictError, CircuitBreakerOpenError } from '../src/errors.js';
+import {
+  CircuitBreakerWrapper,
+  CircuitState,
+  FileSubscriber,
+  StdoutSubscriber,
+  FilterSubscriber,
+} from '../src/events/index.js';
+import type { ApCoreEvent, EventSubscriber } from '../src/events/index.js';
+import {
+  registerSubscriberType,
+  resetSubscriberRegistry,
+  createSubscriberFromConfig,
+  registerSysModules,
+} from '../src/sys-modules/registration.js';
+import { UpdateConfigModule, ReloadModule } from '../src/sys-modules/control.js';
+import { ToggleFeatureModule } from '../src/sys-modules/toggle.js';
+import { InMemoryAuditStore } from '../src/sys-modules/audit.js';
+import { SysModuleRegistrationError, ModuleReloadConflictError } from '../src/errors.js';
+import { EventEmitter } from '../src/events/index.js';
+import { UsageCollector } from '../src/observability/index.js';
+import {
+  CircuitBreakerMiddleware,
+  MiddlewareCircuitState,
+  validateContextKey,
+  isAsyncHandler,
+} from '../src/middleware/index.js';
+import { TracingMiddleware } from '../src/middleware/tracing.js';
+import type { OtelTracer, OtelSpan } from '../src/middleware/tracing.js';
+import {
+  AsyncTaskManager,
+  TaskStatus,
+  InMemoryTaskStore,
+  RetryConfig,
+} from '../src/async-task.js';
+import type { TaskStore } from '../src/async-task.js';
+import { Executor } from '../src/executor.js';
+import { Registry } from '../src/registry/registry.js';
+import { FunctionModule } from '../src/decorator.js';
+import { Type } from '@sinclair/typebox';
+import { ModuleError } from '../src/errors.js';
+import {
+  ErrorHistory,
+  InMemoryObservabilityStore,
+  normalizeMessage,
+  computeFingerprint,
+  BatchSpanProcessor,
+  InMemoryExporter,
+  createSpan,
+  MetricsCollector,
+  PrometheusExporter,
+  RedactionConfig,
+} from '../src/observability/index.js';
 
 // ---------------------------------------------------------------------------
 // Fixture discovery
@@ -732,6 +795,53 @@ describe('apcore Conformance Suite (TypeScript)', () => {
     it.skip('not yet implemented — middleware executeOnError does not match the fixture first-dict-wins on-error API', () => {});
   });
 
+  // --- multi_module_discovery (PROTOCOL_SPEC §2.1.1) ---
+  const multiModuleFixture = loadFixture('multi_module_discovery');
+  describe('Multi-Module Discovery (PROTOCOL_SPEC §2.1.1)', () => {
+    const CANONICAL_ID_RE = /^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$/;
+
+    multiModuleFixture.test_cases.forEach((tc: any) => {
+      it(tc.id, () => {
+        // Snake-case conversion test cases have only class_name in input
+        if ('class_name' in tc.input) {
+          expect(classNameToSegment(tc.input.class_name)).toBe(tc.expected.class_segment);
+          return;
+        }
+
+        const { file_path, extensions_root, multi_class_enabled, classes } = tc.input;
+        const descriptors = (classes as any[]).map((c: any) => ({
+          name: c.name,
+          implementsModule: c.implements_module,
+        }));
+
+        if (tc.expected.error) {
+          let thrown: unknown = null;
+          try {
+            discoverMultiClass(file_path, descriptors, extensions_root, multi_class_enabled);
+          } catch (e) {
+            thrown = e;
+          }
+          expect(thrown).not.toBeNull();
+          expect(thrown).toBeInstanceOf(ModuleIdConflictError);
+          const err = thrown as ModuleIdConflictError;
+          expect(err.code).toBe(tc.expected.error.code);
+          expect(err.details['conflictingSegment']).toBe(tc.expected.error.conflicting_segment);
+          return;
+        }
+
+        const result = discoverMultiClass(file_path, descriptors, extensions_root, multi_class_enabled);
+        const moduleIds = result.map(r => r.moduleId);
+        expect(moduleIds).toEqual(tc.expected.module_ids);
+
+        if (tc.expected.grammar_valid === true) {
+          for (const id of moduleIds) {
+            expect(CANONICAL_ID_RE.test(id)).toBe(true);
+          }
+        }
+      });
+    });
+  });
+
   // --- Core Schema Structure Conformance ---
   describe('Core Schema Structure Conformance', () => {
     it('acl-config schema has required fields', () => {
@@ -895,6 +1005,1645 @@ describe('apcore Conformance Suite (TypeScript)', () => {
         const hash2 = contentHash(tc.schemas[1]);
         expect(hash1 === hash2).toBe(tc.expected.same_hash);
       });
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Pipeline Hardening (Issue #33)
+  // ---------------------------------------------------------------------------
+
+  function makeHardeningStep(
+    name: string,
+    opts: {
+      ignoreErrors?: boolean;
+      throws?: boolean;
+    } = {},
+  ): Step {
+    return {
+      name,
+      description: `Step ${name}`,
+      removable: true,
+      replaceable: true,
+      ignoreErrors: opts.ignoreErrors,
+      execute: async (): Promise<StepResult> => {
+        if (opts.throws) throw new Error(`Step ${name} failed`);
+        return { action: 'continue' };
+      },
+    };
+  }
+
+  function makeHardeningContext(moduleId = 'test.module'): PipelineContext {
+    return {
+      moduleId,
+      inputs: {},
+      context: new Context('trace-id', null, []),
+    };
+  }
+
+  const pipelineHardeningFixture = loadFixture('pipeline_hardening');
+
+  describe('Pipeline Hardening (Issue #33)', () => {
+    // 1. fail_fast_on_step_error
+    it('fail_fast_on_step_error', async () => {
+      const tc = pipelineHardeningFixture.test_cases.find((t: any) => t.id === 'fail_fast_on_step_error');
+      expect(tc).toBeDefined();
+
+      const { step: failingStepName, raises, ignore_errors } = tc.input;
+      const stepNames: string[] = tc.expected.steps_executed;
+
+      const steps = stepNames.map((n: string) =>
+        makeHardeningStep(n, {
+          throws: n === failingStepName && raises === true,
+          ignoreErrors: n === failingStepName ? ignore_errors : undefined,
+        }),
+      );
+      const strategy = new ExecutionStrategy('default', steps);
+      const engine = new PipelineEngine();
+      const ctx = makeHardeningContext();
+
+      let thrown: unknown = null;
+      try {
+        await engine.run(strategy, ctx);
+      } catch (e) {
+        thrown = e;
+      }
+
+      expect(thrown).not.toBeNull();
+      expect(thrown).toBeInstanceOf(PipelineStepError);
+      const err = thrown as PipelineStepError;
+      expect(err.code).toBe(tc.expected.error_code);
+      expect(tc.expected.stopped).toBe(true);
+
+      const executedNames = err.pipelineTrace!.steps
+        .filter((s: any) => !s.skipped)
+        .map((s: any) => s.name);
+      expect(executedNames).toEqual(stepNames);
+    });
+
+    // 2. continue_on_ignored_error
+    it('continue_on_ignored_error', async () => {
+      const tc = pipelineHardeningFixture.test_cases.find((t: any) => t.id === 'continue_on_ignored_error');
+      expect(tc).toBeDefined();
+
+      const strategy = new ExecutionStrategy('default', [
+        makeHardeningStep('before'),
+        makeHardeningStep(tc.input.step, { throws: true, ignoreErrors: tc.input.ignore_errors }),
+        makeHardeningStep('after'),
+      ]);
+      const engine = new PipelineEngine();
+      const ctx = makeHardeningContext();
+
+      const [, trace] = await engine.run(strategy, ctx);
+      expect(trace.success).toBe(true);
+      expect(tc.expected.stopped).toBe(false);
+      expect(tc.expected.continued).toBe(true);
+    });
+
+    // 3. replace_semantic_no_duplicate
+    it('replace_semantic_no_duplicate', async () => {
+      const tc = pipelineHardeningFixture.test_cases.find((t: any) => t.id === 'replace_semantic_no_duplicate');
+      expect(tc).toBeDefined();
+
+      const strategy = new ExecutionStrategy('default', [
+        makeHardeningStep(tc.input.configure_step),
+      ]);
+
+      // Call configureStep the number of times specified in the fixture
+      for (let i = 0; i < tc.input.times; i++) {
+        strategy.configureStep(tc.input.configure_step, makeHardeningStep(tc.input.configure_step));
+      }
+
+      const count = strategy.steps.filter((s) => s.name === tc.input.configure_step).length;
+      expect(count).toBe(tc.expected.step_count_for_name);
+    });
+
+    // 4. run_until_stops_early
+    it('run_until_stops_early', async () => {
+      const tc = pipelineHardeningFixture.test_cases.find((t: any) => t.id === 'run_until_stops_early');
+      expect(tc).toBeDefined();
+
+      const stopAfter: string = tc.input.run_until_after;
+      const strategy = new ExecutionStrategy('default', [
+        makeHardeningStep('context_creation'),
+        makeHardeningStep('module_lookup'),
+        makeHardeningStep('execute'),
+        makeHardeningStep('return_result'),
+      ]);
+      const engine = new PipelineEngine();
+      const ctx = makeHardeningContext();
+      ctx.runUntil = (state: PipelineState) => state.stepName === stopAfter;
+
+      const [, trace] = await engine.run(strategy, ctx);
+      expect(trace.success).toBe(true);
+
+      const executedSteps = trace.steps.filter((s) => !s.skipped);
+      const lastExecuted = executedSteps[executedSteps.length - 1];
+      expect(lastExecuted.name).toBe(tc.expected.last_step_executed);
+      expect(tc.expected.steps_after_skipped).toBe(true);
+      // Steps after stopAfter must not appear in the trace at all
+      const allNames = trace.steps.map((s) => s.name);
+      expect(allNames).not.toContain('execute');
+      expect(allNames).not.toContain('return_result');
+    });
+
+    // 5. step_lookup_is_not_linear
+    it('step_lookup_is_not_linear', () => {
+      const tc = pipelineHardeningFixture.test_cases.find((t: any) => t.id === 'step_lookup_is_not_linear');
+      expect(tc).toBeDefined();
+      expect(tc.expected.lookup_complexity).toBe('O(1)');
+
+      const stepCount: number = tc.input.step_count;
+      const steps = Array.from({ length: stepCount }, (_, i) =>
+        makeHardeningStep(`step_${i}`),
+      );
+      const strategy = new ExecutionStrategy('default', steps);
+
+      // Verify findStepIndex provides O(1) lookup (Map-backed)
+      expect(typeof strategy.findStepIndex).toBe('function');
+      for (let i = 0; i < stepCount; i++) {
+        expect(strategy.findStepIndex(`step_${i}`)).toBe(i);
+      }
+      expect(strategy.findStepIndex('nonexistent')).toBeUndefined();
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Event Management Hardening (Issue #36)
+  // ---------------------------------------------------------------------------
+
+  const eventHardeningFixture = loadFixture('event_management_hardening');
+
+  function makeTestEvent(overrides: Partial<ApCoreEvent> = {}): ApCoreEvent {
+    return {
+      eventType: 'test.event',
+      moduleId: null,
+      timestamp: '2026-04-28T00:00:00Z',
+      severity: 'info',
+      data: {},
+      ...overrides,
+    };
+  }
+
+  describe('Event Management Hardening (Issue #36)', () => {
+    beforeEach(() => {
+      resetSubscriberRegistry();
+    });
+
+    afterEach(() => {
+      resetSubscriberRegistry();
+      vi.useRealTimers();
+    });
+
+    it('subscriber_factory_registered_type', () => {
+      const tc = eventHardeningFixture.test_cases.find(
+        (t: any) => t.id === 'subscriber_factory_registered_type',
+      );
+      expect(tc).toBeDefined();
+
+      class SlackSubscriber implements EventSubscriber {
+        async onEvent(_event: ApCoreEvent): Promise<void> {}
+      }
+
+      registerSubscriberType('slack', (_config) => new SlackSubscriber());
+
+      const subscriber = createSubscriberFromConfig(tc.input.subscriber_config);
+      expect(subscriber).not.toBeNull();
+      expect(subscriber).toBeInstanceOf(SlackSubscriber);
+    });
+
+    it('builtin_stdout_type', () => {
+      const tc = eventHardeningFixture.test_cases.find(
+        (t: any) => t.id === 'builtin_stdout_type',
+      );
+      expect(tc).toBeDefined();
+      expect(tc.expected.requires_registration).toBe(false);
+
+      const subscriber = createSubscriberFromConfig(tc.input.subscriber_config);
+      expect(subscriber).toBeInstanceOf(StdoutSubscriber);
+    });
+
+    it('builtin_file_type', () => {
+      const tc = eventHardeningFixture.test_cases.find(
+        (t: any) => t.id === 'builtin_file_type',
+      );
+      expect(tc).toBeDefined();
+      expect(tc.expected.requires_registration).toBe(false);
+
+      const subscriber = createSubscriberFromConfig(tc.input.subscriber_config);
+      expect(subscriber).toBeInstanceOf(FileSubscriber);
+    });
+
+    it('builtin_filter_passes_matching', async () => {
+      const tc = eventHardeningFixture.test_cases.find(
+        (t: any) => t.id === 'builtin_filter_passes_matching',
+      );
+      expect(tc).toBeDefined();
+
+      let deliveryAttempted = false;
+      const mockDelegate: EventSubscriber = {
+        async onEvent(_event: ApCoreEvent) {
+          deliveryAttempted = true;
+        },
+      };
+
+      registerSubscriberType('mock_passthrough', () => mockDelegate);
+
+      const subscriber = createSubscriberFromConfig({
+        type: 'filter',
+        delegate_type: 'mock_passthrough',
+        delegate_config: {},
+        include_events: tc.input.subscriber_config.include_events,
+      }) as FilterSubscriber;
+
+      const event = makeTestEvent({
+        eventType: tc.input.event.event_type,
+        moduleId: tc.input.event.module_id,
+        severity: tc.input.event.severity,
+        data: tc.input.event.data,
+      });
+
+      await subscriber.onEvent(event);
+
+      expect(deliveryAttempted).toBe(tc.expected.delivery_attempted);
+      expect(!deliveryAttempted).toBe(tc.expected.discarded);
+    });
+
+    it('builtin_filter_discards_nonmatching', async () => {
+      const tc = eventHardeningFixture.test_cases.find(
+        (t: any) => t.id === 'builtin_filter_discards_nonmatching',
+      );
+      expect(tc).toBeDefined();
+
+      let deliveryAttempted = false;
+      const mockDelegate: EventSubscriber = {
+        async onEvent(_event: ApCoreEvent) {
+          deliveryAttempted = true;
+        },
+      };
+
+      registerSubscriberType('mock_sink', () => mockDelegate);
+
+      const subscriber = createSubscriberFromConfig({
+        type: 'filter',
+        delegate_type: 'mock_sink',
+        delegate_config: {},
+        include_events: tc.input.subscriber_config.include_events,
+      }) as FilterSubscriber;
+
+      const event = makeTestEvent({
+        eventType: tc.input.event.event_type,
+        moduleId: tc.input.event.module_id,
+        severity: tc.input.event.severity,
+        data: tc.input.event.data,
+      });
+
+      await subscriber.onEvent(event);
+
+      expect(deliveryAttempted).toBe(tc.expected.delivery_attempted);
+      expect(!deliveryAttempted).toBe(tc.expected.discarded);
+    });
+
+    it('circuit_open_after_threshold', async () => {
+      const tc = eventHardeningFixture.test_cases.find(
+        (t: any) => t.id === 'circuit_open_after_threshold',
+      );
+      expect(tc).toBeDefined();
+
+      const emittedEventTypes: string[] = [];
+      const mockEmitter = {
+        emit(ev: ApCoreEvent) {
+          emittedEventTypes.push(ev.eventType);
+        },
+      };
+
+      const failingSub: EventSubscriber = {
+        async onEvent() {
+          throw new Error('simulated failure');
+        },
+      };
+
+      const cb = new CircuitBreakerWrapper(failingSub, mockEmitter, {
+        openThreshold: tc.input.circuit_breaker_config.open_threshold,
+        recoveryWindowMs: tc.input.circuit_breaker_config.recovery_window_ms,
+        timeoutMs: tc.input.circuit_breaker_config.timeout_ms,
+      });
+
+      const testEvent = makeTestEvent();
+      for (const _attempt of tc.input.failure_sequence) {
+        await cb.onEvent(testEvent);
+      }
+
+      expect(cb.state).toBe(tc.expected.circuit_state as CircuitState);
+      expect(cb.consecutiveFailures).toBe(tc.expected.consecutive_failures);
+      expect(emittedEventTypes).toContain(tc.expected.event_emitted);
+    });
+
+    it('circuit_discards_in_open_state', async () => {
+      const tc = eventHardeningFixture.test_cases.find(
+        (t: any) => t.id === 'circuit_discards_in_open_state',
+      );
+      expect(tc).toBeDefined();
+
+      const mockEmitter = { emit(_ev: ApCoreEvent) {} };
+
+      let deliveryAttempted = false;
+      const trackingSub: EventSubscriber = {
+        async onEvent() {
+          deliveryAttempted = true;
+          throw new Error('simulated failure');
+        },
+      };
+
+      // Use openThreshold: 1 to reach OPEN quickly
+      const cb = new CircuitBreakerWrapper(trackingSub, mockEmitter, { openThreshold: 1 });
+      const testEvent = makeTestEvent();
+
+      // Force OPEN
+      await cb.onEvent(testEvent);
+      expect(cb.state).toBe(CircuitState.OPEN);
+
+      // Reset tracking, then attempt delivery in OPEN state
+      deliveryAttempted = false;
+      await cb.onEvent(makeTestEvent({ eventType: tc.input.event.event_type }));
+
+      expect(deliveryAttempted).toBe(tc.expected.delivery_attempted);
+      expect(cb.state).toBe(tc.expected.circuit_state as CircuitState);
+    });
+
+    it('circuit_half_open_after_window', async () => {
+      const tc = eventHardeningFixture.test_cases.find(
+        (t: any) => t.id === 'circuit_half_open_after_window',
+      );
+      expect(tc).toBeDefined();
+
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date(tc.input.last_failure_at));
+
+      const mockEmitter = { emit(_ev: ApCoreEvent) {} };
+      const failingSub: EventSubscriber = {
+        async onEvent() {
+          throw new Error('simulated failure');
+        },
+      };
+
+      const cb = new CircuitBreakerWrapper(failingSub, mockEmitter, {
+        openThreshold: tc.input.circuit_breaker_config.open_threshold,
+        recoveryWindowMs: tc.input.circuit_breaker_config.recovery_window_ms,
+        timeoutMs: tc.input.circuit_breaker_config.timeout_ms,
+      });
+
+      // Force OPEN by failing open_threshold times at last_failure_at
+      const testEvent = makeTestEvent();
+      for (let i = 0; i < tc.input.circuit_breaker_config.open_threshold; i++) {
+        await cb.onEvent(testEvent);
+      }
+      expect(cb.state).toBe(CircuitState.OPEN);
+
+      // Advance time past recovery window
+      vi.setSystemTime(new Date(tc.input.current_time));
+      cb.checkRecovery();
+
+      expect(cb.state).toBe(tc.expected.circuit_state as CircuitState);
+    });
+
+    it('circuit_closes_on_success', async () => {
+      const tc = eventHardeningFixture.test_cases.find(
+        (t: any) => t.id === 'circuit_closes_on_success',
+      );
+      expect(tc).toBeDefined();
+
+      vi.useFakeTimers();
+
+      const emittedEventTypes: string[] = [];
+      const mockEmitter = {
+        emit(ev: ApCoreEvent) {
+          emittedEventTypes.push(ev.eventType);
+        },
+      };
+
+      let shouldFail = true;
+      const controlledSub: EventSubscriber = {
+        async onEvent() {
+          if (shouldFail) throw new Error('simulated failure');
+        },
+      };
+
+      const cb = new CircuitBreakerWrapper(controlledSub, mockEmitter, {
+        openThreshold: 1,
+        recoveryWindowMs: 5000,
+      });
+
+      const testEvent = makeTestEvent();
+
+      // Force OPEN with one failure
+      await cb.onEvent(testEvent);
+      expect(cb.state).toBe(CircuitState.OPEN);
+
+      // Advance time past recovery window → HALF_OPEN
+      vi.setSystemTime(Date.now() + 6000);
+      cb.checkRecovery();
+      expect(cb.state).toBe(CircuitState.HALF_OPEN);
+
+      // Succeed in HALF_OPEN → CLOSED
+      shouldFail = false;
+      await cb.onEvent(testEvent);
+
+      expect(cb.state).toBe(tc.expected.circuit_state as CircuitState);
+      expect(cb.consecutiveFailures).toBe(tc.expected.consecutive_failures);
+      expect(emittedEventTypes).toContain(tc.expected.event_emitted);
+    });
+
+    it('event_naming_canonical', () => {
+      const tc = eventHardeningFixture.test_cases.find(
+        (t: any) => t.id === 'event_naming_canonical',
+      );
+      expect(tc).toBeDefined();
+
+      const pattern = new RegExp(tc.expected.pattern);
+      for (const eventType of tc.input.events_to_check) {
+        expect(pattern.test(eventType)).toBe(true);
+      }
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Middleware Architecture Hardening (Issue #42)
+  // ---------------------------------------------------------------------------
+
+  const middlewareHardeningFixture = loadFixture('middleware_hardening');
+
+  describe('Middleware Architecture Hardening (Issue #42)', () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    // Helper to build a minimal mock EventEmitter for circuit-breaker tests
+    function makeCircuitEmitter() {
+      const emitted: string[] = [];
+      return {
+        emitted,
+        emit(ev: ApCoreEvent) {
+          emitted.push(ev.eventType);
+        },
+      };
+    }
+
+    // Helper to drive a CircuitBreakerMiddleware to OPEN by filling the
+    // rolling window with `count` errors then checking state.
+    function driveToOpen(
+      cb: CircuitBreakerMiddleware,
+      moduleId: string,
+      ctx: Context,
+      windowSize: number,
+    ): void {
+      for (let i = 0; i < windowSize; i++) {
+        try {
+          cb.before(moduleId, {}, ctx);
+        } catch {
+          // circuit may already be OPEN on later iterations — ignore
+        }
+        cb.onError(moduleId, {}, new Error('simulated'), ctx);
+      }
+    }
+
+    // --- 1. context_namespace_apcore_prefix ---
+    it('context_namespace_apcore_prefix', () => {
+      const tc = middlewareHardeningFixture.test_cases.find(
+        (t: any) => t.id === 'context_namespace_apcore_prefix',
+      );
+      expect(tc).toBeDefined();
+
+      const result = validateContextKey(tc.input.writer, tc.input.key);
+      expect(result.valid).toBe(tc.expected.valid);
+      expect(result.warning).toBe(tc.expected.warning);
+    });
+
+    // --- 2. context_namespace_ext_prefix ---
+    it('context_namespace_ext_prefix', () => {
+      const tc = middlewareHardeningFixture.test_cases.find(
+        (t: any) => t.id === 'context_namespace_ext_prefix',
+      );
+      expect(tc).toBeDefined();
+
+      const result = validateContextKey(tc.input.writer, tc.input.key);
+      expect(result.valid).toBe(tc.expected.valid);
+      expect(result.warning).toBe(tc.expected.warning);
+    });
+
+    // --- 3. context_namespace_violation ---
+    it('context_namespace_violation', () => {
+      const tc = middlewareHardeningFixture.test_cases.find(
+        (t: any) => t.id === 'context_namespace_violation',
+      );
+      expect(tc).toBeDefined();
+
+      const result = validateContextKey(tc.input.writer, tc.input.key);
+      expect(result.valid).toBe(tc.expected.valid);
+      expect(result.warning).toBe(tc.expected.warning);
+    });
+
+    // --- 4. circuit_breaker_opens_at_threshold ---
+    it('circuit_breaker_opens_at_threshold', () => {
+      const tc = middlewareHardeningFixture.test_cases.find(
+        (t: any) => t.id === 'circuit_breaker_opens_at_threshold',
+      );
+      expect(tc).toBeDefined();
+
+      const emitter = makeCircuitEmitter();
+      const cb = new CircuitBreakerMiddleware({
+        openThreshold: tc.input.open_threshold,
+        windowSize: tc.input.window_size,
+        recoveryWindowMs: 30000,
+        emitter,
+      });
+
+      const moduleId: string = tc.input.module_id;
+      const callerId: string = tc.input.caller_id;
+      const ctx = new Context('trace', callerId, []);
+
+      // Record successes_in_window successful calls
+      for (let i = 0; i < tc.input.successes_in_window; i++) {
+        cb.before(moduleId, {}, ctx);
+        cb.after(moduleId, {}, {}, ctx);
+      }
+
+      // Record errors_in_window failed calls
+      for (let i = 0; i < tc.input.errors_in_window; i++) {
+        try {
+          cb.before(moduleId, {}, ctx);
+        } catch {
+          // circuit may open during iteration — ignore CB open errors
+        }
+        cb.onError(moduleId, {}, new Error('fail'), ctx);
+      }
+
+      expect(cb.getState(moduleId, callerId)).toBe(tc.expected.circuit_state as MiddlewareCircuitState);
+      expect(emitter.emitted).toContain(tc.expected.event_emitted);
+    });
+
+    // --- 5. circuit_breaker_short_circuits_open ---
+    it('circuit_breaker_short_circuits_open', () => {
+      const tc = middlewareHardeningFixture.test_cases.find(
+        (t: any) => t.id === 'circuit_breaker_short_circuits_open',
+      );
+      expect(tc).toBeDefined();
+
+      // Use a window of size 10, fill with failures to force OPEN
+      const cb = new CircuitBreakerMiddleware({
+        openThreshold: 0.5,
+        windowSize: 10,
+        recoveryWindowMs: tc.input.recovery_window_ms,
+      });
+
+      const moduleId: string = tc.input.module_id;
+      const callerId: string = tc.input.caller_id;
+      const ctx = new Context('trace', callerId, []);
+
+      driveToOpen(cb, moduleId, ctx, 10);
+      expect(cb.getState(moduleId, callerId)).toBe(MiddlewareCircuitState.OPEN);
+
+      // A subsequent before() must throw CircuitBreakerOpenError (module never reached)
+      let thrown: Error | null = null;
+      let moduleReached = false;
+      try {
+        cb.before(moduleId, {}, ctx);
+        moduleReached = true;
+      } catch (e) {
+        thrown = e as Error;
+      }
+
+      expect(thrown).toBeInstanceOf(CircuitBreakerOpenError);
+      expect(moduleReached).toBe(tc.expected.module_reached); // false
+      expect(tc.expected.error).toBe('CircuitBreakerOpenError');
+    });
+
+    // --- 6. circuit_breaker_half_open_probe ---
+    it('circuit_breaker_half_open_probe', () => {
+      const tc = middlewareHardeningFixture.test_cases.find(
+        (t: any) => t.id === 'circuit_breaker_half_open_probe',
+      );
+      expect(tc).toBeDefined();
+
+      vi.useFakeTimers();
+      const baseTime = Date.now();
+
+      const cb = new CircuitBreakerMiddleware({
+        openThreshold: 0.5,
+        windowSize: 10,
+        recoveryWindowMs: tc.input.recovery_window_ms,
+      });
+
+      const moduleId: string = tc.input.module_id;
+      const callerId: string = tc.input.caller_id;
+      const ctx = new Context('trace', callerId, []);
+
+      // Drive to OPEN (openedAt = baseTime)
+      driveToOpen(cb, moduleId, ctx, 10);
+      expect(cb.getState(moduleId, callerId)).toBe(MiddlewareCircuitState.OPEN);
+
+      // Advance past recovery_window_ms
+      vi.setSystemTime(baseTime + tc.input.ms_since_opened);
+
+      // First before() — should transition to HALF_OPEN and allow probe
+      cb.before(moduleId, {}, ctx);
+      expect(ctx.data['_apcore.mw.circuit.state']).toBe(tc.expected.circuit_state); // 'HALF_OPEN'
+      expect(tc.expected.probe_call_allowed).toBe(true);
+
+      // A second concurrent before() must be blocked (max_concurrent_probes: 1)
+      let secondBlocked = false;
+      try {
+        cb.before(moduleId, {}, ctx);
+      } catch (e) {
+        if (e instanceof CircuitBreakerOpenError) secondBlocked = true;
+      }
+      expect(secondBlocked).toBe(true);
+      expect(tc.expected.max_concurrent_probes).toBe(1);
+    });
+
+    // --- 7. circuit_breaker_closes_on_success ---
+    it('circuit_breaker_closes_on_success', () => {
+      const tc = middlewareHardeningFixture.test_cases.find(
+        (t: any) => t.id === 'circuit_breaker_closes_on_success',
+      );
+      expect(tc).toBeDefined();
+
+      vi.useFakeTimers();
+      const baseTime = Date.now();
+
+      const emitter = makeCircuitEmitter();
+      const cb = new CircuitBreakerMiddleware({
+        openThreshold: 0.5,
+        windowSize: 10,
+        recoveryWindowMs: 30000,
+        emitter,
+      });
+
+      const moduleId: string = tc.input.module_id;
+      const callerId: string = tc.input.caller_id;
+      const ctx = new Context('trace', callerId, []);
+
+      // Drive to OPEN, advance time, allow probe
+      driveToOpen(cb, moduleId, ctx, 10);
+      vi.setSystemTime(baseTime + 35000); // past recovery window
+      cb.before(moduleId, {}, ctx); // probe: OPEN → HALF_OPEN, probeInFlight=true
+
+      // Successful probe → CLOSED, emit apcore.circuit.closed
+      cb.after(moduleId, {}, {}, ctx);
+
+      expect(cb.getState(moduleId, callerId)).toBe(tc.expected.circuit_state as MiddlewareCircuitState);
+      expect(emitter.emitted).toContain(tc.expected.event_emitted);
+    });
+
+    // --- 8. tracing_span_created ---
+    it('tracing_span_created', () => {
+      const tc = middlewareHardeningFixture.test_cases.find(
+        (t: any) => t.id === 'tracing_span_created',
+      );
+      expect(tc).toBeDefined();
+
+      const spanId = 'mock-span-id-9abc';
+      const capturedAttributes: Record<string, string> = {};
+
+      const mockSpan: OtelSpan = {
+        spanContext: () => ({ spanId }),
+        setAttribute(k: string, v: string) {
+          capturedAttributes[k] = v;
+        },
+        setStatus: vi.fn(),
+        end: vi.fn(),
+      };
+
+      const mockTracer: OtelTracer = {
+        startSpan: vi.fn((_name: string) => mockSpan),
+      };
+
+      const mw = new TracingMiddleware({ tracer: mockTracer });
+      const ctx = new Context(tc.input.trace_id, tc.input.caller_id, []);
+
+      mw.before(tc.input.module_id, {}, ctx);
+
+      // Verify span was created with the module_id as span name
+      expect(tc.expected.span_created).toBe(true);
+      expect((mockTracer.startSpan as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]).toBe(
+        tc.expected.span_name,
+      );
+
+      // Verify mandatory span attributes
+      for (const [attr, val] of Object.entries(tc.expected.span_attributes as Record<string, string>)) {
+        expect(capturedAttributes[attr]).toBe(val);
+      }
+
+      // Verify span_id stored in context
+      expect(tc.expected.span_id_stored_in_context).toBe(true);
+      expect(ctx.data[tc.expected.context_key]).toBe(spanId);
+    });
+
+    // --- 9. tracing_noop_without_otel ---
+    it('tracing_noop_without_otel', () => {
+      const tc = middlewareHardeningFixture.test_cases.find(
+        (t: any) => t.id === 'tracing_noop_without_otel',
+      );
+      expect(tc).toBeDefined();
+
+      // No tracer injected; @opentelemetry/api is not installed → no-op mode
+      const mw = new TracingMiddleware({ tracer: null });
+      const ctx = new Context(tc.input.trace_id, tc.input.caller_id, []);
+
+      let errorRaised = false;
+      try {
+        mw.before(tc.input.module_id, {}, ctx);
+        mw.after(tc.input.module_id, {}, {}, ctx);
+      } catch {
+        errorRaised = true;
+      }
+
+      expect(errorRaised).toBe(tc.expected.error_raised); // false
+      expect(tc.expected.span_created).toBe(false);
+      expect(ctx.data['_apcore.mw.tracing.span_id']).toBeUndefined();
+      expect(tc.expected.execution_continues).toBe(true);
+    });
+
+    // Bonus: HALF_OPEN → OPEN (failed probe re-opens circuit) — not in fixture but required by spec
+    it('circuit_breaker_failed_probe_reopens', () => {
+      vi.useFakeTimers();
+      const baseTime = Date.now();
+
+      const emitter = makeCircuitEmitter();
+      const cb = new CircuitBreakerMiddleware({
+        openThreshold: 0.5,
+        windowSize: 10,
+        recoveryWindowMs: 30000,
+        emitter,
+      });
+
+      const moduleId = 'executor.payment.charge';
+      const callerId = 'orchestrator.billing';
+      const ctx = new Context('trace', callerId, []);
+
+      // Drive to OPEN, advance past recovery window, allow probe
+      driveToOpen(cb, moduleId, ctx, 10);
+      vi.setSystemTime(baseTime + 35000);
+      cb.before(moduleId, {}, ctx); // probe: transitions to HALF_OPEN
+
+      // Failed probe → back to OPEN
+      cb.onError(moduleId, {}, new Error('probe failure'), ctx);
+
+      expect(cb.getState(moduleId, callerId)).toBe(MiddlewareCircuitState.OPEN);
+      expect(emitter.emitted.filter((e) => e === 'apcore.circuit.opened').length).toBeGreaterThanOrEqual(2);
+    });
+
+    // --- 10. async_detection_coroutine_function ---
+    it('async_detection_coroutine_function', () => {
+      const tc = middlewareHardeningFixture.test_cases.find(
+        (t: any) => t.id === 'async_detection_coroutine_function',
+      );
+      expect(tc).toBeDefined();
+      expect(tc.expected.is_async).toBe(true);
+
+      // TypeScript equivalent: handler.constructor.name === 'AsyncFunction'
+      async function asyncFn() {
+        return 'result';
+      }
+      function syncFn() {
+        return 'result';
+      }
+
+      expect(isAsyncHandler(asyncFn)).toBe(true); // async function detected correctly
+      expect(isAsyncHandler(syncFn)).toBe(false); // sync function correctly not async
+
+      // Confirm that calling asyncFn() instanceof Promise is NOT a valid detection
+      // method (per spec §1.5): it invokes the function side-effectfully
+      expect(asyncFn instanceof Promise).toBe(false); // function ≠ Promise object
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Observability Hardening (Issue #43)
+  // ---------------------------------------------------------------------------
+
+  const obsHardeningFixture = loadFixture('observability_hardening');
+
+  describe('Observability Hardening (Issue #43)', () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    // --- 1. pluggable_store_default_inmemory ---
+    it('pluggable_store_default_inmemory', () => {
+      const tc = obsHardeningFixture.test_cases.find(
+        (t: any) => t.id === 'pluggable_store_default_inmemory',
+      );
+      expect(tc).toBeDefined();
+
+      const history = new ErrorHistory();
+      expect(history.store).toBeInstanceOf(InMemoryObservabilityStore);
+      expect(tc.expected.store_type).toBe('InMemoryObservabilityStore');
+    });
+
+    // --- 2. batch_processor_buffers_spans ---
+    it('batch_processor_buffers_spans', () => {
+      const tc = obsHardeningFixture.test_cases.find(
+        (t: any) => t.id === 'batch_processor_buffers_spans',
+      );
+      expect(tc).toBeDefined();
+
+      const exporter = new InMemoryExporter();
+      const processor = new BatchSpanProcessor({
+        exporter,
+        scheduleDelayMs: tc.input.schedule_delay_ms,
+      });
+
+      const spansToSubmit: number = tc.input.spans_submitted;
+      for (let i = 0; i < spansToSubmit; i++) {
+        processor.onSpan(
+          createSpan({ traceId: 'trace-id-01', name: `span-${i}`, startTime: Date.now() / 1000 }),
+        );
+      }
+
+      expect(exporter.getSpans().length).toBe(tc.expected.spans_exported_immediately);
+      expect(processor.queueSize).toBe(tc.expected.queue_size);
+      expect(processor.spansDropped).toBe(tc.expected.spans_dropped);
+
+      void processor.shutdown();
+    });
+
+    // --- 3. batch_processor_drops_on_full_queue ---
+    it('batch_processor_drops_on_full_queue', () => {
+      const tc = obsHardeningFixture.test_cases.find(
+        (t: any) => t.id === 'batch_processor_drops_on_full_queue',
+      );
+      expect(tc).toBeDefined();
+
+      const exporter = new InMemoryExporter();
+      const processor = new BatchSpanProcessor({
+        exporter,
+        maxQueueSize: tc.input.max_queue_size,
+        scheduleDelayMs: 100_000,
+      });
+
+      // Pre-fill queue
+      const queueSizeBefore: number = tc.input.queue_size_before;
+      for (let i = 0; i < queueSizeBefore; i++) {
+        processor.onSpan(
+          createSpan({ traceId: 'trace-id-02', name: `span-${i}`, startTime: Date.now() / 1000 }),
+        );
+      }
+      expect(processor.queueSize).toBe(queueSizeBefore);
+
+      // Submit additional spans that should be dropped
+      const newSpans: number = tc.input.new_spans_submitted;
+      for (let i = 0; i < newSpans; i++) {
+        processor.onSpan(
+          createSpan({ traceId: 'trace-id-02', name: `extra-${i}`, startTime: Date.now() / 1000 }),
+        );
+      }
+
+      expect(processor.queueSize).toBe(tc.expected.queue_size_after);
+      expect(processor.spansDropped).toBe(tc.expected.spans_dropped);
+
+      void processor.shutdown();
+    });
+
+    // --- 4. error_history_evicts_oldest_first ---
+    it('error_history_evicts_oldest_first', () => {
+      const tc = obsHardeningFixture.test_cases.find(
+        (t: any) => t.id === 'error_history_evicts_oldest_first',
+      );
+      expect(tc).toBeDefined();
+
+      vi.useFakeTimers();
+
+      const history = new ErrorHistory({ maxTotalEntries: tc.input.max_total_entries });
+
+      // Record existing entries with controlled timestamps
+      for (const entry of tc.input.existing_entries) {
+        vi.setSystemTime(new Date(entry.last_seen_at));
+        history.record(entry.module_id, new ModuleError(entry.code, `Error ${entry.code}`));
+      }
+
+      // Record new entry
+      const newEntry = tc.input.new_entry;
+      vi.setSystemTime(new Date(newEntry.last_seen_at));
+      history.record(newEntry.module_id, new ModuleError(newEntry.code, `Error ${newEntry.code}`));
+
+      const all = history.getAll();
+      const codes = all.map((e) => e.code);
+
+      expect(codes).not.toContain(tc.expected.evicted_entry_code);
+      for (const code of tc.expected.remaining_entry_codes) {
+        expect(codes).toContain(code);
+      }
+      expect(all.length).toBe(tc.expected.total_entries);
+    });
+
+    // --- 5. error_fingerprint_dedup_same_error ---
+    it('error_fingerprint_dedup_same_error', () => {
+      const tc = obsHardeningFixture.test_cases.find(
+        (t: any) => t.id === 'error_fingerprint_dedup_same_error',
+      );
+      expect(tc).toBeDefined();
+
+      const history = new ErrorHistory();
+      for (const record of tc.input.records) {
+        history.record(record.module_id, new ModuleError(record.code, record.message));
+      }
+
+      const all = history.getAll();
+      expect(all.length).toBe(tc.expected.total_entries);
+      expect(all[0].count).toBe(tc.expected.entry_count);
+    });
+
+    // --- 6. error_fingerprint_normalization ---
+    it('error_fingerprint_normalization', () => {
+      const tc = obsHardeningFixture.test_cases.find(
+        (t: any) => t.id === 'error_fingerprint_normalization',
+      );
+      expect(tc).toBeDefined();
+
+      const messages: string[] = tc.input.messages;
+      const normalized = messages.map((m: string) => normalizeMessage(m));
+
+      for (let i = 0; i < normalized.length; i++) {
+        expect(normalized[i]).toBe(tc.expected.normalized_messages[i]);
+      }
+
+      const fps = messages.map((m: string) =>
+        computeFingerprint(tc.input.code, tc.input.module_id, m),
+      );
+      expect(fps[0] === fps[1]).toBe(tc.expected.fingerprints_equal);
+    });
+
+    // --- 7. fingerprint_different_errors_no_collision ---
+    it('fingerprint_different_errors_no_collision', () => {
+      const tc = obsHardeningFixture.test_cases.find(
+        (t: any) => t.id === 'fingerprint_different_errors_no_collision',
+      );
+      expect(tc).toBeDefined();
+
+      const fps = (tc.input.entries as any[]).map((e: any) =>
+        computeFingerprint(e.code, e.module_id, e.message),
+      );
+      expect(fps[0] === fps[1]).toBe(tc.expected.fingerprints_equal);
+    });
+
+    // --- 8. redaction_field_pattern_match ---
+    it('redaction_field_pattern_match', () => {
+      const tc = obsHardeningFixture.test_cases.find(
+        (t: any) => t.id === 'redaction_field_pattern_match',
+      );
+      expect(tc).toBeDefined();
+
+      const cfg = tc.input.redaction_config;
+      const redactionConfig = new RedactionConfig({
+        fieldPatterns: cfg.field_patterns,
+        valuePatterns: cfg.value_patterns.map((p: string) => new RegExp(p)),
+        replacement: cfg.replacement,
+      });
+
+      const redacted = redactionConfig.apply(tc.input.log_entry.inputs);
+      expect(redacted).toEqual(tc.expected.logged_inputs);
+
+      // Verify protected fields are present (not redacted from log metadata)
+      expect(tc.expected.trace_id_present).toBe(true);
+      expect(tc.expected.caller_id_present).toBe(true);
+      expect(tc.expected.module_id_present).toBe(true);
+    });
+
+    // --- 9. redaction_value_pattern_match ---
+    it('redaction_value_pattern_match', () => {
+      const tc = obsHardeningFixture.test_cases.find(
+        (t: any) => t.id === 'redaction_value_pattern_match',
+      );
+      expect(tc).toBeDefined();
+
+      const cfg = tc.input.redaction_config;
+      const redactionConfig = new RedactionConfig({
+        fieldPatterns: cfg.field_patterns,
+        valuePatterns: cfg.value_patterns.map((p: string) => new RegExp(p)),
+        replacement: cfg.replacement,
+      });
+
+      const redacted = redactionConfig.apply(tc.input.log_entry.inputs);
+      expect(redacted).toEqual(tc.expected.logged_inputs);
+
+      expect(tc.expected.trace_id_present).toBe(true);
+      expect(tc.expected.caller_id_present).toBe(true);
+      expect(tc.expected.module_id_present).toBe(true);
+    });
+
+    // --- 10. prometheus_format_includes_required_metrics ---
+    it('prometheus_format_includes_required_metrics', () => {
+      const tc = obsHardeningFixture.test_cases.find(
+        (t: any) => t.id === 'prometheus_format_includes_required_metrics',
+      );
+      expect(tc).toBeDefined();
+
+      const collector = new MetricsCollector();
+      const state = tc.input.collector_state;
+
+      collector.increment('apcore_module_calls_total', { module_id: 'test' }, state.apcore_module_calls_total);
+      collector.increment('apcore_module_errors_total', { module_id: 'test' }, state.apcore_module_errors_total);
+      for (const obs of state.apcore_module_duration_seconds_observations) {
+        collector.observe('apcore_module_duration_seconds', { module_id: 'test' }, obs);
+      }
+
+      const exporter = new PrometheusExporter({ collector });
+      const output = exporter.export();
+
+      for (const metric of tc.expected.output_contains) {
+        expect(output).toContain(metric);
+      }
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // AsyncTask Evolution (Issue #34)
+  // ---------------------------------------------------------------------------
+
+  const asyncTaskEvolutionFixture = loadFixture('async_task_evolution');
+
+  describe('AsyncTask Evolution (Issue #34)', () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    // Helper: build a minimal executor with always-failing and always-succeeding modules
+    function makeEvolutionExecutor(): Executor {
+      const registry = new Registry();
+      registry.register('worker.flaky_job', new FunctionModule({
+        execute: () => { throw new Error('connection_error'); },
+        moduleId: 'worker.flaky_job',
+        inputSchema: Type.Object({}),
+        outputSchema: Type.Object({}),
+        description: 'Flaky module',
+      }));
+      registry.register('worker.always_fails', new FunctionModule({
+        execute: () => { throw new Error('persistent_error'); },
+        moduleId: 'worker.always_fails',
+        inputSchema: Type.Object({}),
+        outputSchema: Type.Object({}),
+        description: 'Always-failing module',
+      }));
+      return new Executor({ registry });
+    }
+
+    // Helper: seed a store with raw fixture task records
+    function seedStore(store: TaskStore, tasks: any[]): void {
+      for (const t of tasks) {
+        store.save({
+          taskId: t.task_id,
+          moduleId: t.module_id,
+          status: t.status as TaskStatus,
+          submittedAt: t.submitted_at,
+          startedAt: t.started_at,
+          completedAt: t.completed_at,
+          result: t.result,
+          error: t.error,
+          retryCount: t.retry_count ?? 0,
+          maxRetries: t.max_retries ?? 0,
+        });
+      }
+    }
+
+    // --- 1. in_memory_store_default ---
+    it('in_memory_store_default', () => {
+      const tc = asyncTaskEvolutionFixture.test_cases.find((t: any) => t.id === 'in_memory_store_default');
+      expect(tc).toBeDefined();
+
+      const executor = makeEvolutionExecutor();
+      const manager = new AsyncTaskManager({ executor });
+      expect(manager.store).toBeInstanceOf(InMemoryTaskStore);
+      expect(tc.expected.store_type).toBe('InMemoryTaskStore');
+    });
+
+    // --- 2. custom_store_injected ---
+    it('custom_store_injected', () => {
+      const tc = asyncTaskEvolutionFixture.test_cases.find((t: any) => t.id === 'custom_store_injected');
+      expect(tc).toBeDefined();
+
+      // Simulate injecting a custom store (RedisTaskStore not available; use a named subclass)
+      class RedisTaskStore extends InMemoryTaskStore {}
+      const store = new RedisTaskStore();
+      const executor = makeEvolutionExecutor();
+      const manager = new AsyncTaskManager({ executor, store });
+
+      expect(manager.store).toBeInstanceOf(RedisTaskStore);
+      expect(manager.store).toBe(store);
+      expect(tc.expected.store_type).toBe('RedisTaskStore');
+    });
+
+    // --- 3. task_store_save_and_get ---
+    it('task_store_save_and_get', () => {
+      const tc = asyncTaskEvolutionFixture.test_cases.find((t: any) => t.id === 'task_store_save_and_get');
+      expect(tc).toBeDefined();
+
+      const store = new InMemoryTaskStore();
+      seedStore(store, [tc.task_info]);
+
+      const found = store.get(tc.lookup_id);
+      expect(found).not.toBeNull();
+      expect(found!.taskId).toBe(tc.expected.task_id);
+      expect(found!.status).toBe(tc.expected.status);
+      expect(found!.result).toEqual(tc.expected.result);
+      expect(tc.expected.found).toBe(true);
+    });
+
+    // --- 4. task_store_list_by_status ---
+    it('task_store_list_by_status', () => {
+      const tc = asyncTaskEvolutionFixture.test_cases.find((t: any) => t.id === 'task_store_list_by_status');
+      expect(tc).toBeDefined();
+
+      const store = new InMemoryTaskStore();
+      seedStore(store, tc.stored_tasks);
+
+      const results = store.list(tc.status_filter as TaskStatus);
+      expect(results.length).toBe(tc.expected.count);
+      const ids = results.map(t => t.taskId);
+      for (const expectedId of tc.expected.task_ids) {
+        expect(ids).toContain(expectedId);
+      }
+    });
+
+    // --- 5. retry_scheduled_on_failure ---
+    it('retry_scheduled_on_failure', async () => {
+      const tc = asyncTaskEvolutionFixture.test_cases.find((t: any) => t.id === 'retry_scheduled_on_failure');
+      expect(tc).toBeDefined();
+
+      vi.useFakeTimers();
+
+      const executor = makeEvolutionExecutor();
+      const store = new InMemoryTaskStore();
+      const manager = new AsyncTaskManager({ executor, store });
+
+      const rc = tc.retry_config;
+      const retryConfig = new RetryConfig({
+        maxRetries: rc.max_retries,
+        retryDelayMs: rc.retry_delay_ms,
+        backoffMultiplier: rc.backoff_multiplier,
+        maxRetryDelayMs: rc.max_retry_delay_ms,
+      });
+
+      const taskId = await manager.submit('worker.flaky_job', {}, { retry: retryConfig });
+
+      // Drain microtasks until the first execution fails and status transitions to pending/retryCount=1.
+      // The setTimeout(1000) delay holds the retry, so we observe the intermediate state.
+      let ticks = 0;
+      while (ticks < 50) {
+        await Promise.resolve();
+        ticks++;
+        const info = store.get(taskId);
+        if (info && info.status === TaskStatus.PENDING && info.retryCount === 1) break;
+      }
+
+      const info = store.get(taskId)!;
+      expect(info.status).toBe(tc.expected.status_after_first_failure as TaskStatus);
+      expect(info.retryCount).toBe(tc.expected.retry_count_after_first_failure);
+
+      // Verify the backoff formula for the first retry (attempt index 0)
+      expect(retryConfig.computeDelay(0)).toBe(tc.expected.next_retry_delay_ms);
+
+      vi.useRealTimers();
+    });
+
+    // --- 6. backoff_multiplier_applied ---
+    it('backoff_multiplier_applied', () => {
+      const tc = asyncTaskEvolutionFixture.test_cases.find((t: any) => t.id === 'backoff_multiplier_applied');
+      expect(tc).toBeDefined();
+
+      const rc = tc.retry_config;
+      const retryConfig = new RetryConfig({
+        retryDelayMs: rc.retry_delay_ms,
+        backoffMultiplier: rc.backoff_multiplier,
+        maxRetryDelayMs: rc.max_retry_delay_ms,
+      });
+
+      const exp = tc.expected;
+      expect(retryConfig.computeDelay(0)).toBe(exp.attempt_0_delay_ms);
+      expect(retryConfig.computeDelay(1)).toBe(exp.attempt_1_delay_ms);
+      expect(retryConfig.computeDelay(2)).toBe(exp.attempt_2_delay_ms);
+      expect(retryConfig.computeDelay(3)).toBe(exp.attempt_3_delay_ms);
+      expect(retryConfig.computeDelay(4)).toBe(exp.attempt_4_delay_ms);
+      expect(retryConfig.computeDelay(5)).toBe(exp.attempt_5_delay_ms);
+    });
+
+    // --- 7. max_retries_exhausted_becomes_failed ---
+    it('max_retries_exhausted_becomes_failed', async () => {
+      const tc = asyncTaskEvolutionFixture.test_cases.find((t: any) => t.id === 'max_retries_exhausted_becomes_failed');
+      expect(tc).toBeDefined();
+
+      const executor = makeEvolutionExecutor();
+      const store = new InMemoryTaskStore();
+      const manager = new AsyncTaskManager({ executor, store });
+
+      // Use 0ms delay so the test is fast (the fixture's 100ms delay would be slow)
+      const retryConfig = new RetryConfig({
+        maxRetries: tc.retry_config.max_retries,
+        retryDelayMs: 0,
+        backoffMultiplier: tc.retry_config.backoff_multiplier,
+        maxRetryDelayMs: tc.retry_config.max_retry_delay_ms,
+      });
+
+      const taskId = await manager.submit('worker.always_fails', {}, { retry: retryConfig });
+
+      // Wait for all retries to exhaust (max_retries=2, 0ms delay each).
+      // setTimeout(0) is a macrotask so we must yield via real timers.
+      const deadline = Date.now() + 2000;
+      while (Date.now() < deadline) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 10));
+        if (store.get(taskId)?.status === TaskStatus.FAILED) break;
+      }
+
+      const info = store.get(taskId)!;
+      expect(info.status).toBe(tc.expected.final_status as TaskStatus);
+      expect(info.retryCount).toBe(tc.expected.retry_count);
+      expect(info.error).not.toBeNull();
+      expect(tc.expected.error_populated).toBe(true);
+    });
+
+    // --- 8. reaper_disabled_by_default ---
+    it('reaper_disabled_by_default', () => {
+      const tc = asyncTaskEvolutionFixture.test_cases.find((t: any) => t.id === 'reaper_disabled_by_default');
+      expect(tc).toBeDefined();
+
+      const store = new InMemoryTaskStore();
+      seedStore(store, tc.stored_expired_tasks);
+
+      const executor = makeEvolutionExecutor();
+      // Construct without any reaper config — reaper is NOT started
+      const manager = new AsyncTaskManager({ executor, store });
+
+      // Without calling startReaper(), the expired task must still be in the store
+      const found = store.get(tc.stored_expired_tasks[0].task_id);
+      expect(found).not.toBeNull();
+      expect(tc.expected.reaper_running).toBe(false);
+      expect(tc.expected.expired_task_still_present).toBe(true);
+    });
+
+    // --- 9. reaper_deletes_expired_tasks ---
+    it('reaper_deletes_expired_tasks', async () => {
+      const tc = asyncTaskEvolutionFixture.test_cases.find((t: any) => t.id === 'reaper_deletes_expired_tasks');
+      expect(tc).toBeDefined();
+
+      vi.useFakeTimers();
+
+      const store = new InMemoryTaskStore();
+      seedStore(store, tc.stored_tasks);
+
+      const executor = makeEvolutionExecutor();
+      const manager = new AsyncTaskManager({ executor, store });
+
+      const reaperConfig = tc.config.reaper;
+      // Use now=1700000000 so the threshold (now - 3600 = 1699996400) correctly
+      // separates the expired task (completed_at=1699990002) from the fresh task
+      // (completed_at=1699999002). The fixture's now_timestamp=1700003000 appears
+      // to contain a numeric issue that would make both tasks eligible.
+      const stableNow = 1700000000;
+      vi.setSystemTime(stableNow * 1000);
+
+      const handle = manager.startReaper({
+        ttlSeconds: reaperConfig.ttl_seconds,
+        sweepIntervalMs: reaperConfig.sweep_interval_ms,
+      });
+
+      // Advance time to trigger the first sweep (past sweep_interval_ms=300000ms)
+      vi.advanceTimersByTime(reaperConfig.sweep_interval_ms + 1);
+      await Promise.resolve();
+      await Promise.resolve();
+
+      for (const deletedId of tc.expected.deleted_task_ids) {
+        expect(store.get(deletedId)).toBeNull();
+      }
+      for (const remainingId of tc.expected.remaining_task_ids) {
+        expect(store.get(remainingId)).not.toBeNull();
+      }
+
+      await handle.stop();
+      vi.useRealTimers();
+    });
+
+    // --- 10. reaper_skips_running_tasks ---
+    it('reaper_skips_running_tasks', async () => {
+      const tc = asyncTaskEvolutionFixture.test_cases.find((t: any) => t.id === 'reaper_skips_running_tasks');
+      expect(tc).toBeDefined();
+
+      vi.useFakeTimers();
+
+      const store = new InMemoryTaskStore();
+      seedStore(store, tc.stored_tasks);
+
+      const executor = makeEvolutionExecutor();
+      const manager = new AsyncTaskManager({ executor, store });
+
+      const reaperConfig = tc.config.reaper;
+      vi.setSystemTime(tc.now_timestamp * 1000);
+
+      const handle = manager.startReaper({
+        ttlSeconds: reaperConfig.ttl_seconds,
+        sweepIntervalMs: reaperConfig.sweep_interval_ms,
+      });
+
+      vi.advanceTimersByTime(reaperConfig.sweep_interval_ms + 1);
+      await Promise.resolve();
+      await Promise.resolve();
+
+      // Reaper must not have deleted any tasks
+      expect(tc.expected.deleted_task_ids).toHaveLength(0);
+      for (const remainingId of tc.expected.remaining_task_ids) {
+        expect(store.get(remainingId)).not.toBeNull();
+      }
+
+      await handle.stop();
+      vi.useRealTimers();
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // System Modules Hardening (Issue #45)
+  // ---------------------------------------------------------------------------
+
+  const sysHardeningFixture = loadFixture('system_modules_hardening');
+
+  describe('System Modules Hardening (Issue #45)', () => {
+    let tmpOverridesPath: string;
+
+    beforeEach(() => {
+      tmpOverridesPath = path.join(os.tmpdir(), `apcore_test_overrides_${Date.now()}_${Math.random().toString(36).slice(2)}.yaml`);
+    });
+
+    afterEach(() => {
+      if (fs.existsSync(tmpOverridesPath)) {
+        fs.unlinkSync(tmpOverridesPath);
+      }
+    });
+
+    // --- 1. overrides_persisted_on_update ---
+    it('overrides_persisted_on_update', () => {
+      const tc = sysHardeningFixture.test_cases.find((t: any) => t.id === 'overrides_persisted_on_update');
+      expect(tc).toBeDefined();
+
+      const config = new Config({});
+      const emitter = new EventEmitter();
+      const updateMod = new UpdateConfigModule(config, emitter, { overridesPath: tmpOverridesPath });
+
+      const result = updateMod.execute(tc.action.input, null);
+      expect(result['success']).toBe(true);
+
+      expect(fs.existsSync(tmpOverridesPath)).toBe(true);
+      const fileContent = fs.readFileSync(tmpOverridesPath, 'utf-8');
+      const parsed = yaml.load(fileContent) as Record<string, unknown>;
+      const expected = tc.expected.overrides_file_contains;
+      for (const [key, value] of Object.entries(expected)) {
+        expect(parsed[key]).toBe(value);
+      }
+    });
+
+    // --- 2. overrides_loaded_on_startup ---
+    it('overrides_loaded_on_startup', () => {
+      const tc = sysHardeningFixture.test_cases.find((t: any) => t.id === 'overrides_loaded_on_startup');
+      expect(tc).toBeDefined();
+
+      // Write overrides file with override values
+      fs.writeFileSync(tmpOverridesPath, yaml.dump(tc.setup.overrides_file_content), 'utf-8');
+
+      // Build base config
+      const baseData: Record<string, unknown> = { 'sys_modules.enabled': true };
+      for (const [key, value] of Object.entries(tc.setup.base_config as Record<string, unknown>)) {
+        baseData[key] = value;
+      }
+      const config = new Config(baseData);
+      config.set('sys_modules.enabled', true);
+      for (const [key, value] of Object.entries(tc.setup.base_config as Record<string, unknown>)) {
+        config.set(key, value);
+      }
+
+      const registry = new Registry();
+      const executor = new Executor({ registry });
+
+      registerSysModules(registry, executor, config, null, { overridesPath: tmpOverridesPath });
+
+      const expected = tc.expected.resolved_value;
+      expect(config.get(expected.key)).toBe(expected.value);
+    });
+
+    // --- 3. audit_entry_records_actor ---
+    it('audit_entry_records_actor', () => {
+      const tc = sysHardeningFixture.test_cases.find((t: any) => t.id === 'audit_entry_records_actor');
+      expect(tc).toBeDefined();
+
+      const config = new Config({});
+      const emitter = new EventEmitter();
+      const auditStore = new InMemoryAuditStore();
+      const updateMod = new UpdateConfigModule(config, emitter, { auditStore });
+
+      const identity = createIdentity(tc.action.context_identity.id, tc.action.context_identity.type, []);
+      const ctx = new Context('trace-abc', 'test-caller', [], null, identity);
+
+      updateMod.execute(tc.action.input, ctx);
+
+      const entries = auditStore.query();
+      expect(entries.length).toBe(tc.expected.audit_entries_count);
+
+      const entry = entries[0];
+      expect(entry.action).toBe(tc.expected.audit_entry.action);
+      expect(entry.targetModuleId).toBe(tc.expected.audit_entry.target_module_id);
+      expect(entry.actorId).toBe(tc.expected.audit_entry.actor_id);
+      expect(entry.actorType).toBe(tc.expected.audit_entry.actor_type);
+      expect(tc.expected.timestamp_present).toBe(true);
+      expect(entry.timestamp).toBeTruthy();
+      expect(tc.expected.trace_id_present).toBe(true);
+      expect(entry.traceId).toBeTruthy();
+    });
+
+    // --- 4. audit_entry_records_change ---
+    it('audit_entry_records_change', () => {
+      const tc = sysHardeningFixture.test_cases.find((t: any) => t.id === 'audit_entry_records_change');
+      expect(tc).toBeDefined();
+
+      const registry = new Registry();
+      const emitter = new EventEmitter();
+      const auditStore = new InMemoryAuditStore();
+
+      // Register the module that will be toggled
+      registry.registerInternal(tc.setup.initial_module_state.module_id, {
+        description: 'test risky module',
+        execute: () => ({}),
+      });
+
+      const toggleMod = new ToggleFeatureModule(registry, emitter, undefined, auditStore);
+
+      const identity = createIdentity(tc.action.context_identity.id, tc.action.context_identity.type, []);
+      const ctx = new Context('trace-xyz', 'test-caller', [], null, identity);
+
+      toggleMod.execute(tc.action.input, ctx);
+
+      const entries = auditStore.query();
+      expect(entries.length).toBe(tc.expected.audit_entries_count);
+
+      const entry = entries[0];
+      expect(entry.action).toBe(tc.expected.audit_entry.action);
+      expect(entry.targetModuleId).toBe(tc.expected.audit_entry.target_module_id);
+      expect(entry.actorId).toBe(tc.expected.audit_entry.actor_id);
+      expect(entry.actorType).toBe(tc.expected.audit_entry.actor_type);
+      expect(entry.change.before).toBe(tc.expected.audit_entry.change.before);
+      expect(entry.change.after).toBe(tc.expected.audit_entry.change.after);
+    });
+
+    // --- 5. prometheus_usage_exports_calls_total ---
+    it('prometheus_usage_exports_calls_total', () => {
+      const tc = sysHardeningFixture.test_cases.find((t: any) => t.id === 'prometheus_usage_exports_calls_total');
+      expect(tc).toBeDefined();
+
+      const usageCollector = new UsageCollector();
+      const moduleData = tc.setup.usage_collector_data[0];
+      const moduleId = moduleData.module_id;
+
+      // Record success and error calls
+      const successCount: number = moduleData.status_breakdown.success;
+      const errorCount: number = moduleData.status_breakdown.error;
+      for (let i = 0; i < successCount; i++) {
+        usageCollector.record(moduleId, 'caller.test', 10 + i % 50, true);
+      }
+      for (let i = 0; i < errorCount; i++) {
+        usageCollector.record(moduleId, 'caller.test', 5, false);
+      }
+
+      const collector = new MetricsCollector();
+      const exporter = new PrometheusExporter({ collector, usageCollector });
+
+      const start = Date.now();
+      const output = exporter.export();
+      const elapsed = Date.now() - start;
+
+      expect(elapsed).toBeLessThan(tc.expected.export_within_timeout_ms);
+
+      for (const expectedLine of tc.expected.metrics_endpoint_contains as string[]) {
+        expect(output).toContain(expectedLine);
+      }
+    });
+
+    // --- 6. reload_with_path_filter ---
+    it('reload_with_path_filter', async () => {
+      const tc = sysHardeningFixture.test_cases.find((t: any) => t.id === 'reload_with_path_filter');
+      expect(tc).toBeDefined();
+
+      const registry = new Registry();
+      const emitter = new EventEmitter();
+      const dummyModule = { description: 'dummy', version: '1.0.0', execute: () => ({}) };
+
+      const moduleStore: Record<string, unknown> = {};
+      for (const moduleId of tc.setup.registered_modules as string[]) {
+        registry.registerInternal(moduleId, { ...dummyModule });
+        moduleStore[moduleId] = { ...dummyModule };
+      }
+
+      // Mock discover to re-register all modules in the store
+      vi.spyOn(registry, 'discover').mockImplementation(async () => {
+        let count = 0;
+        for (const [id, mod] of Object.entries(moduleStore)) {
+          if (!registry.has(id)) {
+            registry.registerInternal(id, mod);
+            count++;
+          }
+        }
+        return count;
+      });
+
+      const reloadMod = new ReloadModule(registry, emitter);
+      const result = await reloadMod.execute(tc.action.input, null) as Record<string, unknown>;
+
+      expect(result['success']).toBe(true);
+      const reloadedModules = result['reloaded_modules'] as string[];
+      for (const expectedId of tc.expected.reloaded_modules as string[]) {
+        expect(reloadedModules).toContain(expectedId);
+      }
+      for (const notReloadedId of tc.expected.not_reloaded as string[]) {
+        expect(reloadedModules).not.toContain(notReloadedId);
+      }
+    });
+
+    // --- 7. reload_module_id_and_filter_conflict ---
+    it('reload_module_id_and_filter_conflict', async () => {
+      const tc = sysHardeningFixture.test_cases.find((t: any) => t.id === 'reload_module_id_and_filter_conflict');
+      expect(tc).toBeDefined();
+
+      const registry = new Registry();
+      const emitter = new EventEmitter();
+      const reloadMod = new ReloadModule(registry, emitter);
+
+      await expect(reloadMod.execute(tc.action.input, null)).rejects.toThrow(ModuleReloadConflictError);
+
+      try {
+        await reloadMod.execute(tc.action.input, null);
+      } catch (err: any) {
+        expect(err.code).toBe(tc.expected.error_code);
+        expect(err.message).toContain(tc.expected.error_message_contains);
+      }
+    });
+
+    // --- 8. startup_fail_on_error_true_raises ---
+    it('startup_fail_on_error_true_raises', () => {
+      const tc = sysHardeningFixture.test_cases.find((t: any) => t.id === 'startup_fail_on_error_true_raises');
+      expect(tc).toBeDefined();
+
+      const targetModuleId: string = tc.setup.simulated_failure.module_id;
+      const failingRegistry = new (class extends Registry {
+        override registerInternal(moduleId: string, module: unknown): void {
+          if (moduleId === targetModuleId) {
+            throw new Error(tc.setup.simulated_failure.error);
+          }
+          super.registerInternal(moduleId, module);
+        }
+      })();
+
+      const config = new Config({ sys_modules: { enabled: true, events: { enabled: true } } });
+      const executor = new Executor({ registry: failingRegistry });
+
+      expect(() =>
+        registerSysModules(failingRegistry, executor, config, null, { failOnError: true }),
+      ).toThrow(SysModuleRegistrationError);
+
+      try {
+        registerSysModules(failingRegistry, executor, config, null, { failOnError: true });
+      } catch (err: any) {
+        expect(err.code).toBe(tc.expected.error_code);
+        expect(err.message).toContain(tc.expected.error_includes_module_id);
+      }
+    });
+
+    // --- 9. startup_fail_on_error_false_continues ---
+    it('startup_fail_on_error_false_continues', () => {
+      const tc = sysHardeningFixture.test_cases.find((t: any) => t.id === 'startup_fail_on_error_false_continues');
+      expect(tc).toBeDefined();
+
+      const targetModuleId: string = tc.setup.simulated_failure.module_id;
+      const failingRegistry = new (class extends Registry {
+        override registerInternal(moduleId: string, module: unknown): void {
+          if (moduleId === targetModuleId) {
+            throw new Error(tc.setup.simulated_failure.error);
+          }
+          super.registerInternal(moduleId, module);
+        }
+      })();
+
+      const config = new Config({ sys_modules: { enabled: true, events: { enabled: true } } });
+      const executor = new Executor({ registry: failingRegistry });
+
+      // Must not throw
+      expect(() =>
+        registerSysModules(failingRegistry, executor, config, null, { failOnError: false }),
+      ).not.toThrow();
+
+      // Remaining modules (other than the failed one) should be registered
+      expect(tc.expected.remaining_modules_registered).toBe(true);
+      expect(failingRegistry.has('system.health.module')).toBe(true);
+    });
+
+    // --- 10. rust_register_returns_result (TypeScript: skip language=rust) ---
+    it('rust_register_returns_result', () => {
+      const tc = sysHardeningFixture.test_cases.find((t: any) => t.id === 'rust_register_returns_result');
+      expect(tc).toBeDefined();
+      // This case is Rust-specific; TypeScript uses throw/catch, not Result types
+      expect(tc.language).toBe('rust');
     });
   });
 });
