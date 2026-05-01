@@ -515,7 +515,10 @@ export class BuiltinExecute implements Step {
       ctx.context.cancelToken.check();
     }
 
-    // Streaming path: store the generator on ctx.outputStream
+    // Streaming path: store the generator on ctx.outputStream, then skip to
+    // return_result. This matches apcore-python's StepResult(action="skip_to",
+    // skip_to="return_result") so PipelineTrace records steps 9/10 as skipped
+    // rather than normal-continue-with-null-output (sync finding A-D-019).
     if (ctx.stream) {
       const streamFn = mod['stream'] as
         | ((
@@ -525,7 +528,7 @@ export class BuiltinExecute implements Step {
         | undefined;
       if (typeof streamFn === 'function') {
         ctx.outputStream = streamFn.call(mod, ctx.inputs, ctx.context);
-        return { action: 'continue' };
+        return { action: 'skip_to', skipTo: 'return_result' };
       }
       // fallback: execute normally and wrap as single-chunk
     }
