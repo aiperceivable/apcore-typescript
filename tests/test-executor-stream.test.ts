@@ -181,9 +181,11 @@ describe('Executor.stream()', () => {
     expect(afterOutput).toEqual({ a: 'test_a', b: 'test_b' });
   });
 
-  it('throws and routes to onError middleware when post-stream after() throws (Phase-3 rethrow)', async () => {
-    // Fix: post-stream validation / after-middleware exceptions are now re-thrown
-    // after running the onError middleware chain.
+  it('routes to onError middleware and swallows phase-3 after() failure (sync A-D-012)', async () => {
+    // Per spec: chunks are already delivered when phase-3 (post-stream
+    // after-middleware/output validation) runs, so failures MUST NOT be
+    // re-thrown to the consumer. The onError chain still runs for
+    // observability; the error is logged and swallowed.
     const registry = new Registry();
     const mod = createStreamingModule('stream_after_fail');
     registry.register('stream_after_fail', mod);
@@ -200,9 +202,10 @@ describe('Executor.stream()', () => {
     }
 
     const executor = new Executor({ registry, middlewares: [new FailingAfter()] });
-    await expect(
-      collectChunks(executor.stream('stream_after_fail', { name: 'Test' })),
-    ).rejects.toThrow();
+    // Chunks were yielded before phase 3, so consumption succeeds; the
+    // post-stream failure is swallowed (logged via console.warn).
+    const chunks = await collectChunks(executor.stream('stream_after_fail', { name: 'Test' }));
+    expect(chunks.length).toBeGreaterThan(0);
     expect(onErrorCalled).toBe(true);
   });
 
@@ -231,8 +234,10 @@ describe('Executor.stream()', () => {
     expect(chunks).toHaveLength(2);
   });
 
-  it('throws SchemaValidationError after stream when accumulated output fails output schema (Phase-3 rethrow)', async () => {
-    // Module yields chunks that individually pass but accumulated output violates outputSchema
+  it('swallows phase-3 SchemaValidationError when accumulated output is invalid (sync A-D-012)', async () => {
+    // Per spec: phase-3 output schema validation runs AFTER chunks are
+    // delivered. Spec mandates the failure is swallowed (logged) rather
+    // than re-thrown to the consumer.
     const registry = new Registry();
     const streamingMod = new FunctionModule({
       execute: () => ({ count: 1 }),
@@ -249,6 +254,10 @@ describe('Executor.stream()', () => {
     registry.register('phase3.fail', streamingMod);
     const executor = new Executor({ registry });
 
-    await expect(collectChunks(executor.stream('phase3.fail'))).rejects.toBeInstanceOf(SchemaValidationError);
+    // Should NOT throw — invalid chunk is delivered then phase-3 swallows
+    // the validation failure with a console.warn.
+    const chunks = await collectChunks(executor.stream('phase3.fail'));
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0]).toEqual({ count: 'not-a-number' });
   });
 });

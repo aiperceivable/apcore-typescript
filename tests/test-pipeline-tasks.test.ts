@@ -144,12 +144,15 @@ describe('Preset strategy factories', () => {
     deps = makeDeps(makeRegistry());
   });
 
-  it('buildStandardStrategy creates 12-step strategy including toggle_gate', () => {
+  it('buildStandardStrategy creates 11-step strategy with toggle inlined into module_lookup', () => {
     const strategy = buildStandardStrategy(deps);
     expect(strategy.name).toBe('standard');
-    expect(strategy.steps.length).toBe(12);
+    // PROTOCOL_SPEC §5 11-step pipeline; toggle check is inlined into
+    // BuiltinModuleLookup rather than a separate step (sync A-D-011).
+    expect(strategy.steps.length).toBe(11);
     expect(strategy.stepNames()).toContain('context_creation');
-    expect(strategy.stepNames()).toContain('toggle_gate');
+    expect(strategy.stepNames()).not.toContain('toggle_gate');
+    expect(strategy.stepNames()).toContain('module_lookup');
     expect(strategy.stepNames()).toContain('acl_check');
     expect(strategy.stepNames()).toContain('approval_gate');
     expect(strategy.stepNames()).toContain('output_validation');
@@ -236,7 +239,7 @@ describe('Executor.callWithTrace', () => {
     const [output, trace] = await executor.callWithTrace('test.greet', { name: 'Override' }, null, { strategy: stdStrategy });
     expect(output['greeting']).toBe('Hello, Override!');
     expect(trace.strategyName).toBe('standard');
-    expect(trace.steps.length).toBe(12);
+    expect(trace.steps.length).toBe(11);
   });
 
   it('uses default standard strategy when none explicitly set', async () => {

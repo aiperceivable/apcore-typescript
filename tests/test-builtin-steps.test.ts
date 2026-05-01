@@ -495,7 +495,10 @@ describe('BuiltinExecute', () => {
     const mod = makeModule({ stream: streamGen });
     const pctx = makePipelineContext({ module: mod, stream: true });
     const result = await step.execute(pctx);
-    expect(result.action).toBe('continue');
+    // Stream path returns skip_to=return_result so post-execute steps record as
+    // skipped in PipelineTrace, matching apcore-python (sync A-D-019).
+    expect(result.action).toBe('skip_to');
+    expect((result as { skipTo?: string }).skipTo).toBe('return_result');
     expect(pctx.outputStream).toBeDefined();
   });
 });
@@ -623,7 +626,8 @@ describe('buildStandardStrategy', () => {
       middlewareManager: mm,
     });
     expect(strategy.name).toBe('standard');
-    expect(strategy.steps).toHaveLength(12);
+    // PROTOCOL_SPEC §5 11-step pipeline; toggle check inlined into module_lookup (sync A-D-011)
+    expect(strategy.steps).toHaveLength(11);
   });
 
   it('has steps in the correct order', () => {
@@ -637,11 +641,11 @@ describe('buildStandardStrategy', () => {
       middlewareManager: mm,
     });
     const names = strategy.stepNames();
+    // PROTOCOL_SPEC §5 11-step pipeline (sync A-D-011)
     expect(names).toEqual([
       'context_creation',
       'call_chain_guard',
       'module_lookup',
-      'toggle_gate',
       'acl_check',
       'approval_gate',
       'middleware_before',
@@ -664,17 +668,20 @@ describe('buildStandardStrategy', () => {
       middlewareManager: mm,
     });
     const steps = strategy.steps;
-    // removable=false: context_creation[0], module_lookup[2], execute[8], return_result[11]
+    // 11-step pipeline indexes (toggle inlined into module_lookup, sync A-D-011):
+    // [0] context_creation, [1] call_chain_guard, [2] module_lookup,
+    // [3] acl_check, [4] approval_gate, [5] middleware_before,
+    // [6] input_validation, [7] execute, [8] output_validation,
+    // [9] middleware_after, [10] return_result
     expect(steps[0].removable).toBe(false);   // context_creation
     expect(steps[2].removable).toBe(false);   // module_lookup
-    expect(steps[8].removable).toBe(false);   // execute
-    expect(steps[11].removable).toBe(false);  // return_result
+    expect(steps[7].removable).toBe(false);   // execute
+    expect(steps[10].removable).toBe(false);  // return_result
 
-    // replaceable=false: context_creation[0], module_lookup[2], middleware_before[6], middleware_after[10], return_result[11]
     expect(steps[0].replaceable).toBe(false);  // context_creation
     expect(steps[2].replaceable).toBe(false);  // module_lookup
-    expect(steps[6].replaceable).toBe(false);  // middleware_before
-    expect(steps[10].replaceable).toBe(false); // middleware_after
-    expect(steps[11].replaceable).toBe(false); // return_result
+    expect(steps[5].replaceable).toBe(false);  // middleware_before
+    expect(steps[9].replaceable).toBe(false);  // middleware_after
+    expect(steps[10].replaceable).toBe(false); // return_result
   });
 });
