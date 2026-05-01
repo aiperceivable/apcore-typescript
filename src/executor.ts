@@ -531,15 +531,20 @@ export class Executor {
         await this._pipelineEngine.run(postStrategy, pipeCtx);
       } catch (exc) {
         if (exc instanceof ExecutionCancelledError) throw exc;
-        // Chunks already yielded cannot be un-yielded, but silently swallowing
-        // hides real schema violations and after-middleware failures. Rethrow so
-        // the consumer's async-iteration loop surfaces the error on the final
-        // next() call (post-completion rejection in an async generator).
+        // Chunks are already delivered to the caller and cannot be recalled.
+        // Swallow the phase-3 error and log a warning — matches apcore-python
+        // executor.py:920 which emits an ApCoreEvent("apcore.stream.post_validation_failed")
+        // and does NOT re-raise (sync finding A-D-012).
+        // TODO: emit ApCoreEvent via injected EventEmitter when Executor gains
+        // an optional eventEmitter constructor field (pending architectural wiring).
         const ctxObj = pipeCtx.context;
         const unwrappedPost = exc instanceof PipelineStepError
           ? (exc.cause instanceof Error ? exc.cause : exc)
           : exc;
         const wrapped = propagateError(unwrappedPost as Error, moduleId, ctxObj);
+        console.warn(
+          `[apcore:executor] stream phase-3 failure for '${moduleId}' (chunks already delivered): ${wrapped.message}`,
+        );
         if (pipeCtx.executedMiddlewares && pipeCtx.executedMiddlewares.length > 0) {
           this._middlewareManager.executeOnError(
             moduleId,
@@ -549,7 +554,7 @@ export class Executor {
             pipeCtx.executedMiddlewares as Middleware[],
           );
         }
-        throw wrapped;
+        // Do not rethrow — phase-3 errors are swallowed per spec.
       }
     }
   }
