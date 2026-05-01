@@ -1,6 +1,6 @@
 {
   "name": "apcore-js",
-  "version": "0.19.0",
+  "version": "0.20.0",
   "description": "AI-Perceivable Core — schema-driven module standard",
   "type": "module",
   "main": "./dist/index.js",
