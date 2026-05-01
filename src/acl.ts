@@ -44,6 +44,9 @@ export interface AuditEntry {
   readonly roles: readonly string[];
   readonly callDepth: number | null;
   readonly traceId: string | null;
+  /** Error message from a condition handler that threw during evaluation, if any.
+   *  Cross-language parity with apcore-python AuditEntry.handler_error (sync A-D-024). */
+  readonly handlerError: string | null;
 }
 
 export type AuditLogger = (entry: AuditEntry) => void;
@@ -298,6 +301,7 @@ export class ACL {
     matchedRule: ACLRule | null,
     matchedRuleIndex: number | null,
     context: Context | null,
+    handlerError: string | null = null,
   ): AuditEntry {
     let identityType: string | null = null;
     let roles: readonly string[] = [];
@@ -325,6 +329,7 @@ export class ACL {
       roles,
       callDepth,
       traceId,
+      handlerError,
     };
   }
 
