@@ -178,19 +178,26 @@ export class BuiltinCallChainGuard implements Step {
 // 3. BuiltinModuleLookup
 // ---------------------------------------------------------------------------
 
-/** Resolves the module from the registry and sets ctx.module. */
+/** Resolves the module from the registry and sets ctx.module.
+ *
+ * Also checks the toggle state and raises ModuleDisabledError if the module
+ * has been disabled — inlined here to match the 11-step pipeline spec and
+ * apcore-python/apcore-rust implementations (sync finding A-D-011).
+ */
 export class BuiltinModuleLookup implements Step {
   readonly name = 'module_lookup';
-  readonly description = 'Resolve module from registry';
+  readonly description = 'Resolve module from registry, enforce toggle state';
   readonly removable = false;
   readonly replaceable = false;
   readonly pure = true;
   readonly provides = ['module'] as const;
 
   private _registry: Registry;
+  private readonly _toggleState: ToggleState;
 
-  constructor(registry: Registry) {
+  constructor(registry: Registry, toggleState?: ToggleState) {
     this._registry = registry;
+    this._toggleState = toggleState ?? DEFAULT_TOGGLE_STATE;
   }
 
   async execute(ctx: PipelineContext): Promise<StepResult> {
@@ -198,6 +205,13 @@ export class BuiltinModuleLookup implements Step {
     if (mod === null) {
       throw new ModuleNotFoundError(ctx.moduleId);
     }
+
+    // Inline toggle check — matches apcore-python builtin_steps.py:231 and
+    // apcore-rust builtin_steps.rs:219 (sync finding A-D-011).
+    if (this._toggleState.isDisabled(ctx.moduleId)) {
+      throw new ModuleDisabledError(ctx.moduleId);
+    }
+
     ctx.module = mod;
 
     // Early input redaction: set context.redactedInputs BEFORE middleware
@@ -677,13 +691,16 @@ export interface StandardStrategyDeps {
   toggleState?: ToggleState | null;
 }
 
-/** Build the standard 12-step execution strategy matching the current Executor. */
+/** Build the standard 11-step execution strategy matching PROTOCOL_SPEC §5 pipeline.
+ *
+ * Toggle-state check is inlined inside BuiltinModuleLookup (step 3), matching
+ * apcore-python and apcore-rust 11-step implementations (sync finding A-D-011).
+ */
 export function buildStandardStrategy(deps: StandardStrategyDeps): ExecutionStrategy {
   return new ExecutionStrategy('standard', [
     new BuiltinContextCreation(deps.config),
     new BuiltinCallChainGuard(deps.config),
-    new BuiltinModuleLookup(deps.registry),
-    new BuiltinToggleGate(deps.toggleState ?? undefined),
+    new BuiltinModuleLookup(deps.registry, deps.toggleState ?? undefined),
     new BuiltinACLCheck(deps.acl),
     new BuiltinApprovalGate(deps.approvalHandler),
     new BuiltinMiddlewareBefore(deps.middlewareManager),
@@ -703,7 +720,7 @@ export function buildInternalStrategy(deps: StandardStrategyDeps): ExecutionStra
   return new ExecutionStrategy('internal', [
     new BuiltinContextCreation(deps.config),
     new BuiltinCallChainGuard(deps.config),
-    new BuiltinModuleLookup(deps.registry),
+    new BuiltinModuleLookup(deps.registry, deps.toggleState ?? undefined),
     new BuiltinMiddlewareBefore(deps.middlewareManager),
     new BuiltinInputValidation(),
     new BuiltinExecute(deps.config),
@@ -720,7 +737,7 @@ export function buildInternalStrategy(deps: StandardStrategyDeps): ExecutionStra
 export function buildTestingStrategy(deps: StandardStrategyDeps): ExecutionStrategy {
   return new ExecutionStrategy('testing', [
     new BuiltinContextCreation(deps.config),
-    new BuiltinModuleLookup(deps.registry),
+    new BuiltinModuleLookup(deps.registry, deps.toggleState ?? undefined),
     new BuiltinMiddlewareBefore(deps.middlewareManager),
     new BuiltinInputValidation(),
     new BuiltinExecute(deps.config),
@@ -732,14 +749,14 @@ export function buildTestingStrategy(deps: StandardStrategyDeps): ExecutionStrat
 
 /**
  * Build a performance strategy: skips middleware before/after for reduced overhead.
- * Retains toggle gate, ACL, approval, and validation for correctness.
+ * Retains toggle state, ACL, approval, and validation for correctness.
+ * Toggle-state check is inlined in BuiltinModuleLookup (sync finding A-D-011).
  */
 export function buildPerformanceStrategy(deps: StandardStrategyDeps): ExecutionStrategy {
   return new ExecutionStrategy('performance', [
     new BuiltinContextCreation(deps.config),
     new BuiltinCallChainGuard(deps.config),
-    new BuiltinModuleLookup(deps.registry),
-    new BuiltinToggleGate(deps.toggleState ?? undefined),
+    new BuiltinModuleLookup(deps.registry, deps.toggleState ?? undefined),
     new BuiltinACLCheck(deps.acl),
     new BuiltinApprovalGate(deps.approvalHandler),
     new BuiltinInputValidation(),

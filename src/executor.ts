@@ -13,6 +13,7 @@ import { ExecutionCancelledError } from './cancel.js';
 import {
   InvalidInputError,
   ModuleError,
+  ModuleTimeoutError,
 } from './errors.js';
 import { AfterMiddleware, BeforeMiddleware, Middleware } from './middleware/index.js';
 import { MiddlewareChainError, MiddlewareManager } from './middleware/manager.js';
@@ -492,8 +493,14 @@ export class Executor {
     // Phase 2: Iterate stream, accumulate chunks
     const outputStream = pipeCtx.outputStream as AsyncGenerator<Record<string, unknown>>;
     const accumulated: Record<string, unknown> = {};
+    const globalDeadline = pipeCtx.context?.globalDeadline ?? null;
     try {
       for await (const chunk of outputStream) {
+        // Enforce global_deadline between chunks — matches apcore-python
+        // executor.py:872-879 (sync finding A-D-014).
+        if (globalDeadline !== null && Date.now() / 1000 > globalDeadline) {
+          throw new ModuleTimeoutError(moduleId, 0);
+        }
         deepMergeChunk(accumulated, chunk as Record<string, unknown>);
         yield chunk;
       }
