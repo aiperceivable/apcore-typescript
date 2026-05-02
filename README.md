@@ -80,6 +80,39 @@ const preflight = await client.validate('math.add', { a: 10, b: 5 });
 // => { valid: true, checks: [...], requiresApproval: false, errors: [] }
 ```
 
+### Enabling sys_modules for control/events APIs
+
+`APCore.disable`, `APCore.enable`, `APCore.on`, and `APCore.off` are gated on the
+optional system-modules subsystem. They require a `Config` instance with
+`sys_modules.enabled: true` to be passed into the `APCore` constructor —
+otherwise the calls throw with a clear "sys_modules must be enabled" message.
+
+```typescript
+import { APCore, Config } from 'apcore-js';
+
+// Inline config (equivalent to writing the same YAML and calling Config.load):
+const config = new Config({
+  sys_modules: {
+    enabled: true,
+    // Optional sub-systems:
+    events: { enabled: true },     // required for on/off (event emitter)
+    control: { enabled: true },    // required for disable/enable (toggle)
+  },
+});
+
+const client = new APCore({ config });
+
+// Now safe to call:
+await client.disable('math.add');
+await client.enable('math.add');
+client.on('apcore.module.disabled', (event) => {
+  console.log('Disabled:', event.data);
+});
+```
+
+If you do not need these control/events APIs, omit the `Config` entirely (as in
+the basic Quick Start above).
+
 ### Advanced: Manual Registry + Executor
 
 ```typescript
@@ -106,7 +139,7 @@ const result = await executor.call('example.greet', { name: 'World' });
 
 | Class | Description |
 |-------|-------------|
-| `APCore` | High-level client — register modules, call, stream, validate, listModules, describe, on/off, disable/enable |
+| `APCore` | High-level client — register modules, call, stream, validate, listModules, describe, on/off, disable/enable. Note: `disable`, `enable`, `on`, and `off` require `sys_modules.enabled: true` in the `Config` passed to `APCore` (see [Quick Start: Enabling sys_modules](#enabling-sys_modules-for-controlevents-apis)). |
 | `Registry` | Module storage — discover, register, get, list, watch |
 | `Executor` | Execution engine — call with middleware pipeline, ACL, approval |
 | `Context` | Request context — trace ID, identity, call chain, cancel token |
