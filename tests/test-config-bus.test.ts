@@ -326,6 +326,59 @@ describe('Config namespace defaults', () => {
   });
 });
 
+describe('Config namespace schema validation', () => {
+  // Regression: sync finding A-D-021 — namespace-mode validate() must enforce
+  // each registered namespace's schema (parity with apcore-python). Previously
+  // TS validate() in namespace mode only checked CONSTRAINTS on data.apcore.
+
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'apcore-ns-schema-'));
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('rejects YAML data that violates a registered namespace schema', () => {
+    const nsName = `test_schema_ns_${Date.now()}`;
+    Config.registerNamespace({
+      name: nsName,
+      schema: {
+        type: 'object',
+        properties: {
+          port: { type: 'integer', minimum: 1, maximum: 65535 },
+        },
+        required: ['port'],
+        additionalProperties: false,
+      },
+      defaults: { port: 8080 },
+    });
+
+    const yamlPath = path.join(tmpDir, 'bad.yaml');
+    fs.writeFileSync(yamlPath, `apcore:\n  version: "1.0.0"\n${nsName}:\n  port: "not-a-number"\n`);
+    expect(() => Config.load(yamlPath, { validate: true })).toThrow(ConfigError);
+  });
+
+  it('accepts YAML data that satisfies the registered namespace schema', () => {
+    const nsName = `test_schema_ok_${Date.now()}`;
+    Config.registerNamespace({
+      name: nsName,
+      schema: {
+        type: 'object',
+        properties: { port: { type: 'integer' } },
+        required: ['port'],
+      },
+      defaults: { port: 8080 },
+    });
+
+    const yamlPath = path.join(tmpDir, 'good.yaml');
+    fs.writeFileSync(yamlPath, `apcore:\n  version: "1.0.0"\n${nsName}:\n  port: 9000\n`);
+    expect(() => Config.load(yamlPath, { validate: true })).not.toThrow();
+  });
+});
+
 describe('Config namespace env dispatch', () => {
   const envKeys: string[] = [];
 

@@ -4,6 +4,8 @@
  */
 
 import yaml from 'js-yaml';
+import { SchemaValidator } from './schema/validator.js';
+import { jsonSchemaToTypeBox } from './schema/loader.js';
 import {
   ConfigError,
   ConfigNotFoundError,
@@ -861,10 +863,11 @@ export class Config {
   }
 
   private _validateNamespaceMode(): void {
+    const errors: string[] = [];
+
     const apcore = this._data['apcore'];
     if (apcore !== undefined && apcore !== null) {
       // Run A12 checks on data.apcore subtree
-      const errors: string[] = [];
       const apcoreData = apcore as Record<string, unknown>;
       for (const [field, [checkFn, errMsg]] of Object.entries(CONSTRAINTS)) {
         const value = getNested(apcoreData, field);
@@ -872,12 +875,29 @@ export class Config {
           errors.push(`Invalid value for 'apcore.${field}': ${errMsg} (got ${JSON.stringify(value)})`);
         }
       }
-      if (errors.length > 0) {
-        throw new ConfigError(
-          `Configuration validation failed (${errors.length} error(s)):\n` +
-          errors.map((e) => `  - ${e}`).join('\n'),
-        );
-      }
+    }
+
+    // Per-namespace schema validation (sync finding A-D-021).
+    // Each registered namespace with a non-null schema validates its data subtree
+    // against that schema. Mirrors apcore-python's _validate_namespace_schema.
+    // Errors accumulate before raising so all problems surface in one ConfigError.
+    for (const reg of _globalNsRegistry.values()) {
+      if (reg.schema === null) continue;
+      const nsData = this._data[reg.name];
+      if (nsData === undefined || nsData === null) continue;
+
+      const loadedSchema = this._loadNamespaceSchema(reg.name, reg.schema);
+      if (loadedSchema === null) continue;  // unresolved file path → warn-and-skip
+
+      const issues = this._validateAgainstJsonSchema(reg.name, nsData, loadedSchema);
+      errors.push(...issues);
+    }
+
+    if (errors.length > 0) {
+      throw new ConfigError(
+        `Configuration validation failed (${errors.length} error(s)):\n` +
+        errors.map((e) => `  - ${e}`).join('\n'),
+      );
     }
 
     // Strict mode: reject unknown namespaces
@@ -897,6 +917,75 @@ export class Config {
         }
       }
     }
+  }
+
+  /**
+   * Resolve a namespace's `schema` registration into a JSON-schema dict.
+   *
+   * Accepts either an inline object or a filesystem path to a JSON file.
+   * Path resolution failures emit a warning and return null (no validation
+   * is performed for that namespace), mirroring apcore-python's
+   * `_validate_namespace_schema` warn-and-skip behavior on missing files.
+   */
+  private _loadNamespaceSchema(
+    namespace: string,
+    schema: object | string,
+  ): Record<string, unknown> | null {
+    if (typeof schema === 'object' && schema !== null) {
+      return schema as Record<string, unknown>;
+    }
+    if (typeof schema === 'string') {
+      try {
+        // Avoid eager top-level `node:fs` import — file-mode schemas are uncommon
+        // and the dynamic require keeps the browser bundle clean.
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const fs = require('node:fs') as typeof import('node:fs');
+        if (!fs.existsSync(schema)) {
+          console.warn(`[apcore:config] Schema file for namespace '${namespace}' not found: ${schema}`);
+          return null;
+        }
+        const raw = fs.readFileSync(schema, 'utf-8');
+        return JSON.parse(raw) as Record<string, unknown>;
+      } catch (e) {
+        console.warn(
+          `[apcore:config] Failed to load schema file for namespace '${namespace}': ${e instanceof Error ? e.message : String(e)}`,
+        );
+        return null;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Validate `data` against a JSON-schema dict. Returns a list of human-readable
+   * error messages prefixed with the namespace name; empty array on success.
+   *
+   * Uses the existing `SchemaValidator` (TypeBox-backed) by converting the JSON
+   * schema via `jsonSchemaToTypeBox`. Any conversion failure is treated as an
+   * accept-all (with a warning) so an unsupported schema feature does not block
+   * `validate()`.
+   */
+  private _validateAgainstJsonSchema(
+    namespace: string,
+    data: unknown,
+    schema: Record<string, unknown>,
+  ): string[] {
+    let typeBoxSchema;
+    try {
+      typeBoxSchema = jsonSchemaToTypeBox(schema);
+    } catch (e) {
+      console.warn(
+        `[apcore:config] Could not convert schema for namespace '${namespace}' to TypeBox; skipping validation: ${e instanceof Error ? e.message : String(e)}`,
+      );
+      return [];
+    }
+
+    const validator = new SchemaValidator(/* coerceTypes */ false);
+    const result = validator.validate(data as Record<string, unknown>, typeBoxSchema);
+    if (result.valid) return [];
+    return result.errors.map(
+      (err) => `Namespace '${namespace}' failed schema validation at '${err.path || '/'}': ${err.message}`,
+    );
   }
 
   /**
