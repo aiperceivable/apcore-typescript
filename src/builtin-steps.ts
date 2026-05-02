@@ -452,7 +452,7 @@ export class BuiltinMiddlewareBefore implements Step {
 
   async execute(ctx: PipelineContext): Promise<StepResult> {
     try {
-      const [effectiveInputs, executedMiddlewares] = this._middlewareManager.executeBefore(
+      const [effectiveInputs, executedMiddlewares] = await this._middlewareManager.executeBefore(
         ctx.moduleId,
         ctx.inputs,
         ctx.context,
@@ -463,7 +463,7 @@ export class BuiltinMiddlewareBefore implements Step {
       if (e instanceof MiddlewareChainError) {
         ctx.executedMiddlewares = e.executedMiddlewares;
         // Try on_error recovery
-        const recovery = this._middlewareManager.executeOnError(
+        const recovery = await this._middlewareManager.executeOnError(
           ctx.moduleId,
           ctx.inputs,
           e.original,
@@ -656,7 +656,7 @@ export class BuiltinMiddlewareAfter implements Step {
     }
 
     const output = ctx.output;
-    const transformed = this._middlewareManager.executeAfter(
+    const transformed = await this._middlewareManager.executeAfter(
       ctx.moduleId,
       ctx.inputs,
       output,

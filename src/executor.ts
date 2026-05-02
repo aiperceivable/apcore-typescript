@@ -357,7 +357,7 @@ export class Executor {
         const wrapped = propagateError(underlying, moduleId, ctxObj);
         const executedMw = pipeCtx.executedMiddlewares;
         if (executedMw && executedMw.length > 0) {
-          const recovery = this._middlewareManager.executeOnError(
+          const recovery = await this._middlewareManager.executeOnError(
             moduleId, pipeCtx.inputs, wrapped as Error, ctxObj, executedMw as Middleware[],
           );
           if (recovery instanceof RetrySignal) {
@@ -501,7 +501,7 @@ export class Executor {
         : exc;
       const wrapped = propagateError(unwrapped as Error, moduleId, ctxObj);
       if (pipeCtx.executedMiddlewares && pipeCtx.executedMiddlewares.length > 0) {
-        const recovery = this._middlewareManager.executeOnError(
+        const recovery = await this._middlewareManager.executeOnError(
           moduleId, pipeCtx.inputs, wrapped as Error, ctxObj, pipeCtx.executedMiddlewares as Middleware[],
         );
         // RetrySignal is not supported in stream mode — re-running a stream
@@ -549,7 +549,7 @@ export class Executor {
       const ctxObj = pipeCtx.context;
       const wrapped = propagateError(exc as Error, moduleId, ctxObj);
       if (pipeCtx.executedMiddlewares && pipeCtx.executedMiddlewares.length > 0) {
-        const recovery = this._middlewareManager.executeOnError(
+        const recovery = await this._middlewareManager.executeOnError(
           moduleId, pipeCtx.inputs, wrapped as Error, ctxObj, pipeCtx.executedMiddlewares as Middleware[],
         );
         // RetrySignal not supported mid-stream (sync finding A-D-017).
@@ -587,7 +587,7 @@ export class Executor {
           `[apcore:executor] stream phase-3 failure for '${moduleId}' (chunks already delivered): ${wrapped.message}`,
         );
         if (pipeCtx.executedMiddlewares && pipeCtx.executedMiddlewares.length > 0) {
-          this._middlewareManager.executeOnError(
+          await this._middlewareManager.executeOnError(
             moduleId,
             pipeCtx.inputs,
             wrapped as Error,

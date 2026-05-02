@@ -84,65 +84,138 @@ describe('MiddlewareManager', () => {
     expect(mgr.remove(new Middleware())).toBe(false);
   });
 
-  it('executeBefore runs in forward order', () => {
+  it('executeBefore runs in forward order', async () => {
     const mgr = new MiddlewareManager();
     mgr.add(new TaggingMiddleware('A'));
     mgr.add(new TaggingMiddleware('B'));
     mgr.add(new TaggingMiddleware('C'));
     const ctx = makeContext();
-    const [result, executed] = mgr.executeBefore('mod.test', { trail: '' }, ctx);
+    const [result, executed] = await mgr.executeBefore('mod.test', { trail: '' }, ctx);
     expect(result['trail']).toBe('ABC');
     expect(executed).toHaveLength(3);
   });
 
-  it('executeBefore passes original inputs when all return null', () => {
+  it('executeBefore passes original inputs when all return null', async () => {
     const mgr = new MiddlewareManager();
     mgr.add(new Middleware());
     mgr.add(new Middleware());
     const ctx = makeContext();
-    const [result] = mgr.executeBefore('mod.test', { x: 42 }, ctx);
+    const [result] = await mgr.executeBefore('mod.test', { x: 42 }, ctx);
     expect(result).toEqual({ x: 42 });
   });
 
-  it('executeAfter runs in reverse order', () => {
+  it('executeAfter runs in reverse order', async () => {
     const mgr = new MiddlewareManager();
     mgr.add(new TaggingMiddleware('A'));
     mgr.add(new TaggingMiddleware('B'));
     mgr.add(new TaggingMiddleware('C'));
     const ctx = makeContext();
-    const result = mgr.executeAfter('mod.test', {}, { trail: '' }, ctx);
+    const result = await mgr.executeAfter('mod.test', {}, { trail: '' }, ctx);
     expect(result['trail']).toBe('CBA');
   });
 
-  it('executeAfter passes original output when all return null', () => {
+  it('executeAfter passes original output when all return null', async () => {
     const mgr = new MiddlewareManager();
     mgr.add(new Middleware());
     const ctx = makeContext();
-    const result = mgr.executeAfter('mod.test', {}, { y: 99 }, ctx);
+    const result = await mgr.executeAfter('mod.test', {}, { y: 99 }, ctx);
     expect(result).toEqual({ y: 99 });
   });
 
-  it('executeOnError returns first non-null recovery (reverse order)', () => {
+  it('executeOnError returns first non-null recovery (reverse order)', async () => {
     const mgr = new MiddlewareManager();
     const mwA = new RecoveringMiddleware({ recovered: 'A' });
     const mwB = new RecoveringMiddleware({ recovered: 'B' });
     mgr.add(mwA);
     mgr.add(mwB);
     const ctx = makeContext();
-    const result = mgr.executeOnError('mod.test', {}, new Error('oops'), ctx, [mwA, mwB]);
+    const result = await mgr.executeOnError('mod.test', {}, new Error('oops'), ctx, [mwA, mwB]);
     expect(result).toEqual({ recovered: 'B' });
   });
 
-  it('executeOnError returns null when no recovery', () => {
+  it('executeOnError returns null when no recovery', async () => {
     const mgr = new MiddlewareManager();
     const mw = new Middleware();
     mgr.add(mw);
     const ctx = makeContext();
-    const result = mgr.executeOnError('mod.test', {}, new Error('oops'), ctx, [mw]);
+    const result = await mgr.executeOnError('mod.test', {}, new Error('oops'), ctx, [mw]);
     expect(result).toBeNull();
   });
 
-  it('executeOnError swallows errors in onError handlers', () => {
+  it('executeBefore awaits async middleware result (sync A-D-403)', async () => {
+    class AsyncBeforeMw extends Middleware {
+      override before(
+        _moduleId: string,
+        inputs: Record<string, unknown>,
+      ): Record<string, unknown> | null {
+        // Real Promise — manager must await, not pass the Promise itself
+        // through as currentInputs.
+        return (Promise.resolve({ ...inputs, asyncTouched: true }) as unknown) as
+          Record<string, unknown> | null;
+      }
+    }
+    const mgr = new MiddlewareManager();
+    mgr.add(new AsyncBeforeMw());
+    const ctx = makeContext();
+    const [result] = await mgr.executeBefore('mod.test', { x: 1 }, ctx);
+    // If manager forgot to await, result['asyncTouched'] would be undefined and
+    // result itself would be the unresolved Promise.
+    expect(result['asyncTouched']).toBe(true);
+    expect(result['x']).toBe(1);
+  });
+
+  it('executeAfter awaits async middleware result (sync A-D-403)', async () => {
+    class AsyncAfterMw extends Middleware {
+      override after(
+        _moduleId: string,
+        _inputs: Record<string, unknown>,
+        output: Record<string, unknown>,
+      ): Record<string, unknown> | null {
+        return (Promise.resolve({ ...output, asyncMutated: true }) as unknown) as
+          Record<string, unknown> | null;
+      }
+    }
+    const mgr = new MiddlewareManager();
+    mgr.add(new AsyncAfterMw());
+    const ctx = makeContext();
+    const result = await mgr.executeAfter('mod.test', {}, { y: 2 }, ctx);
+    expect(result['asyncMutated']).toBe(true);
+    expect(result['y']).toBe(2);
+  });
+
+  it('executeOnError awaits async recovery (sync A-D-403)', async () => {
+    class AsyncRecoverMw extends Middleware {
+      override onError(): Record<string, unknown> | null {
+        return (Promise.resolve({ recovered: 'async-yes' }) as unknown) as
+          Record<string, unknown> | null;
+      }
+    }
+    const mgr = new MiddlewareManager();
+    const mw = new AsyncRecoverMw();
+    mgr.add(mw);
+    const ctx = makeContext();
+    const result = await mgr.executeOnError('mod.test', {}, new Error('x'), ctx, [mw]);
+    // If we forgot to await, result would be a Promise instance, not the dict.
+    expect(result).toEqual({ recovered: 'async-yes' });
+  });
+
+  it('executeOnError treats undefined as no-recovery (sync A-D-404)', async () => {
+    // Arrow function returning undefined must NOT trigger the recovery path.
+    class UndefinedReturnMw extends Middleware {
+      override onError(): Record<string, unknown> | null {
+        return undefined as unknown as null;
+      }
+    }
+    const mgr = new MiddlewareManager();
+    const mw = new UndefinedReturnMw();
+    mgr.add(mw);
+    const ctx = makeContext();
+    const result = await mgr.executeOnError('mod.test', {}, new Error('x'), ctx, [mw]);
+    // Strict spec: only a real object or RetrySignal counts as recovery.
+    expect(result).toBeNull();
+  });
+
+  it('executeOnError swallows errors in onError handlers', async () => {
     class ThrowingOnError extends Middleware {
       override onError(): Record<string, unknown> | null {
         throw new Error('onError also failed');
@@ -154,11 +227,11 @@ describe('MiddlewareManager', () => {
     mgr.add(mwRecover);
     mgr.add(mwThrow);
     const ctx = makeContext();
-    const result = mgr.executeOnError('mod.test', {}, new Error('original'), ctx, [mwRecover, mwThrow]);
+    const result = await mgr.executeOnError('mod.test', {}, new Error('original'), ctx, [mwRecover, mwThrow]);
     expect(result).toEqual({ safe: true });
   });
 
-  it('MiddlewareChainError wraps before() failure', () => {
+  it('MiddlewareChainError wraps before() failure', async () => {
     class FailingBefore extends Middleware {
       override before(): Record<string, unknown> | null {
         throw new Error('before exploded');
@@ -173,7 +246,7 @@ describe('MiddlewareManager', () => {
 
     let caught: MiddlewareChainError | undefined;
     try {
-      mgr.executeBefore('mod.test', { trail: '' }, ctx);
+      await mgr.executeBefore('mod.test', { trail: '' }, ctx);
     } catch (e) {
       caught = e as MiddlewareChainError;
     }
@@ -184,43 +257,43 @@ describe('MiddlewareManager', () => {
   });
 
   describe('priority ordering', () => {
-    it('higher priority middleware executes first in before()', () => {
+    it('higher priority middleware executes first in before()', async () => {
       const mgr = new MiddlewareManager();
       mgr.add(new TaggingMiddleware('Low', 100));
       mgr.add(new TaggingMiddleware('High', 500));
       mgr.add(new TaggingMiddleware('Mid', 300));
       const ctx = makeContext();
-      const [result] = mgr.executeBefore('mod.test', { trail: '' }, ctx);
+      const [result] = await mgr.executeBefore('mod.test', { trail: '' }, ctx);
       // Sorted by priority descending: High(500), Mid(300), Low(100)
       expect(result['trail']).toBe('HighMidLow');
     });
 
-    it('equal priority preserves registration order', () => {
+    it('equal priority preserves registration order', async () => {
       const mgr = new MiddlewareManager();
       mgr.add(new TaggingMiddleware('First', 100));
       mgr.add(new TaggingMiddleware('Second', 100));
       mgr.add(new TaggingMiddleware('Third', 100));
       const ctx = makeContext();
-      const [result] = mgr.executeBefore('mod.test', { trail: '' }, ctx);
+      const [result] = await mgr.executeBefore('mod.test', { trail: '' }, ctx);
       expect(result['trail']).toBe('FirstSecondThird');
     });
 
-    it('lower priority middleware is ordered after higher priority', () => {
+    it('lower priority middleware is ordered after higher priority', async () => {
       const mgr = new MiddlewareManager();
       mgr.add(new TaggingMiddleware('Default', 100));
       mgr.add(new TaggingMiddleware('Prioritized', 101));
       const ctx = makeContext();
-      const [result] = mgr.executeBefore('mod.test', { trail: '' }, ctx);
+      const [result] = await mgr.executeBefore('mod.test', { trail: '' }, ctx);
       expect(result['trail']).toBe('PrioritizedDefault');
     });
 
-    it('executeAfter runs in reverse priority order (lowest priority first)', () => {
+    it('executeAfter runs in reverse priority order (lowest priority first)', async () => {
       const mgr = new MiddlewareManager();
       mgr.add(new TaggingMiddleware('Low', 100));
       mgr.add(new TaggingMiddleware('High', 500));
       mgr.add(new TaggingMiddleware('Mid', 300));
       const ctx = makeContext();
-      const result = mgr.executeAfter('mod.test', {}, { trail: '' }, ctx);
+      const result = await mgr.executeAfter('mod.test', {}, { trail: '' }, ctx);
       // Internal order is [High, Mid, Low]; after() reverses: Low, Mid, High
       expect(result['trail']).toBe('LowMidHigh');
     });
