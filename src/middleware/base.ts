@@ -4,6 +4,25 @@
 
 import type { Context } from '../context.js';
 
+/**
+ * Return value from `Middleware.onError` requesting a retry.
+ *
+ * Distinct from returning a plain object — a plain object is interpreted by
+ * `MiddlewareManager` as the *final recovery output* of the call. A
+ * `RetrySignal` instead asks the executor to re-run the module with the
+ * given inputs; no recovery output is produced.
+ *
+ * Cross-language parity with apcore-python `apcore.middleware.RetrySignal`
+ * and apcore-rust `apcore::middleware::RetrySignal` (sync finding A-D-017).
+ */
+export class RetrySignal {
+  readonly inputs: Record<string, unknown>;
+
+  constructor(inputs: Record<string, unknown>) {
+    this.inputs = inputs;
+  }
+}
+
 export class Middleware {
   /**
    * Execution priority (0-1000). Higher priority executes first.
@@ -42,7 +61,7 @@ export class Middleware {
     _inputs: Record<string, unknown>,
     _error: Error,
     _context: Context,
-  ): Record<string, unknown> | null {
+  ): Record<string, unknown> | RetrySignal | null {
     return null;
   }
 }

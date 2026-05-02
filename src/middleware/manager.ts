@@ -4,7 +4,7 @@
 
 import type { Context } from '../context.js';
 import { ModuleError } from '../errors.js';
-import { Middleware } from './base.js';
+import { Middleware, RetrySignal } from './base.js';
 
 export class MiddlewareChainError extends ModuleError {
   static override readonly DEFAULT_RETRYABLE: boolean | null = false;
@@ -101,11 +101,14 @@ export class MiddlewareManager {
     error: Error,
     context: Context,
     executedMiddlewares: Middleware[],
-  ): Record<string, unknown> | null {
+  ): Record<string, unknown> | RetrySignal | null {
     for (let i = executedMiddlewares.length - 1; i >= 0; i--) {
       try {
         const result = executedMiddlewares[i].onError(moduleId, inputs, error, context);
         if (result !== null) {
+          // RetrySignal short-circuits and propagates up to the executor's
+          // call() loop, which re-runs the pipeline with new inputs.
+          // Plain objects become the recovery output. (sync finding A-D-017)
           return result;
         }
       } catch (e) {

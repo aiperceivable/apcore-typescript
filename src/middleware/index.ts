@@ -1,4 +1,4 @@
-export { Middleware } from './base.js';
+export { Middleware, RetrySignal } from './base.js';
 export { MiddlewareManager, MiddlewareChainError } from './manager.js';
 export { BeforeMiddleware, AfterMiddleware } from './adapters.js';
 export type { BeforeCallback, AfterCallback } from './adapters.js';

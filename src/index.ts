@@ -122,7 +122,7 @@ export type { ACLRule, AuditEntry, AuditLogger } from './acl.js';
 
 // Middleware
 export {
-  Middleware, MiddlewareManager, MiddlewareChainError,
+  Middleware, RetrySignal, MiddlewareManager, MiddlewareChainError,
   BeforeMiddleware, AfterMiddleware,
   LoggingMiddleware,
   RetryHintMiddleware, RetryMiddleware,

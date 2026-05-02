@@ -550,3 +550,46 @@ describe('Executor.callWithTrace — PipelineStepError unwrap', () => {
     ).rejects.toThrow(ModuleNotFoundError);
   });
 });
+
+// A-D-017: middleware can request a pipeline retry with new inputs via RetrySignal.
+describe('Executor.call — middleware RetrySignal retry semantics', () => {
+  it('re-runs the pipeline when middleware.onError returns RetrySignal', async () => {
+    const { RetrySignal } = await import('../src/middleware/base.js');
+
+    let attempts = 0;
+    const mod = new FunctionModule({
+      execute: (inputs) => {
+        attempts += 1;
+        if (inputs['retried'] === true) {
+          return { ok: true, attempt: attempts };
+        }
+        throw new Error('first attempt always fails');
+      },
+      moduleId: 'test.retry',
+      inputSchema: Type.Object({}),
+      outputSchema: Type.Object({}),
+      description: 'fails once, succeeds on retry',
+    });
+
+    class RetryMiddleware extends Middleware {
+      override onError(
+        _moduleId: string,
+        inputs: Record<string, unknown>,
+        _err: Error,
+        _ctx: Context,
+      ): Record<string, unknown> | InstanceType<typeof RetrySignal> | null {
+        if (inputs['retried'] === true) return null;
+        return new RetrySignal({ ...inputs, retried: true });
+      }
+    }
+
+    const registry = new Registry();
+    registry.register('test.retry', mod);
+    const executor = new Executor({ registry });
+    executor.use(new RetryMiddleware());
+
+    const result = await executor.call('test.retry', {});
+    expect(attempts).toBe(2);
+    expect(result['ok']).toBe(true);
+  });
+});

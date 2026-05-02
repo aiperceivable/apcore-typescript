@@ -15,7 +15,7 @@ import {
   ModuleError,
   ModuleTimeoutError,
 } from './errors.js';
-import { AfterMiddleware, BeforeMiddleware, Middleware } from './middleware/index.js';
+import { AfterMiddleware, BeforeMiddleware, Middleware, RetrySignal } from './middleware/index.js';
 import { MiddlewareChainError, MiddlewareManager } from './middleware/manager.js';
 import type { Module, ModuleAnnotations, PreflightCheckResult, PreflightResult } from './module.js';
 import { createPreflightResult } from './module.js';
@@ -334,32 +334,60 @@ export class Executor {
       versionHint: versionHint ?? null,
     };
 
-    try {
-      const [output, _trace] = await this._pipelineEngine.run(this._strategy, pipeCtx);
-      return (output ?? {}) as Record<string, unknown>;
-    } catch (exc) {
-      if (exc instanceof ExecutionCancelledError) throw exc;
-      // PipelineStepError is the engine-level contract (§1.1). Unwrap the cause
-      // so the executor's public API surfaces the original typed error.
-      const unwrapped = exc instanceof PipelineStepError
-        ? (exc.cause instanceof Error ? exc.cause : exc)
-        : exc;
-      // MiddlewareChainError wraps the original; unwrap it so callers see the
-      // real error class/code instead of a generic MODULE_EXECUTE_ERROR.
-      const ctxObj = pipeCtx.context;
-      const underlying = unwrapped instanceof MiddlewareChainError
-        ? unwrapped.original
-        : (unwrapped as Error);
-      const wrapped = propagateError(underlying, moduleId, ctxObj);
-      const executedMw = pipeCtx.executedMiddlewares;
-      if (executedMw && executedMw.length > 0) {
-        const recovery = this._middlewareManager.executeOnError(
-          moduleId, pipeCtx.inputs, wrapped as Error, ctxObj, executedMw as Middleware[],
-        );
-        if (recovery !== null) return recovery;
+    // Loop iterates only when a RetrySignal is returned from middleware
+    // onError; every other path returns or throws on the first attempt
+    // (sync finding A-D-017).
+    while (true) {
+      try {
+        const [output, _trace] = await this._pipelineEngine.run(this._strategy, pipeCtx);
+        return (output ?? {}) as Record<string, unknown>;
+      } catch (exc) {
+        if (exc instanceof ExecutionCancelledError) throw exc;
+        // PipelineStepError is the engine-level contract (§1.1). Unwrap the cause
+        // so the executor's public API surfaces the original typed error.
+        const unwrapped = exc instanceof PipelineStepError
+          ? (exc.cause instanceof Error ? exc.cause : exc)
+          : exc;
+        // MiddlewareChainError wraps the original; unwrap it so callers see the
+        // real error class/code instead of a generic MODULE_EXECUTE_ERROR.
+        const ctxObj = pipeCtx.context;
+        const underlying = unwrapped instanceof MiddlewareChainError
+          ? unwrapped.original
+          : (unwrapped as Error);
+        const wrapped = propagateError(underlying, moduleId, ctxObj);
+        const executedMw = pipeCtx.executedMiddlewares;
+        if (executedMw && executedMw.length > 0) {
+          const recovery = this._middlewareManager.executeOnError(
+            moduleId, pipeCtx.inputs, wrapped as Error, ctxObj, executedMw as Middleware[],
+          );
+          if (recovery instanceof RetrySignal) {
+            this._resetPipeCtxForRetry(pipeCtx, recovery.inputs);
+            continue;
+          }
+          if (recovery !== null) return recovery;
+        }
+        throw wrapped;
       }
-      throw wrapped;
     }
+  }
+
+  /**
+   * Reset PipelineContext for another attempt triggered by a RetrySignal.
+   *
+   * Preserves the top-level Context (so retry counters in context.data carry
+   * across attempts) while clearing per-run fields that the next attempt
+   * will re-populate. (sync finding A-D-017)
+   */
+  private _resetPipeCtxForRetry(
+    pipeCtx: PipelineContext,
+    newInputs: Record<string, unknown>,
+  ): void {
+    pipeCtx.inputs = newInputs;
+    pipeCtx.validatedInputs = null;
+    pipeCtx.module = null;
+    pipeCtx.output = null;
+    pipeCtx.validatedOutput = null;
+    pipeCtx.executedMiddlewares = [];
   }
 
   /**
@@ -476,7 +504,10 @@ export class Executor {
         const recovery = this._middlewareManager.executeOnError(
           moduleId, pipeCtx.inputs, wrapped as Error, ctxObj, pipeCtx.executedMiddlewares as Middleware[],
         );
-        if (recovery !== null) {
+        // RetrySignal is not supported in stream mode — re-running a stream
+        // mid-flight is not well-defined. Fall through to throwing the wrapped
+        // error so the caller sees a normal failure (sync finding A-D-017).
+        if (recovery !== null && !(recovery instanceof RetrySignal)) {
           yield recovery;
           return;
         }
@@ -512,7 +543,8 @@ export class Executor {
         const recovery = this._middlewareManager.executeOnError(
           moduleId, pipeCtx.inputs, wrapped as Error, ctxObj, pipeCtx.executedMiddlewares as Middleware[],
         );
-        if (recovery !== null) {
+        // RetrySignal not supported mid-stream (sync finding A-D-017).
+        if (recovery !== null && !(recovery instanceof RetrySignal)) {
           yield recovery;
           return;
         }
