@@ -736,6 +736,29 @@ export class Registry {
     }
   }
 
+  /**
+   * Watch the configured extension roots for filesystem changes and
+   * unregister any module whose source file is modified or deleted.
+   *
+   * **Cross-language divergence (sync finding A-D-104):** unlike apcore-python
+   * (which re-imports the file via `importlib.reload`) and apcore-rust (which
+   * triggers full rediscovery), the TypeScript SDK is **event-only**. On a
+   * file change the registry:
+   *   1. unregisters the previously-loaded module (calling its `onUnload`),
+   *   2. emits a `'file_changed'` event with `{ filePath }` payload.
+   *
+   * Consumers are expected to subscribe and re-register the module
+   * themselves (e.g. by calling `registry.discover()` or registering a fresh
+   * import). ES module specifiers are immutable in Node — there is no
+   * portable "reload from disk" primitive — so a transparent dynamic
+   * `import()` would silently return the cached old module on every
+   * invocation. A workaround using a cache-busting query (`?v=Date.now()`)
+   * leaks the old module each reload and breaks browser bundlers, so it is
+   * intentionally **not** offered here.
+   *
+   * If your application needs Python-style hot-reload semantics, listen for
+   * `'file_changed'` and re-discover or re-import explicitly.
+   */
   async watch(): Promise<void> {
     if (this._watchers && this._watchers.length > 0) {
       return; // Already watching

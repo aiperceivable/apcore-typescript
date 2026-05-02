@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [Unreleased]
+
+### Fixed
+
+- **Sync findings A-D-101 / A-D-102** — `Registry._registerInOrder` and `Registry._discoverCustom` now apply PROTOCOL_SPEC §2.7 ID validation (empty → pattern → length → reserved-word) and Algorithm A03 conflict detection before registering each discovered module. Invalid or conflicting IDs are skipped with a `console.warn` instead of being registered. Mirrors `apcore-python._filter_id_conflicts` and `apcore-rust::Registry::filter_id_conflicts`.
+- **Sync finding A-D-202** — `Executor.stream()` now reads the global deadline from `context.data[CTX_GLOBAL_DEADLINE]` (ms-since-epoch, where `BuiltinContextCreation` writes it) and compares against `Date.now()` directly, instead of reading the unset `Context.globalDeadline` field and dividing `Date.now()` by 1000. Stream-mode global timeout now actually triggers between chunks.
+- **Sync finding A-D-404** — `MiddlewareManager.executeOnError` now requires recovery values to be a `RetrySignal` or a non-null object before treating them as recovery. Arrow functions returning `undefined` (the default for handlers without an explicit return) no longer accidentally short-circuit the chain. Mirrors apcore-python's strict type check.
+
+### Changed
+
+- **Sync finding A-D-104** — `Registry.watch()` is now documented as event-only on the TypeScript SDK. On a file change the module is unregistered (`onUnload` runs) and a `file_changed` event is emitted with `{ filePath }`. Unlike apcore-python (`importlib.reload`) and apcore-rust (full re-discovery), the SDK does not transparently re-import: ES modules cannot be reliably evicted from Node's loader cache without leaks. Consumers needing hot-reload must subscribe to `file_changed` and call `discover()` (or re-import) themselves. See JSDoc on `Registry.watch`.
+- **Sync findings A-D-503 / A-D-504** — `EventEmitter.flush(timeoutMs)` default changes from `0` (infinite wait) to `5000` (5 s), matching apcore-python's 5 s semantic default and apcore-rust's ms unit. Pass `0` explicitly to wait indefinitely. Subscriber overflow behaviour switches from drop-and-warn to bounded back-pressure: when `_pending` is at `maxPending`, new dispatches queue and start as slots free, so events are no longer silently dropped under burst load.
+- **Sync finding A-D-403** — `MiddlewareManager.executeBefore` / `executeAfter` / `executeOnError` are now `async` and `await` each middleware hook. Removes the silent-Promise-into-currentInputs trap when a `before()` or `after()` hook is async. Public callers in `Executor` and built-in steps already awaited; ad-hoc consumers calling these methods directly now need to `await` the result.
+
+### Documentation
+
+- **Sync finding B-002** — README now documents that `APCore.disable()` / `APCore.enable()` (and the `on`/`off` toggle event) require `sys_modules.enabled: true` in the `Config` passed to `APCore`. Quick Start gains a Config-passing variant that wires sys-modules.
+
 ## [0.20.0] - 2026-04-30
 
 ### Added

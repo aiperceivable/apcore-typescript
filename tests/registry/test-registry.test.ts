@@ -1343,6 +1343,46 @@ describe('Registry hot reload (watch/unwatch)', () => {
     (registry as any)._handleFileDeletion('/some/path/unknown.ts');
     expect(registry.has('existing')).toBe(true);
   });
+
+  it('A-D-104: _handleFileChange unregisters the module and emits file_changed (TS event-only contract)', async () => {
+    // Per sync finding A-D-104, the TS SDK is event-only by design — see the
+    // JSDoc on Registry.watch(). Python re-imports, Rust re-discovers, but
+    // ES modules cannot be reliably evicted from Node's loader cache, so TS
+    // unregisters and emits 'file_changed' for consumers to re-register.
+    const registry = new Registry();
+    let unloaded = false;
+    const mod = {
+      execute: async () => ({}),
+      description: 'Watched module',
+      inputSchema: { type: 'object' },
+      outputSchema: { type: 'object' },
+      onUnload() { unloaded = true; },
+    };
+    registry.register('watched', mod);
+
+    const events: Array<{ moduleId: string; payload: unknown }> = [];
+    // 'file_changed' is not a standard registry event, so subscribe via the
+    // internal callback map (the map is initialised lazily for each event
+    // name on first emit; we add the bucket here to capture).
+    (registry as unknown as { _callbacks: Map<string, Array<(id: string, payload: unknown) => void>> })
+      ._callbacks.set('file_changed', [
+        (id: string, payload: unknown) => {
+          events.push({ moduleId: id, payload });
+        },
+      ]);
+
+    await (registry as unknown as { _handleFileChange: (p: string) => Promise<void> })
+      ._handleFileChange('/extensions/watched.js');
+
+    // Module is unregistered (Python/Rust diverge: they would re-register).
+    expect(registry.has('watched')).toBe(false);
+    expect(unloaded).toBe(true);
+
+    // file_changed event is emitted with the module ID and file path.
+    expect(events).toHaveLength(1);
+    expect(events[0].moduleId).toBe('watched');
+    expect((events[0].payload as { filePath: string }).filePath).toBe('/extensions/watched.js');
+  });
 });
 
 /* -----------------------------------------------------------
