@@ -326,6 +326,46 @@ describe('Config namespace defaults', () => {
   });
 });
 
+describe('Config.discover (A-004)', () => {
+  // Regression: sync finding A-004 — apcore-typescript was missing the
+  // `Config.discover()` static method (apcore-python has the top-level
+  // `discoverConfigFile()`, apcore-rust has `Config::discover()`). Now
+  // exposed on the Config class for cross-language parity.
+
+  let savedEnvFile: string | undefined;
+
+  beforeEach(() => {
+    savedEnvFile = process.env['APCORE_CONFIG_FILE'];
+    delete process.env['APCORE_CONFIG_FILE'];
+  });
+
+  afterEach(() => {
+    if (savedEnvFile === undefined) {
+      delete process.env['APCORE_CONFIG_FILE'];
+    } else {
+      process.env['APCORE_CONFIG_FILE'] = savedEnvFile;
+    }
+  });
+
+  it('falls back to fromDefaults() when no config file is found', () => {
+    const cfg = Config.discover();
+    expect(cfg).toBeInstanceOf(Config);
+  });
+
+  it('loads the file referenced by APCORE_CONFIG_FILE when present', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'apcore-discover-'));
+    try {
+      const yamlPath = path.join(tmp, 'apcore.yaml');
+      fs.writeFileSync(yamlPath, 'apcore:\n  version: "1.0.0"\n');
+      process.env['APCORE_CONFIG_FILE'] = yamlPath;
+      const cfg = Config.discover({ validate: false });
+      expect(cfg).toBeInstanceOf(Config);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('Config namespace schema validation', () => {
   // Regression: sync finding A-D-021 — namespace-mode validate() must enforce
   // each registered namespace's schema (parity with apcore-python). Previously

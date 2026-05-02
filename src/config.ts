@@ -673,6 +673,28 @@ export class Config {
     return new Config(data);
   }
 
+  /**
+   * Discover and load the project's config file using the canonical search
+   * order, falling back to defaults when no file is found.
+   *
+   * Search order matches `discoverConfigFile()` and apcore-python /
+   * apcore-rust:
+   *   1. `$APCORE_CONFIG_FILE`
+   *   2. `./project.yaml`, `./project.yml`, `./apcore.yaml`, `./apcore.yml`
+   *   3. XDG config dir (`~/Library/Application Support/apcore/config.yaml`
+   *      on macOS, `~/.config/apcore/config.yaml` elsewhere)
+   *   4. Legacy `~/.apcore/config.yaml`
+   *   5. `Config.fromDefaults()` if no file found
+   *
+   * Equivalent to apcore-rust's `Config::discover()` and to apcore-python's
+   * `Config.load(path=None)` no-arg form (sync finding A-004).
+   */
+  static discover(options?: { validate?: boolean }): Config {
+    const path = discoverConfigFile();
+    if (path === null) return Config.fromDefaults();
+    return Config.load(path, options);
+  }
+
   // -------------------------------------------------------------------------
   // Instance methods
   // -------------------------------------------------------------------------

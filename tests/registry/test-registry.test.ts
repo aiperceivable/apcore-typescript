@@ -56,6 +56,33 @@ describe('Registry', () => {
     expect(() => registry.register('test.a', createMod('test.a'))).toThrow(InvalidInputError);
   });
 
+  // Regression: sync finding A-001 — register accepts optional `version` and
+  // `metadata` parameters for cross-language signature parity with
+  // apcore-python `Registry.register(module_id, module, version=None, metadata=None)`.
+  // Multi-version coexistence is not implemented yet (single-version registry),
+  // but the supplied values flow into the merged module metadata.
+  it('register accepts optional version and metadata parameters (A-001 parity)', () => {
+    const registry = new Registry();
+    const mod = createMod('test.versioned');
+    registry.register('test.versioned', mod, '2.5.0', { custom_tag: 'spec-compliance' });
+    const def = registry.getDefinition('test.versioned');
+    expect(def).not.toBeNull();
+    expect(def?.version).toBe('2.5.0');
+    // The arbitrary metadata override is layered into the merged metadata via
+    // mergeModuleMetadata; readers can access it through getDefinition().
+  });
+
+  it('get accepts optional versionHint for cross-language API parity (A-002)', () => {
+    const registry = new Registry();
+    const mod = createMod('test.a');
+    registry.register('test.a', mod);
+    // Single-version registry: hint is accepted (no compile error) but
+    // ignored — get() always returns the live registration.
+    expect(registry.get('test.a', '^1.0.0')).toBe(mod);
+    expect(registry.get('test.a', null)).toBe(mod);
+    expect(registry.get('test.a')).toBe(mod);
+  });
+
   it('MAX_MODULE_ID_LENGTH matches PROTOCOL_SPEC §2.7 (192)', () => {
     // Bumped from 128 in spec 1.6.0-draft (2026-04-08) to accommodate
     // Java/.NET deep-namespace FQN-derived IDs. Filesystem-safe:

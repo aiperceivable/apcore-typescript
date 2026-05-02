@@ -496,8 +496,20 @@ export class Registry {
    * Validation order (PROTOCOL_SPEC §2.7, aligned with apcore-python and
    * apcore-rust): empty → pattern → length → reserved (per-segment) →
    * duplicate.
+   *
+   * The optional `version` and `metadata` parameters mirror apcore-python's
+   * `Registry.register(module_id, module, version=None, metadata=None)` for
+   * cross-language signature parity (sync finding A-001). Multi-version
+   * coexistence is not yet implemented in this SDK — when supplied, both
+   * fields are merged into the module's metadata so callers can read them
+   * back via `getDefinition()` and `list({tags})`. See PROTOCOL_SPEC §5.4.
    */
-  register(moduleId: string, module: unknown): void {
+  register(
+    moduleId: string,
+    module: unknown,
+    version?: string | null,
+    metadata?: Record<string, unknown> | null,
+  ): void {
     validateModuleId(moduleId, false);
 
     if (this._customValidator !== null) {
@@ -512,11 +524,19 @@ export class Registry {
       }
     }
 
-    this._registerImpl(moduleId, module);
+    const overrides: Record<string, unknown> = { ...(metadata ?? {}) };
+    if (version !== undefined && version !== null) {
+      overrides['version'] = version;
+    }
+    this._registerImpl(moduleId, module, overrides);
   }
 
   /** Inner registration — no validator, no ID validation. Used by discover() paths that run their own checks. */
-  private _registerImpl(moduleId: string, module: unknown): void {
+  private _registerImpl(
+    moduleId: string,
+    module: unknown,
+    metadataOverrides: Record<string, unknown> = {},
+  ): void {
     // Algorithm A03: detect ID conflicts (exact duplicate, reserved word, case collision)
     const conflict = detectIdConflicts(
       moduleId,
@@ -535,9 +555,10 @@ export class Registry {
     this._modules.set(moduleId, module);
     this._lowercaseMap.set(moduleId.toLowerCase(), moduleId);
 
-    // Populate metadata from the module object
+    // Populate metadata from the module object, layering any explicit overrides
+    // (e.g. the `version` / `metadata` args passed to `register()`) on top.
     const modObj = module as Record<string, unknown>;
-    this._moduleMeta.set(moduleId, mergeModuleMetadata(modObj, {}));
+    this._moduleMeta.set(moduleId, mergeModuleMetadata(modObj, metadataOverrides));
 
     // Call onLoad if available
     if (typeof modObj['onLoad'] === 'function') {
@@ -577,7 +598,19 @@ export class Registry {
     return true;
   }
 
-  get(moduleId: string): unknown | null {
+  /**
+   * Look up a registered module by ID.
+   *
+   * @param moduleId - Module identifier (must be non-empty).
+   * @param _versionHint - Optional semver range for multi-version coexistence
+   *   (PROTOCOL_SPEC §5.4). This SDK currently exposes a single-version
+   *   registry, so the hint is accepted for cross-language API parity with
+   *   apcore-python (sync finding A-002) but does NOT participate in
+   *   resolution: the latest registered module for `moduleId` is returned
+   *   regardless of the hint. When multi-version registration lands, this
+   *   parameter will gate semver-range matching.
+   */
+  get(moduleId: string, _versionHint?: string | null): unknown | null {
     if (moduleId === '') {
       throw new ModuleNotFoundError('');
     }
@@ -626,7 +659,10 @@ export class Registry {
     return [...this._modules.keys()].sort();
   }
 
-  getDefinition(moduleId: string): ModuleDescriptor | null {
+  getDefinition(moduleId: string, _versionHint?: string | null): ModuleDescriptor | null {
+    // `_versionHint` accepted for cross-language API parity with apcore-python
+    // (sync finding A-002 / §5.4). Ignored under the single-version registry;
+    // see `get()` for the rationale.
     const module = this._modules.get(moduleId);
     if (module == null) return null;
     // INVARIANT: every registration site (`register`, `registerInternal`,
