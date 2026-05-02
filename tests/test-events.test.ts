@@ -168,7 +168,7 @@ describe('EventEmitter', () => {
     expect(round2Done).toBe(false);
   });
 
-  it('drops async delivery and warns when _pending cap is reached', async () => {
+  it('emits delivery_dropped event instead of silently dropping when _pending cap is reached (sync A-D-504)', async () => {
     const warnMessages: string[] = [];
     const origWarn = console.warn;
     console.warn = (...args: unknown[]) => { warnMessages.push(String(args[0])); };
@@ -176,23 +176,79 @@ describe('EventEmitter', () => {
     try {
       const emitter = new EventEmitter(2); // cap of 2
       let resolved = 0;
-      // Each emit spawns an async handler that takes 50ms
-      const slowSubscriber = {
+      // Subscriber that holds 50ms async delivery
+      const slowSubscriber: EventSubscriber = {
         onEvent: () => new Promise<void>((r) => setTimeout(() => { resolved++; r(); }, 50)),
       };
       emitter.subscribe(slowSubscriber);
 
-      // First two should be tracked (cap=2)
-      emitter.emit(createEvent('test', null, 'info', {}));
-      emitter.emit(createEvent('test', null, 'info', {}));
-      // Third should be dropped (at cap)
-      emitter.emit(createEvent('test', null, 'info', {}));
+      // Drop-event observer (sync, never produces a Promise so it never fills _pending).
+      const droppedEvents: ApCoreEvent[] = [];
+      emitter.subscribe({
+        onEvent: (e) => {
+          if (e.eventType === 'apcore.subscriber.delivery_dropped') {
+            droppedEvents.push(e);
+          }
+        },
+      });
 
-      expect(warnMessages.some((m) => m.includes('_pending cap'))).toBe(true);
+      // First two slow subscriber promises occupy _pending (cap=2).
+      emitter.emit(createEvent('test_event', null, 'info', {}));
+      emitter.emit(createEvent('test_event', null, 'info', {}));
+      // Third triggers drop on the slow subscriber — expect a structured event.
+      emitter.emit(createEvent('test_event', null, 'info', { round: 3 }));
+
+      expect(droppedEvents.length).toBeGreaterThan(0);
+      const dropped = droppedEvents[0];
+      expect(dropped.severity).toBe('warning');
+      expect(dropped.data['event_type']).toBe('test_event');
+      expect(dropped.data['subscriber_id']).toBeTruthy();
+
       await emitter.flush();
-      expect(resolved).toBe(2); // only 2 tracked, 1 dropped
+      expect(resolved).toBe(2); // only 2 tracked, 1 dropped — but as a visible event
     } finally {
       console.warn = origWarn;
+    }
+  });
+
+  it('flush defaults to a finite 5000ms deadline rather than 0=infinite (sync A-D-503)', async () => {
+    // Multi-round scenario: round-1 subscriber spawns round-2 deliveries.
+    // With a virtualised clock pushed past 5000ms after round-1 completes,
+    // flush() with no argument must abort *before* the round-2 promises start.
+    // If the default were 0 (=infinite), it would still drain round-2.
+    const emitter = new EventEmitter();
+    let round2Done = false;
+    emitter.subscribe({
+      onEvent: async (event) => {
+        if (event.data['round'] === 1) {
+          // Brief real wait so flush()'s first allSettled round actually settles.
+          await new Promise<void>((r) => setTimeout(r, 5));
+          // Spawn a second pending round with a payload that *would* resolve.
+          emitter.emit(createEvent('test', null, 'info', { round: 2 }));
+        }
+        if (event.data['round'] === 2) {
+          await new Promise<void>((r) => setTimeout(r, 10));
+          round2Done = true;
+        }
+      },
+    });
+
+    const realNow = Date.now;
+    const startReal = realNow();
+    let offset = 0;
+    Date.now = () => realNow() + offset;
+    try {
+      emitter.emit(createEvent('test', null, 'info', { round: 1 }));
+      // Fast-forward past the 5000ms default deadline before round-2 starts.
+      setTimeout(() => { offset = 6000; }, 1);
+      await emitter.flush(); // no arg — must use 5000ms default
+      // Round 2 should not have completed because deadline expired between rounds.
+      expect(round2Done).toBe(false);
+      const elapsedReal = realNow() - startReal;
+      // And we should not have actually waited 5 real seconds.
+      expect(elapsedReal).toBeLessThan(2000);
+    } finally {
+      Date.now = realNow;
     }
   });
 
