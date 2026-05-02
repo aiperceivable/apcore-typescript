@@ -524,12 +524,21 @@ export class Executor {
     // Phase 2: Iterate stream, accumulate chunks
     const outputStream = pipeCtx.outputStream as AsyncGenerator<Record<string, unknown>>;
     const accumulated: Record<string, unknown> = {};
-    const globalDeadline = pipeCtx.context?.globalDeadline ?? null;
+    // Read the canonical deadline slot written by BuiltinContextCreation
+    // (ms-since-epoch). The earlier `pipeCtx.context.globalDeadline` read was
+    // always null in the executor pipeline path because that field is a
+    // separate context attribute that the pipeline never populates — and the
+    // subsequent `Date.now() / 1000` divisor pretended the value was epoch
+    // seconds. (sync finding A-D-202.)
+    const globalDeadline =
+      (pipeCtx.context?.data?.[CTX_GLOBAL_DEADLINE] as number | undefined) ?? null;
     try {
       for await (const chunk of outputStream) {
         // Enforce global_deadline between chunks — matches apcore-python
-        // executor.py:872-879 (sync finding A-D-014).
-        if (globalDeadline !== null && Date.now() / 1000 > globalDeadline) {
+        // executor.py:872-879 (sync finding A-D-014). The slot is stored as
+        // ms-since-epoch (Date.now() + globalTimeout in BuiltinContextCreation),
+        // so compare against Date.now() directly.
+        if (globalDeadline !== null && Date.now() > globalDeadline) {
           throw new ModuleTimeoutError(moduleId, 0);
         }
         deepMergeChunk(accumulated, chunk as Record<string, unknown>);

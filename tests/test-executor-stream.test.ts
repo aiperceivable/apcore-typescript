@@ -1,10 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { Type } from '@sinclair/typebox';
-import { Executor } from '../src/executor.js';
+import { CTX_GLOBAL_DEADLINE, Executor } from '../src/executor.js';
 import { FunctionModule } from '../src/decorator.js';
 import { Registry } from '../src/registry/registry.js';
 import { Middleware } from '../src/middleware/base.js';
-import { ModuleNotFoundError, SchemaValidationError } from '../src/errors.js';
+import { ModuleNotFoundError, ModuleTimeoutError, SchemaValidationError } from '../src/errors.js';
 
 function createSimpleModule(id: string): FunctionModule {
   return new FunctionModule({
@@ -232,6 +232,52 @@ describe('Executor.stream()', () => {
     // The last chunk is used as the accumulated output for validation
     const chunks = await collectChunks(executor.stream('validated'));
     expect(chunks).toHaveLength(2);
+  });
+
+  it('A-D-202: enforces global_deadline between chunks via context.data[CTX_GLOBAL_DEADLINE]', async () => {
+    // The deadline is stored as ms-since-epoch in context.data[CTX_GLOBAL_DEADLINE]
+    // by BuiltinContextCreation (builtin-steps.ts:127-128). stream() must read
+    // that slot and compare against Date.now() directly. Earlier code read
+    // pipeCtx.context.globalDeadline (always null) and divided Date.now() by
+    // 1000, silently disabling the deadline check.
+    const registry = new Registry();
+    const mod = {
+      description: 'slow streaming module',
+      inputSchema: Type.Object({}),
+      outputSchema: Type.Object({ chunk: Type.Optional(Type.Number()) }),
+      execute: () => ({ chunk: 0 }),
+      async *stream(): AsyncGenerator<Record<string, unknown>> {
+        for (let i = 0; i < 5; i++) {
+          yield { chunk: i };
+          // Sleep long enough between chunks to push past the deadline.
+          await new Promise((resolve) => setTimeout(resolve, 30));
+        }
+      },
+    };
+    registry.register('slow.stream', mod);
+
+    const executor = new Executor({ registry });
+    // Pre-populate the context with an already-expired global deadline so
+    // the first chunk-loop check trips. Use the canonical context.data slot.
+    const { Context } = await import('../src/context.js');
+    const ctx = Context.create(executor);
+    ctx.data[CTX_GLOBAL_DEADLINE] = Date.now() + 10; // ~10ms from now
+
+    const collected: Record<string, unknown>[] = [];
+    let caught: Error | null = null;
+    try {
+      for await (const chunk of executor.stream('slow.stream', {}, ctx)) {
+        collected.push(chunk);
+      }
+    } catch (e) {
+      caught = e as Error;
+    }
+
+    expect(caught).toBeInstanceOf(ModuleTimeoutError);
+    // The first chunk MUST have been yielded before the timeout fires; the
+    // deadline is checked between chunks, not before the first one.
+    expect(collected.length).toBeGreaterThanOrEqual(1);
+    expect(collected.length).toBeLessThan(5);
   });
 
   it('swallows phase-3 SchemaValidationError when accumulated output is invalid (sync A-D-012)', async () => {
