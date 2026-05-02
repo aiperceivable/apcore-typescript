@@ -100,25 +100,50 @@ export class ACL {
     ACL.asyncConditionHandlers.set(key, handler);
   }
 
+  /**
+   * Per-call-stack handler-error message captured by `_evaluateConditions[Async]`.
+   * Set inside catch blocks; consumed by `_buildAuditEntry` to populate
+   * `AuditEntry.handlerError`. Mirrors apcore-python's `_handler_error_var`
+   * contextvar (sync finding A-D-026). JS is single-threaded so a static field
+   * is sufficient — the accessor pair `_takeLastHandlerError()` and the
+   * implicit reset at each `check()` / `asyncCheck()` call ensures no leakage
+   * across evaluations.
+   */
+  private static _lastHandlerError: string | null = null;
+
+  /**
+   * Read-and-clear the most recent handler-error message captured by an
+   * `_evaluateConditions[Async]` invocation.
+   */
+  static _takeLastHandlerError(): string | null {
+    const err = ACL._lastHandlerError;
+    ACL._lastHandlerError = null;
+    return err;
+  }
+
   static _evaluateConditions(conditions: Record<string, unknown>, context: Context): boolean {
     for (const [key, value] of Object.entries(conditions)) {
       const handler = ACL.conditionHandlers.get(key);
       if (handler === undefined) {
-        console.warn(`[apcore:acl] Unknown ACL condition '${key}' — treated as unsatisfied`);
+        const msg = `Unknown ACL condition '${key}'`;
+        ACL._lastHandlerError = msg;
+        console.warn(`[apcore:acl] ${msg} — treated as unsatisfied`);
         return false;
       }
       try {
         const result = handler.evaluate(value, context);
         if (result instanceof Promise) {
           // Async handler in sync context — fail-closed
-          console.warn(
-            `[apcore:acl] Async condition '${key}' in sync context — treated as unsatisfied. Use asyncCheck().`,
-          );
+          const msg = `Async condition '${key}' in sync context — use asyncCheck()`;
+          ACL._lastHandlerError = msg;
+          console.warn(`[apcore:acl] ${msg}`);
           return false;
         }
         if (!result) return false;
-      } catch {
-        console.warn(`[apcore:acl] Handler for condition '${key}' threw — treated as unsatisfied`);
+      } catch (e) {
+        const msg = `Handler for condition '${key}' threw: ${e instanceof Error ? e.message : String(e)}`;
+        ACL._lastHandlerError = msg;
+        console.warn(`[apcore:acl] ${msg} — treated as unsatisfied`);
         return false;
       }
     }
@@ -129,14 +154,18 @@ export class ACL {
     for (const [key, value] of Object.entries(conditions)) {
       const handler = ACL.asyncConditionHandlers.get(key) ?? ACL.conditionHandlers.get(key);
       if (handler === undefined) {
-        console.warn(`[apcore:acl] Unknown ACL condition '${key}' — treated as unsatisfied`);
+        const msg = `Unknown ACL condition '${key}'`;
+        ACL._lastHandlerError = msg;
+        console.warn(`[apcore:acl] ${msg} — treated as unsatisfied`);
         return false;
       }
       try {
         const result = await handler.evaluate(value, context);
         if (!result) return false;
-      } catch {
-        console.warn(`[apcore:acl] Handler for condition '${key}' threw — treated as unsatisfied`);
+      } catch (e) {
+        const msg = `Handler for condition '${key}' threw: ${e instanceof Error ? e.message : String(e)}`;
+        ACL._lastHandlerError = msg;
+        console.warn(`[apcore:acl] ${msg} — treated as unsatisfied`);
         return false;
       }
     }
@@ -198,30 +227,35 @@ export class ACL {
   check(callerId: string | null, targetId: string, context?: Context | null): boolean {
     const effectiveCaller = callerId === null ? '@external' : callerId;
     const ctx = context ?? null;
-    // Snapshot rules so concurrent addRule/removeRule calls cannot mutate the
-    // list mid-evaluation (relevant for asyncCheck across await points).
+    // Snapshot rules + defaultEffect + auditLogger atomically so concurrent
+    // addRule/removeRule/setDefaultEffect calls cannot mutate state mid-evaluation.
+    // Mirrors asyncCheck snapshot semantics for sync/async parity.
     const rules = this._rules.slice();
+    const defaultEffect = this._defaultEffect;
+    const auditLogger = this._auditLogger;
+    // Clear any leftover handler-error captured by a previous evaluation.
+    ACL._takeLastHandlerError();
 
     for (let idx = 0; idx < rules.length; idx++) {
       const rule = rules[idx];
       if (this._matchesRule(rule, effectiveCaller, targetId, ctx)) {
         const decision = rule.effect === 'allow';
-        if (this._auditLogger) {
-          this._auditLogger(this._buildAuditEntry(
+        if (auditLogger) {
+          auditLogger(this._buildAuditEntry(
             effectiveCaller, targetId, decision ? 'allow' : 'deny',
-            'rule_match', rule, idx, ctx,
+            'rule_match', rule, idx, ctx, ACL._takeLastHandlerError(),
           ));
         }
         return decision;
       }
     }
 
-    const defaultDecision = this._defaultEffect === 'allow';
-    if (this._auditLogger) {
+    const defaultDecision = defaultEffect === 'allow';
+    if (auditLogger) {
       const reason = rules.length === 0 ? 'no_rules' : 'default_effect';
-      this._auditLogger(this._buildAuditEntry(
+      auditLogger(this._buildAuditEntry(
         effectiveCaller, targetId, defaultDecision ? 'allow' : 'deny',
-        reason, null, null, ctx,
+        reason, null, null, ctx, ACL._takeLastHandlerError(),
       ));
     }
     return defaultDecision;
@@ -235,6 +269,8 @@ export class ACL {
     const rules = this._rules.slice();
     const defaultEffect = this._defaultEffect;
     const auditLogger = this._auditLogger;
+    // Clear any leftover handler-error captured by a previous evaluation.
+    ACL._takeLastHandlerError();
 
     for (let idx = 0; idx < rules.length; idx++) {
       const rule = rules[idx];
@@ -243,7 +279,7 @@ export class ACL {
         if (auditLogger) {
           auditLogger(this._buildAuditEntry(
             effectiveCaller, targetId, decision ? 'allow' : 'deny',
-            'rule_match', rule, idx, ctx,
+            'rule_match', rule, idx, ctx, ACL._takeLastHandlerError(),
           ));
         }
         return decision;
@@ -255,7 +291,7 @@ export class ACL {
       const reason = rules.length === 0 ? 'no_rules' : 'default_effect';
       auditLogger(this._buildAuditEntry(
         effectiveCaller, targetId, defaultDecision ? 'allow' : 'deny',
-        reason, null, null, ctx,
+        reason, null, null, ctx, ACL._takeLastHandlerError(),
       ));
     }
     return defaultDecision;

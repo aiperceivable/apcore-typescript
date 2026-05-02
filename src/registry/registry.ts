@@ -900,6 +900,12 @@ export class Registry {
     this._modules.set(moduleId, module);
     const modObj = module as Record<string, unknown>;
     this._moduleMeta.set(moduleId, mergeModuleMetadata(modObj, {}));
+    // Mirror apcore-python register_internal and apcore-rust register_core:
+    // every registration site (including sys/internal) populates the lowercase
+    // index. The lowercase-only EBNF pattern enforced by validateModuleId makes
+    // case collisions unreachable today, but keeping _lowercaseMap consistent
+    // with _modules preserves the invariant for downstream conflict detection.
+    this._lowercaseMap.set(moduleId.toLowerCase(), moduleId);
 
     if (typeof modObj['onLoad'] === 'function') {
       try {
@@ -907,6 +913,7 @@ export class Registry {
       } catch (e) {
         this._modules.delete(moduleId);
         this._moduleMeta.delete(moduleId);
+        this._lowercaseMap.delete(moduleId.toLowerCase());
         throw e;
       }
     }

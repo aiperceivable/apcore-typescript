@@ -180,6 +180,7 @@ export {
   UsageModule,
   UsageSummaryModule,
   ToggleFeatureModule,
+  InMemoryAuditStore,
 } from './sys-modules/index.js';
 export type { SysModulesContext } from './sys-modules/index.js';
 
@@ -226,12 +227,16 @@ export type { ConflictResult, ConflictType, ConflictSeverity } from './registry/
 export { TracingMiddleware, StdoutExporter, InMemoryExporter, OTLPExporter, createSpan } from './observability/tracing.js';
 export type { Span, SpanExporter } from './observability/tracing.js';
 export { MetricsCollector, MetricsMiddleware } from './observability/metrics.js';
-export { ContextLogger, ObsLoggingMiddleware } from './observability/context-logger.js';
+export { ContextLogger, ObsLoggingMiddleware, RedactionConfig } from './observability/context-logger.js';
 export { ErrorHistory } from './observability/error-history.js';
 export type { ErrorEntry } from './observability/error-history.js';
 export { UsageCollector, UsageMiddleware } from './observability/usage.js';
 export { computeModuleErrorRate, estimateP99FromHistogram, matchesModuleId, METRIC_CALLS_TOTAL, METRIC_DURATION_SECONDS } from './observability/metrics-utils.js';
 export type { UsageRecord, CallerUsageSummary, HourlyBucket, ModuleUsageSummary, ModuleUsageDetail } from './observability/usage.js';
+export { BatchSpanProcessor, SimpleSpanProcessor } from './observability/batch-span-processor.js';
+export type { SpanProcessor, BatchSpanProcessorOptions } from './observability/batch-span-processor.js';
+export { PrometheusExporter } from './observability/prometheus-exporter.js';
+export type { PrometheusExporterStartOptions } from './observability/prometheus-exporter.js';
 
 // Trace Context
 export { TraceContext } from './trace-context.js';

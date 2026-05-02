@@ -948,11 +948,11 @@ Config.registerNamespace({
   name: 'sys_modules',
   envPrefix: 'APCORE_SYS',
   defaults: {
-    enabled: false,
+    enabled: true,
     health: { enabled: true },
     manifest: { enabled: true },
     usage: { enabled: true, retention_hours: 168, bucketing_strategy: 'hourly' },
     control: { enabled: true },
-    events: { enabled: true, thresholds: { error_rate: 0.1, latency_p99_ms: 5000.0 } },
+    events: { enabled: false, thresholds: { error_rate: 0.1, latency_p99_ms: 5000.0 } },
   },
 });

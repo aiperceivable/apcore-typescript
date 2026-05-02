@@ -317,7 +317,12 @@ describe('Config namespace defaults', () => {
     fs.writeFileSync(yamlPath, 'apcore:\n  version: "1.0.0"\n');
     const cfg = Config.load(yamlPath, { validate: false });
     const sys = cfg.namespace('sys_modules');
-    expect(sys['enabled']).toBe(false);
+    // Built-in default: sys_modules.enabled = true (parity with apcore-python and apcore-rust;
+    // sync finding A-D-014 corrected the prior false default).
+    expect(sys['enabled']).toBe(true);
+    // Built-in default: sys_modules.events.enabled = false (sync finding A-D-015;
+    // events emission opts in, parity with apcore-python and apcore-rust).
+    expect((sys['events'] as Record<string, unknown>)['enabled']).toBe(false);
   });
 });
 

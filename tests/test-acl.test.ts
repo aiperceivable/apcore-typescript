@@ -3,6 +3,7 @@ import { writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { ACL } from '../src/acl.js';
+import type { AuditEntry } from '../src/acl.js';
 import type { ACLConditionHandler } from '../src/acl-handlers.js';
 import { ACLRuleError, ConfigNotFoundError } from '../src/errors.js';
 import { Context, createIdentity } from '../src/context.js';
@@ -525,9 +526,34 @@ describe('ACL condition validation', () => {
     }]);
     const ctx = makeContext({ callChain: [] });
     expect(acl.check('module.a', 'target', ctx)).toBe(false);
-    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('threw — treated as unsatisfied'));
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('threw:'));
     warnSpy.mockRestore();
     (ACL as any).conditionHandlers.delete('test_throwing_sync');
+  });
+
+  // Regression: sync finding A-D-026 — handlerError must be populated in AuditEntry
+  // when a condition handler throws. Parity with apcore-python's contextvar-based
+  // handler_error capture.
+  it('populates AuditEntry.handlerError when sync condition handler throws', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const entries: AuditEntry[] = [];
+    const throwingHandler: ACLConditionHandler = {
+      evaluate: () => { throw new Error('boom in sync handler'); },
+    };
+    ACL.registerCondition('test_throwing_audited', throwingHandler);
+    const acl = new ACL(
+      [{ callers: ['*'], targets: ['target'], effect: 'allow', description: '',
+         conditions: { test_throwing_audited: true } }],
+      'deny',
+      (entry) => entries.push(entry),
+    );
+    const ctx = makeContext({ callChain: [] });
+    expect(acl.check('module.a', 'target', ctx)).toBe(false);
+    expect(entries).toHaveLength(1);
+    expect(entries[0].handlerError).toContain('test_throwing_audited');
+    expect(entries[0].handlerError).toContain('boom in sync handler');
+    warnSpy.mockRestore();
+    (ACL as any).conditionHandlers.delete('test_throwing_audited');
   });
 });
 
@@ -619,7 +645,7 @@ describe('ACL.asyncCheck', () => {
     }]);
     const ctx = makeContext({ callChain: [] });
     expect(await acl.asyncCheck('module.a', 'target', ctx)).toBe(false);
-    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('threw — treated as unsatisfied'));
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('threw:'));
     warnSpy.mockRestore();
     // Cleanup: unregister the test handler
     (ACL as any).conditionHandlers.delete('test_throwing_async');
