@@ -583,18 +583,15 @@ export class Executor {
           ? (exc.cause instanceof Error ? exc.cause : exc)
           : exc;
         const wrapped = propagateError(unwrappedPost as Error, moduleId, ctxObj);
+        // Sync finding A-D-011: phase-3 errors must NOT invoke middleware
+        // `on_error` once chunks have already been yielded. The middleware
+        // recovery contract is "produce a recovery output before any output is
+        // visible"; running on_error after partial-output emission breaks that
+        // contract. apcore-python and apcore-rust only log/emit at this point;
+        // TS now matches.
         console.warn(
           `[apcore:executor] stream phase-3 failure for '${moduleId}' (chunks already delivered): ${wrapped.message}`,
         );
-        if (pipeCtx.executedMiddlewares && pipeCtx.executedMiddlewares.length > 0) {
-          await this._middlewareManager.executeOnError(
-            moduleId,
-            pipeCtx.inputs,
-            wrapped as Error,
-            ctxObj,
-            pipeCtx.executedMiddlewares as Middleware[],
-          );
-        }
         // Do not rethrow — phase-3 errors are swallowed per spec.
       }
     }

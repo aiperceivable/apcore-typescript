@@ -223,21 +223,62 @@ function sortedKeysStringify(obj: unknown): string {
 /**
  * Compute the SHA-256 hex digest of the canonical JSON serialization of a schema.
  * Canonical form: sorted keys, no extra whitespace.
+ *
+ * Sync API — Node.js only. In environments without `node:crypto` (browsers,
+ * some edge runtimes), this throws so callers cannot accidentally consume a
+ * different hash than apcore-python / apcore-rust would produce. Spec
+ * §schema-system §4.15.5 requires sha256 of canonical JSON; a non-sha256
+ * fallback collides with cross-language cache keys (sync finding A-D-033).
+ *
+ * Use {@link contentHashAsync} in browsers — it uses WebCrypto SubtleCrypto
+ * to compute the same SHA-256 digest asynchronously.
  */
 export function contentHash(schema: unknown): string {
   const canonical = sortedKeysStringify(schema);
   if (_nodeCrypto) {
     return _nodeCrypto.createHash('sha256').update(canonical).digest('hex');
   }
-  // Fallback for browser environments: use SubtleCrypto synchronously via a
-  // simple djb2-based hex string (not cryptographically strong, but stable).
-  // In practice, SchemaLoader is only used in Node.js environments.
-  let h = 5381;
-  for (let i = 0; i < canonical.length; i++) {
-    h = ((h << 5) + h) ^ canonical.charCodeAt(i);
-    h |= 0;
+  throw new Error(
+    'contentHash() requires node:crypto for synchronous SHA-256. ' +
+      'In browser/edge environments, call contentHashAsync() instead — ' +
+      'it uses the WebCrypto SubtleCrypto API to produce the spec-compliant digest.',
+  );
+}
+
+/**
+ * Compute the SHA-256 hex digest of the canonical JSON serialization of a schema
+ * — async, runtime-portable variant.
+ *
+ * Uses Node's `node:crypto` when available, otherwise falls back to the
+ * WebCrypto `crypto.subtle.digest('SHA-256', ...)` API present in modern
+ * browsers and edge runtimes. Output is identical across all paths and
+ * matches the Python/Rust SDKs (sync finding A-D-033).
+ */
+export async function contentHashAsync(schema: unknown): Promise<string> {
+  const canonical = sortedKeysStringify(schema);
+  if (_nodeCrypto) {
+    return _nodeCrypto.createHash('sha256').update(canonical).digest('hex');
   }
-  return (h >>> 0).toString(16).padStart(8, '0').repeat(8);
+  // Browser / edge runtime — WebCrypto.subtle is the only spec-compliant path.
+  // Typed structurally so this file compiles without browser DOM lib types.
+  type WebCryptoSubtle = { digest(algo: string, data: ArrayBuffer | ArrayBufferView): Promise<ArrayBuffer> };
+  const subtle: WebCryptoSubtle | undefined =
+    (typeof globalThis !== 'undefined'
+      ? (globalThis as { crypto?: { subtle?: WebCryptoSubtle } }).crypto?.subtle
+      : undefined);
+  if (!subtle) {
+    throw new Error(
+      'contentHashAsync(): no SHA-256 implementation available — neither node:crypto nor WebCrypto SubtleCrypto is present in this runtime.',
+    );
+  }
+  const data = new TextEncoder().encode(canonical);
+  const digest = await subtle.digest('SHA-256', data);
+  const bytes = new Uint8Array(digest);
+  let hex = '';
+  for (const b of bytes) {
+    hex += b.toString(16).padStart(2, '0');
+  }
+  return hex;
 }
 
 // ---------------------------------------------------------------------------

@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { Type } from '@sinclair/typebox';
 import { CTX_GLOBAL_DEADLINE, Executor } from '../src/executor.js';
 import { FunctionModule } from '../src/decorator.js';
@@ -181,11 +181,14 @@ describe('Executor.stream()', () => {
     expect(afterOutput).toEqual({ a: 'test_a', b: 'test_b' });
   });
 
-  it('routes to onError middleware and swallows phase-3 after() failure (sync A-D-012)', async () => {
-    // Per spec: chunks are already delivered when phase-3 (post-stream
-    // after-middleware/output validation) runs, so failures MUST NOT be
-    // re-thrown to the consumer. The onError chain still runs for
-    // observability; the error is logged and swallowed.
+  it('swallows phase-3 after() failure without re-invoking onError (sync A-D-011)', async () => {
+    // Per spec (sync finding A-D-011): chunks are already delivered when
+    // phase-3 (post-stream after-middleware/output validation) runs, so
+    // failures MUST NOT be re-thrown. Furthermore, the middleware `onError`
+    // chain MUST NOT run after partial output emission — that contract is
+    // "produce a recovery output before any output is visible", and once
+    // chunks are yielded the contract is no longer applicable. apcore-python
+    // and apcore-rust only log/emit at this point; TS now matches.
     const registry = new Registry();
     const mod = createStreamingModule('stream_after_fail');
     registry.register('stream_after_fail', mod);
@@ -202,11 +205,15 @@ describe('Executor.stream()', () => {
     }
 
     const executor = new Executor({ registry, middlewares: [new FailingAfter()] });
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     // Chunks were yielded before phase 3, so consumption succeeds; the
     // post-stream failure is swallowed (logged via console.warn).
     const chunks = await collectChunks(executor.stream('stream_after_fail', { name: 'Test' }));
     expect(chunks.length).toBeGreaterThan(0);
-    expect(onErrorCalled).toBe(true);
+    // Cross-language parity: onError MUST NOT be invoked once chunks are out.
+    expect(onErrorCalled).toBe(false);
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('phase-3 failure'));
+    warnSpy.mockRestore();
   });
 
   it('validates output schema on accumulated streaming result', async () => {
