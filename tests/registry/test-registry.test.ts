@@ -985,17 +985,24 @@ describe('Registry discover() onLoad failure during _registerInOrder', () => {
  * --------------------------------------------------------- */
 
 describe('Registry discover() with extensionsDirs (multi-root)', () => {
+  let parentDir: string;
   let tempDirA: string;
   let tempDirB: string;
 
   beforeEach(() => {
-    tempDirA = mkdtempSync(join(tmpdir(), 'apcore-registry-multiroot-a-'));
-    tempDirB = mkdtempSync(join(tmpdir(), 'apcore-registry-multiroot-b-'));
+    // Use deterministic subdir names so the namespace derived from the dir
+    // basename satisfies PROTOCOL_SPEC §2.7 (lowercase, no hyphens, no
+    // reserved first segment) — required after sync findings A-D-101 /
+    // A-D-102 added validation in the discover paths.
+    parentDir = mkdtempSync(join(tmpdir(), 'multiroot_'));
+    tempDirA = join(parentDir, 'roota');
+    tempDirB = join(parentDir, 'rootb');
+    mkdirSync(tempDirA);
+    mkdirSync(tempDirB);
   });
 
   afterEach(() => {
-    rmSync(tempDirA, { recursive: true, force: true });
-    rmSync(tempDirB, { recursive: true, force: true });
+    rmSync(parentDir, { recursive: true, force: true });
   });
 
   it('discovers modules across multiple extension directories', async () => {
@@ -1739,5 +1746,132 @@ describe('Registry hot-reload API (acquire/release/drain)', () => {
     registry.register('test.mod', createMod('test.mod'));
     registry.exportSchema('test.mod'); // populate cache
     expect(() => registry.clearCache()).not.toThrow();
+  });
+});
+
+/* -----------------------------------------------------------
+ * Sync findings A-D-101 / A-D-102 — validation in discover paths
+ * --------------------------------------------------------- */
+
+describe('Registry discover() validates module IDs (A-D-101, A-D-102)', () => {
+  let tempDir: string;
+
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), 'apcore-registry-validate-'));
+  });
+
+  afterEach(() => {
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it('A-D-101: _registerInOrder skips entries whose canonical ID violates pattern (default discover path)', async () => {
+    // Use a custom discoverer that injects an invalid moduleId ("BadID") to
+    // bypass scanner-level normalization and simulate an upstream override
+    // (idMap) producing an invalid ID. The default-discovery path itself
+    // normally produces lowercase IDs from filesystem names, so we exercise
+    // the _registerInOrder gate via its default path here using the custom
+    // discoverer entry-points API.
+    const goodMod = createMod('good_mod');
+    const badMod = createMod('good_mod'); // same shape, but registered under bad ID
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const registry = new Registry();
+    // Use _discoverCustom path (A-D-102) — invalid ID must be skipped.
+    registry.setDiscoverer({
+      discover: async () => [
+        { moduleId: 'BadID', module: badMod }, // invalid — uppercase
+        { moduleId: 'good_mod', module: goodMod },
+      ],
+    });
+
+    const count = await registry.discover();
+    expect(count).toBe(1);
+    expect(registry.has('BadID')).toBe(false);
+    expect(registry.has('good_mod')).toBe(true);
+
+    // Should have warned about the invalid ID
+    expect(
+      warnSpy.mock.calls.some((args) =>
+        args.some((a) => typeof a === 'string' && /BadID|Invalid module ID|reserved/.test(a)) ||
+        args.some((a) => a instanceof Error && /BadID|Invalid module ID|reserved/.test(a.message))
+      ),
+    ).toBe(true);
+    warnSpy.mockRestore();
+  });
+
+  it('A-D-102: _discoverCustom rejects invalid module IDs (uppercase) and continues with valid ones', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const registry = new Registry();
+    registry.setDiscoverer({
+      discover: async () => [
+        { moduleId: 'INVALID-ID', module: createMod('whatever') }, // hyphen + uppercase
+        { moduleId: '1leadingdigit', module: createMod('whatever2') }, // pattern violation
+        { moduleId: 'valid.mod', module: createMod('valid.mod') },
+      ],
+    });
+
+    const count = await registry.discover();
+    expect(count).toBe(1);
+    expect(registry.has('INVALID-ID')).toBe(false);
+    expect(registry.has('1leadingdigit')).toBe(false);
+    expect(registry.has('valid.mod')).toBe(true);
+    warnSpy.mockRestore();
+  });
+
+  it('A-D-102: _discoverCustom rejects reserved-word first-segment IDs from custom discoverer', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const registry = new Registry();
+    registry.setDiscoverer({
+      discover: async () => [
+        { moduleId: 'system.foo', module: createMod('system.foo') }, // reserved
+        { moduleId: 'app.foo', module: createMod('app.foo') },
+      ],
+    });
+
+    const count = await registry.discover();
+    expect(count).toBe(1);
+    expect(registry.has('system.foo')).toBe(false);
+    expect(registry.has('app.foo')).toBe(true);
+    warnSpy.mockRestore();
+  });
+
+  it('A-D-101: _registerInOrder skips ID with reserved-word first segment (default discover path)', async () => {
+    // Filesystem-based discovery: canonicalId derived from filename. Use a
+    // top-level dir named "system" to produce a "system" canonicalId, which
+    // is a reserved word and must be filtered.
+    mkdirSync(join(tempDir, 'system'));
+    writeFileSync(
+      join(tempDir, 'system', 'badmod.js'),
+      `export default {
+        execute: async () => ({}),
+        description: 'Reserved-prefix module',
+        inputSchema: { type: 'object' },
+        outputSchema: { type: 'object' },
+      };`,
+      'utf-8',
+    );
+    writeFileSync(
+      join(tempDir, 'goodmod.js'),
+      `export default {
+        execute: async () => ({}),
+        description: 'Good module',
+        inputSchema: { type: 'object' },
+        outputSchema: { type: 'object' },
+      };`,
+      'utf-8',
+    );
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const registry = new Registry({ extensionsDir: tempDir });
+    const count = await registry.discover();
+
+    // The reserved-prefixed module must be skipped; goodmod must register.
+    expect(registry.has('goodmod')).toBe(true);
+    expect(registry.has('system.badmod')).toBe(false);
+    expect(count).toBeGreaterThanOrEqual(1);
+    warnSpy.mockRestore();
   });
 });

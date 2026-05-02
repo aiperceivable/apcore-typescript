@@ -270,6 +270,19 @@ export class Registry {
         }
       }
 
+      // PROTOCOL_SPEC §2.7 ID validation — sync finding A-D-102.
+      // Mirrors apcore-python `Registry._discover_custom` which calls
+      // `_validate_module_id` before registration. Invalid IDs are skipped
+      // with a warning rather than aborting the whole discover run.
+      try {
+        validateModuleId(moduleId, false);
+      } catch (e) {
+        console.warn(
+          `[apcore:registry] Skipping custom-discovered module with invalid ID '${moduleId}': ${(e as Error).message}`,
+        );
+        continue;
+      }
+
       try {
         this._registerImpl(moduleId, mod);
         count++;
@@ -424,6 +437,36 @@ export class Registry {
       const mod = validModules.get(modId)!;
       const modObj = mod as Record<string, unknown>;
       const mergedMeta = mergeModuleMetadata(modObj, rawMetadata.get(modId) ?? {});
+
+      // PROTOCOL_SPEC §2.7 ID validation + Algorithm A03 conflict detection
+      // (sync finding A-D-101). Mirrors apcore-python `_filter_id_conflicts`
+      // gating in `Registry._register_in_order`. Invalid/conflicting IDs are
+      // skipped (warn + continue) rather than aborting the whole batch.
+      try {
+        validateModuleId(modId, false);
+      } catch (e) {
+        console.warn(
+          `[apcore:registry] Skipping discovered module with invalid ID '${modId}': ${(e as Error).message}`,
+        );
+        continue;
+      }
+
+      const conflict = detectIdConflicts(
+        modId,
+        new Set(this._modules.keys()),
+        RESERVED_WORDS,
+        this._lowercaseMap,
+      );
+      if (conflict !== null) {
+        if (conflict.severity === 'error') {
+          console.warn(
+            `[apcore:registry] Skipping discovered module '${modId}' due to ID conflict: ${conflict.message}`,
+          );
+          continue;
+        } else {
+          console.warn(`[apcore:registry] ID conflict: ${conflict.message}`);
+        }
+      }
 
       this._modules.set(modId, mod);
       this._moduleMeta.set(modId, mergedMeta);
