@@ -8,6 +8,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+#### Pipeline Hardening (Issue #33)
+
+- **`StepMiddleware` interface** (Issue #33 §2.2) — Public interface in `src/pipeline.ts` exposing optional `beforeStep` / `afterStep` / `onStepError` hooks around every pipeline step. Hooks may be sync or async; the engine awaits any thenable return value (mirroring the Issue #42 fix in `MiddlewareManager`) so plain functions returning a Promise are not silently dropped. `onStepError` returning a non-null value suppresses the error and continues the pipeline — first non-null wins, later middlewares are skipped. Multiple middlewares run in registration order.
+- **`PipelineEngine.addStepMiddleware(mw)`** and **`PipelineEngine.stepMiddlewares`** — Register lifecycle interceptors on the engine. Backward-compatible: pipelines with zero middlewares behave exactly as before.
+- **`PipelineDependencyError`** — New error raised at `ExecutionStrategy` construction when a step's `requires` are not satisfied by a preceding step's `provides` (Issue #33 §2.1). Replaces the previous `console.warn` that allowed misconfigured strategies to fail later with a confusing runtime error. Carries `stepName` and `missingRequires` for programmatic inspection.
+- **`ExecutionStrategy` constructor `seedProvides` option** — Lets callers building a sub-strategy (e.g. `Executor.stream()`'s post-stream phase) declare context fields that are guaranteed to be pre-populated, so dependency validation does not raise on legitimate use.
+- **`ConfigurationError`** — New error raised by `buildStrategyFromConfig()` when YAML pipeline configuration references a non-existent step in `remove`, `configure`, `after`, or `before`, or when a custom step has neither `after` nor `before` (Issue #33 §1.2). Replaces the previous warn-and-continue behaviour. Exported from `apcore-js` for typed catches.
+
+### Changed
+
+- `ExecutionStrategy._validateDependencies` now throws `PipelineDependencyError` instead of emitting `console.warn`. Strategies that declared unsatisfied `requires` will now fail to construct — fix the strategy or use the new `seedProvides` option.
+- `buildStrategyFromConfig()` now throws `ConfigurationError` instead of emitting `console.warn` for missing-step / missing-anchor / missing-after-or-before configuration mistakes.
+
 ### Fixed
 
 - **Sync findings A-D-101 / A-D-102** — `Registry._registerInOrder` and `Registry._discoverCustom` now apply PROTOCOL_SPEC §2.7 ID validation (empty → pattern → length → reserved-word) and Algorithm A03 conflict detection before registering each discovered module. Invalid or conflicting IDs are skipped with a `console.warn` instead of being registered. Mirrors `apcore-python._filter_id_conflicts` and `apcore-rust::Registry::filter_id_conflicts`.

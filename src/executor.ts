@@ -7,32 +7,39 @@
 
 import type { ACL } from './acl.js';
 import type { ApprovalHandler } from './approval.js';
-import type { Config } from './config.js';
-import { Context } from './context.js';
-import { ExecutionCancelledError } from './cancel.js';
-import {
-  InvalidInputError,
-  ModuleError,
-  ModuleTimeoutError,
-} from './errors.js';
-import { AfterMiddleware, BeforeMiddleware, Middleware, RetrySignal } from './middleware/index.js';
-import { MiddlewareChainError, MiddlewareManager } from './middleware/manager.js';
-import type { Module, ModuleAnnotations, PreflightCheckResult, PreflightResult } from './module.js';
-import { createPreflightResult } from './module.js';
-import { MODULE_ID_PATTERN } from './registry/registry.js';
-import type { Registry } from './registry/registry.js';
-import type { PipelineContext, PipelineTrace, StrategyInfo } from './pipeline.js';
-import { ExecutionStrategy, PipelineEngine, PipelineAbortError, PipelineStepError, StrategyNotFoundError } from './pipeline.js';
 import {
   BuiltinACLCheck,
   BuiltinApprovalGate,
-  buildStandardStrategy,
   buildInternalStrategy,
-  buildTestingStrategy,
-  buildPerformanceStrategy,
   buildMinimalStrategy,
+  buildPerformanceStrategy,
+  buildStandardStrategy,
+  buildTestingStrategy,
 } from './builtin-steps.js';
 import type { StandardStrategyDeps } from './builtin-steps.js';
+import { ExecutionCancelledError } from './cancel.js';
+import type { Config } from './config.js';
+import { Context } from './context.js';
+import { InvalidInputError, ModuleError, ModuleTimeoutError } from './errors.js';
+import {
+  AfterMiddleware,
+  BeforeMiddleware,
+  type Middleware,
+  RetrySignal,
+} from './middleware/index.js';
+import { MiddlewareChainError, MiddlewareManager } from './middleware/manager.js';
+import type { Module, ModuleAnnotations, PreflightCheckResult, PreflightResult } from './module.js';
+import { createPreflightResult } from './module.js';
+import type { PipelineContext, PipelineTrace, StrategyInfo } from './pipeline.js';
+import {
+  ExecutionStrategy,
+  PipelineAbortError,
+  PipelineEngine,
+  PipelineStepError,
+  StrategyNotFoundError,
+} from './pipeline.js';
+import { MODULE_ID_PATTERN } from './registry/registry.js';
+import type { Registry } from './registry/registry.js';
 import type { ToggleState } from './sys-modules/toggle.js';
 import { propagateError } from './utils/error-propagation.js';
 
@@ -53,7 +60,9 @@ export function redactSensitive(
 }
 
 function redactFields(data: Record<string, unknown>, schemaDict: Record<string, unknown>): void {
-  const properties = schemaDict['properties'] as Record<string, Record<string, unknown>> | undefined;
+  const properties = schemaDict['properties'] as
+    | Record<string, Record<string, unknown>>
+    | undefined;
   if (!properties) return;
 
   for (const [fieldName, fieldSchema] of Object.entries(properties)) {
@@ -67,7 +76,13 @@ function redactFields(data: Record<string, unknown>, schemaDict: Record<string, 
       continue;
     }
 
-    if (fieldSchema['type'] === 'object' && 'properties' in fieldSchema && typeof value === 'object' && value !== null && !Array.isArray(value)) {
+    if (
+      fieldSchema['type'] === 'object' &&
+      'properties' in fieldSchema &&
+      typeof value === 'object' &&
+      value !== null &&
+      !Array.isArray(value)
+    ) {
       redactFields(value as Record<string, unknown>, fieldSchema);
       continue;
     }
@@ -224,7 +239,7 @@ export class Executor {
 
   /** List info for all registered strategies. */
   static listStrategies(): StrategyInfo[] {
-    return [...Executor._strategyRegistry.values()].map(s => s.info());
+    return [...Executor._strategyRegistry.values()].map((s) => s.info());
   }
 
   /** Describe the pipeline of the executor's current strategy. */
@@ -296,12 +311,25 @@ export class Executor {
     return this;
   }
 
-  useBefore(callback: (moduleId: string, inputs: Record<string, unknown>, context: Context) => Record<string, unknown> | null): Executor {
+  useBefore(
+    callback: (
+      moduleId: string,
+      inputs: Record<string, unknown>,
+      context: Context,
+    ) => Record<string, unknown> | null,
+  ): Executor {
     this._middlewareManager.add(new BeforeMiddleware(callback));
     return this;
   }
 
-  useAfter(callback: (moduleId: string, inputs: Record<string, unknown>, output: Record<string, unknown>, context: Context) => Record<string, unknown> | null): Executor {
+  useAfter(
+    callback: (
+      moduleId: string,
+      inputs: Record<string, unknown>,
+      output: Record<string, unknown>,
+      context: Context,
+    ) => Record<string, unknown> | null,
+  ): Executor {
     this._middlewareManager.add(new AfterMiddleware(callback));
     return this;
   }
@@ -345,20 +373,22 @@ export class Executor {
         if (exc instanceof ExecutionCancelledError) throw exc;
         // PipelineStepError is the engine-level contract (§1.1). Unwrap the cause
         // so the executor's public API surfaces the original typed error.
-        const unwrapped = exc instanceof PipelineStepError
-          ? (exc.cause instanceof Error ? exc.cause : exc)
-          : exc;
+        const unwrapped =
+          exc instanceof PipelineStepError ? (exc.cause instanceof Error ? exc.cause : exc) : exc;
         // MiddlewareChainError wraps the original; unwrap it so callers see the
         // real error class/code instead of a generic MODULE_EXECUTE_ERROR.
         const ctxObj = pipeCtx.context;
-        const underlying = unwrapped instanceof MiddlewareChainError
-          ? unwrapped.original
-          : (unwrapped as Error);
+        const underlying =
+          unwrapped instanceof MiddlewareChainError ? unwrapped.original : (unwrapped as Error);
         const wrapped = propagateError(underlying, moduleId, ctxObj);
         const executedMw = pipeCtx.executedMiddlewares;
         if (executedMw && executedMw.length > 0) {
           const recovery = await this._middlewareManager.executeOnError(
-            moduleId, pipeCtx.inputs, wrapped as Error, ctxObj, executedMw as Middleware[],
+            moduleId,
+            pipeCtx.inputs,
+            wrapped as Error,
+            ctxObj,
+            executedMw as Middleware[],
           );
           if (recovery instanceof RetrySignal) {
             this._resetPipeCtxForRetry(pipeCtx, recovery.inputs);
@@ -496,13 +526,16 @@ export class Executor {
       if (exc instanceof ExecutionCancelledError) throw exc;
       const ctxObj = pipeCtx.context;
       // Unwrap PipelineStepError to expose the original typed cause (§1.1).
-      const unwrapped = exc instanceof PipelineStepError
-        ? (exc.cause instanceof Error ? exc.cause : exc)
-        : exc;
+      const unwrapped =
+        exc instanceof PipelineStepError ? (exc.cause instanceof Error ? exc.cause : exc) : exc;
       const wrapped = propagateError(unwrapped as Error, moduleId, ctxObj);
       if (pipeCtx.executedMiddlewares && pipeCtx.executedMiddlewares.length > 0) {
         const recovery = await this._middlewareManager.executeOnError(
-          moduleId, pipeCtx.inputs, wrapped as Error, ctxObj, pipeCtx.executedMiddlewares as Middleware[],
+          moduleId,
+          pipeCtx.inputs,
+          wrapped as Error,
+          ctxObj,
+          pipeCtx.executedMiddlewares as Middleware[],
         );
         // RetrySignal is not supported in stream mode — re-running a stream
         // mid-flight is not well-defined. Fall through to throwing the wrapped
@@ -550,7 +583,11 @@ export class Executor {
       const wrapped = propagateError(exc as Error, moduleId, ctxObj);
       if (pipeCtx.executedMiddlewares && pipeCtx.executedMiddlewares.length > 0) {
         const recovery = await this._middlewareManager.executeOnError(
-          moduleId, pipeCtx.inputs, wrapped as Error, ctxObj, pipeCtx.executedMiddlewares as Middleware[],
+          moduleId,
+          pipeCtx.inputs,
+          wrapped as Error,
+          ctxObj,
+          pipeCtx.executedMiddlewares as Middleware[],
         );
         // RetrySignal not supported mid-stream (sync finding A-D-017).
         if (recovery !== null && !(recovery instanceof RetrySignal)) {
@@ -564,10 +601,18 @@ export class Executor {
     // Phase 3: Output validation + middleware_after on accumulated result
     pipeCtx.output = accumulated;
     const postSteps = this._strategy.steps.filter(
-      (s) => s.name === 'output_validation' || s.name === 'middleware_after' || s.name === 'return_result',
+      (s) =>
+        s.name === 'output_validation' ||
+        s.name === 'middleware_after' ||
+        s.name === 'return_result',
     );
     if (postSteps.length > 0) {
-      const postStrategy = new ExecutionStrategy('post_stream', postSteps);
+      // The post-stream sub-strategy starts with module + output already
+      // populated on pipeCtx (set by Phase 1 / Phase 2 above), so seed those
+      // names into the dependency check (§2.1).
+      const postStrategy = new ExecutionStrategy('post_stream', postSteps, {
+        seedProvides: ['module', 'output'],
+      });
       try {
         await this._pipelineEngine.run(postStrategy, pipeCtx);
       } catch (exc) {
@@ -579,9 +624,8 @@ export class Executor {
         // TODO: emit ApCoreEvent via injected EventEmitter when Executor gains
         // an optional eventEmitter constructor field (pending architectural wiring).
         const ctxObj = pipeCtx.context;
-        const unwrappedPost = exc instanceof PipelineStepError
-          ? (exc.cause instanceof Error ? exc.cause : exc)
-          : exc;
+        const unwrappedPost =
+          exc instanceof PipelineStepError ? (exc.cause instanceof Error ? exc.cause : exc) : exc;
         const wrapped = propagateError(unwrappedPost as Error, moduleId, ctxObj);
         // Sync finding A-D-011: phase-3 errors must NOT invoke middleware
         // `on_error` once chunks have already been yielded. The middleware
@@ -615,7 +659,8 @@ export class Executor {
     // Check 0: module_id format (before pipeline)
     if (!MODULE_ID_PATTERN.test(moduleId)) {
       checks.push({
-        check: 'module_id', passed: false,
+        check: 'module_id',
+        passed: false,
         error: { code: 'INVALID_INPUT', message: `Invalid module ID: "${moduleId}"` },
       });
       return createPreflightResult(checks);
@@ -648,19 +693,31 @@ export class Executor {
         trace = e.pipelineTrace;
       } else {
         // Unwrap PipelineStepError to expose the original typed cause (§1.1).
-        const underlying = e instanceof PipelineStepError
-          ? (e.cause instanceof Error ? e.cause : e)
-          : e;
-        const errorDict = (underlying instanceof ModuleError)
-          ? { code: underlying.code, message: underlying.message }
-          : { code: (underlying as Error).constructor?.name ?? 'Error', message: String(underlying) };
-        const code = (underlying instanceof ModuleError) ? underlying.code : (underlying as Error).constructor?.name ?? 'Error';
+        const underlying =
+          e instanceof PipelineStepError ? (e.cause instanceof Error ? e.cause : e) : e;
+        const errorDict =
+          underlying instanceof ModuleError
+            ? { code: underlying.code, message: underlying.message }
+            : {
+                code: (underlying as Error).constructor?.name ?? 'Error',
+                message: String(underlying),
+              };
+        const code =
+          underlying instanceof ModuleError
+            ? underlying.code
+            : ((underlying as Error).constructor?.name ?? 'Error');
 
         let checkName: string;
         if (code === 'MODULE_NOT_FOUND') checkName = 'module_lookup';
         else if (code === 'ACL_DENIED') checkName = 'acl';
-        else if (code === 'SCHEMA_VALIDATION_ERROR' || code === 'INVALID_INPUT') checkName = 'schema';
-        else if (code === 'CALL_DEPTH_EXCEEDED' || code === 'CIRCULAR_CALL' || code === 'CALL_FREQUENCY_EXCEEDED') checkName = 'call_chain';
+        else if (code === 'SCHEMA_VALIDATION_ERROR' || code === 'INVALID_INPUT')
+          checkName = 'schema';
+        else if (
+          code === 'CALL_DEPTH_EXCEEDED' ||
+          code === 'CIRCULAR_CALL' ||
+          code === 'CALL_FREQUENCY_EXCEEDED'
+        )
+          checkName = 'call_chain';
         else checkName = 'unknown';
 
         checks.push({ check: checkName, passed: false, error: errorDict });

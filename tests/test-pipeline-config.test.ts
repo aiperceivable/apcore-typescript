@@ -2,7 +2,7 @@
  * Tests for pipeline-config.ts: step type registry, _resolveStep, and buildStrategyFromConfig.
  */
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   _resolveStep,
   buildStrategyFromConfig,
@@ -162,9 +162,9 @@ describe('_resolveStep', () => {
   });
 
   it('rejects handler path using data: URLs', async () => {
-    await expect(_resolveStep({ handler: 'data:text/javascript,export const x=1:fn' })).rejects.toThrow(
-      /must not use 'data:' URLs/,
-    );
+    await expect(
+      _resolveStep({ handler: 'data:text/javascript,export const x=1:fn' }),
+    ).rejects.toThrow(/must not use 'data:' URLs/);
   });
 
   it('rejects handler module that cannot be imported', async () => {
@@ -226,26 +226,23 @@ describe('buildStrategyFromConfig', () => {
     expect(strategy.stepNames().length).toBeGreaterThan(0);
   });
 
-  it('removes a named step when listed in remove', async () => {
+  it('throws ConfigurationError when remove targets a nonexistent step (Issue #33 §1.2)', async () => {
     const deps = makeFakeDeps();
-
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    await buildStrategyFromConfig({ remove: ['nonexistent_step_xyz'] }, deps);
-    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('nonexistent_step_xyz'));
-    warnSpy.mockRestore();
+    await expect(
+      buildStrategyFromConfig({ remove: ['nonexistent_step_xyz'] }, deps),
+    ).rejects.toThrow(/nonexistent_step_xyz/);
   });
 
-  it('warns when a step has neither after nor before in steps list', async () => {
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  it('throws ConfigurationError when a step has neither after nor before in steps list (Issue #33 §1.2)', async () => {
     const deps = makeFakeDeps();
-    await buildStrategyFromConfig(
-      {
-        steps: [{ type: CUSTOM_TYPE, name: 'custom-step' }],
-      },
-      deps,
-    );
-    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("neither 'after' nor 'before'"));
-    warnSpy.mockRestore();
+    await expect(
+      buildStrategyFromConfig(
+        {
+          steps: [{ type: CUSTOM_TYPE, name: 'custom-step' }],
+        },
+        deps,
+      ),
+    ).rejects.toThrow(/neither 'after' nor 'before'/);
   });
 
   it('inserts a custom step after a named standard step', async () => {
