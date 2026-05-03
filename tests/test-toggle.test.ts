@@ -183,8 +183,11 @@ describe('ToggleFeatureModule', () => {
     expect(toggleState.isDisabled('test.dummy')).toBe(false);
   });
 
-  it('emits apcore.module.toggled event with only enabled in data', () => {
-    // W-12: event payload carries only { enabled } — reason stays in the module return value only.
+  it('emits apcore.module.toggled event with enabled and identity context', () => {
+    // W-12: event payload carries `enabled` (Python parity).
+    // Issue #45.2: payload also carries `caller_id` (defaults to "@external")
+    //              and `identity` (null when no Context is supplied).
+    // `reason` stays in the module return value only.
     toggle.execute({ module_id: 'test.dummy', enabled: false, reason: 'shutting down' }, null);
 
     expect(capturedEvents).toHaveLength(1);
@@ -192,7 +195,11 @@ describe('ToggleFeatureModule', () => {
     expect(canonicalEvent.eventType).toBe('apcore.module.toggled');
     expect(canonicalEvent.moduleId).toBe('test.dummy');
     expect(canonicalEvent.severity).toBe('info');
-    expect(canonicalEvent.data).toEqual({ enabled: false });
+    expect(canonicalEvent.data).toEqual({
+      enabled: false,
+      caller_id: '@external',
+      identity: null,
+    });
   });
 
   it('returns success result with module_id and enabled (no reason per spec)', () => {

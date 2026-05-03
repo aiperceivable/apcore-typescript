@@ -55,11 +55,17 @@ describe('PlatformNotifyMiddleware', () => {
 
     mw.onError('mod.a', {}, new Error('boom'), ctx);
 
-    expect(events).toHaveLength(1);
-    expect(events[0].eventType).toBe('error_threshold_exceeded');
-    expect(events[0].moduleId).toBe('mod.a');
-    expect(events[0].data['error_rate']).toBe(0.2);
-    expect(events[0].data['threshold']).toBe(0.1);
+    // Issue #36: emits BOTH canonical and legacy event during deprecation window.
+    expect(events).toHaveLength(2);
+    const canonical = events.find(e => e.eventType === 'apcore.health.error_threshold_exceeded');
+    const legacy = events.find(e => e.eventType === 'error_threshold_exceeded');
+    expect(canonical).toBeDefined();
+    expect(legacy).toBeDefined();
+    expect(canonical!.moduleId).toBe('mod.a');
+    expect(canonical!.data['error_rate']).toBe(0.2);
+    expect(canonical!.data['threshold']).toBe(0.1);
+    expect(legacy!.data['deprecated']).toBe(true);
+    expect(legacy!.data['canonical_event']).toBe('apcore.health.error_threshold_exceeded');
   });
 
   it('does not emit duplicate error_threshold_exceeded alerts (hysteresis)', () => {

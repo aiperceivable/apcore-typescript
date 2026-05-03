@@ -14,7 +14,7 @@ import { ErrorHistory } from '../observability/error-history.js';
 import { ErrorHistoryMiddleware } from '../middleware/error-history.js';
 import { UsageCollector, UsageMiddleware } from '../observability/usage.js';
 import type { EventSubscriber } from '../events/emitter.js';
-import { EventEmitter, createEvent } from '../events/emitter.js';
+import { EventEmitter, emitWithLegacy } from '../events/emitter.js';
 import { WebhookSubscriber, A2ASubscriber, FileSubscriber, StdoutSubscriber, FilterSubscriber } from '../events/subscribers.js';
 import { PlatformNotifyMiddleware } from '../middleware/platform-notify.js';
 import { HealthSummaryModule, HealthModule } from './health.js';
@@ -308,12 +308,29 @@ export function registerSysModules(
     }));
     reg('system.control.reload_module', new ReloadModule(registry, eventEmitter, auditStore ?? undefined));
 
-    // Bridge registry events
+    // Bridge registry events.
+    // §Issue #36: emit canonical apcore.registry.* names and legacy aliases
+    // (with deprecated: true) during the deprecation window. Once the legacy
+    // names are removed, drop the emitWithLegacy() wrapper for direct emit().
     registry.on('register', (moduleId: string) => {
-      eventEmitter.emit(createEvent('module_registered', moduleId, 'info', {}));
+      emitWithLegacy(
+        eventEmitter,
+        'apcore.registry.module_registered',
+        'module_registered',
+        moduleId,
+        'info',
+        {},
+      );
     });
     registry.on('unregister', (moduleId: string) => {
-      eventEmitter.emit(createEvent('module_unregistered', moduleId, 'info', {}));
+      emitWithLegacy(
+        eventEmitter,
+        'apcore.registry.module_unregistered',
+        'module_unregistered',
+        moduleId,
+        'info',
+        {},
+      );
     });
   }
 

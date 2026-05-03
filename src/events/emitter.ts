@@ -29,6 +29,34 @@ export function createEvent(
   };
 }
 
+/**
+ * Emit a canonical event AND a legacy alias for the same event during the
+ * deprecation window. The legacy event payload is augmented with
+ * `deprecated: true` and `canonical_event: <canonicalType>` so subscribers
+ * still listening to the legacy name can migrate.
+ *
+ * The two emissions share an identical timestamp so they appear atomic to
+ * downstream consumers ordering by `timestamp`.
+ */
+export function emitWithLegacy(
+  emitter: EventEmitter,
+  canonicalType: string,
+  legacyType: string,
+  moduleId: string | null,
+  severity: string,
+  data: Record<string, unknown>,
+): void {
+  const timestamp = new Date().toISOString();
+  emitter.emit({ eventType: canonicalType, moduleId, timestamp, severity, data });
+  emitter.emit({
+    eventType: legacyType,
+    moduleId,
+    timestamp,
+    severity,
+    data: { ...data, deprecated: true, canonical_event: canonicalType },
+  });
+}
+
 const DEFAULT_MAX_PENDING = 1000;
 
 /**

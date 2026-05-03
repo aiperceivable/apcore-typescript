@@ -1,4 +1,4 @@
-export { EventEmitter, createEvent } from './emitter.js';
+export { EventEmitter, createEvent, emitWithLegacy } from './emitter.js';
 export type { ApCoreEvent, EventSubscriber } from './emitter.js';
 export { WebhookSubscriber, A2ASubscriber, FileSubscriber, StdoutSubscriber, FilterSubscriber } from './subscribers.js';
 export { CircuitBreakerWrapper, CircuitState } from './circuit-breaker.js';

@@ -149,6 +149,7 @@ export type { ExtensionPoint } from './extensions.js';
 export {
   EventEmitter,
   createEvent,
+  emitWithLegacy,
   WebhookSubscriber,
   A2ASubscriber,
   FileSubscriber,

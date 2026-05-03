@@ -62,3 +62,26 @@ export function buildAuditEntry(
     change,
   };
 }
+
+/**
+ * Issue #45.2: Extract requester identity fields for audit event payloads.
+ *
+ * Returns `caller_id` (defaulting to `"@external"` when absent so that audit
+ * events always carry a non-null requester marker) and a serialised `identity`
+ * snapshot (or `null` when the context has no identity).
+ */
+export function extractAuditIdentity(
+  context: Context | null,
+): { caller_id: string; identity: Record<string, unknown> | null } {
+  const callerId = context?.callerId ?? '@external';
+  const ident = context?.identity ?? null;
+  const identity = ident
+    ? {
+        id: ident.id,
+        type: ident.type,
+        roles: [...ident.roles],
+        attrs: { ...ident.attrs },
+      }
+    : null;
+  return { caller_id: callerId, identity };
+}

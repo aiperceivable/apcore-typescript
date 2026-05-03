@@ -2,15 +2,19 @@
  * PlatformNotifyMiddleware -- threshold sensor with hysteresis.
  *
  * Monitors error rates and latency, emits threshold events with hysteresis.
- * Emits error_threshold_exceeded when a module's error rate crosses the
- * configured threshold, latency_threshold_exceeded when p99 latency
- * exceeds the limit, and apcore.health.recovered when a previously alerted
- * module recovers below threshold * 0.5.
+ * Emits apcore.health.error_threshold_exceeded when a module's error rate
+ * crosses the configured threshold, apcore.health.latency_threshold_exceeded
+ * when p99 latency exceeds the limit, and apcore.health.recovered when a
+ * previously alerted module recovers below threshold * 0.5.
+ *
+ * During the deprecation window legacy aliases (`error_threshold_exceeded`,
+ * `latency_threshold_exceeded`) are emitted alongside the canonical names
+ * with `deprecated: true` in the payload (Issue #36).
  */
 
 import type { Context } from '../context.js';
 import type { EventEmitter } from '../events/emitter.js';
-import { createEvent } from '../events/emitter.js';
+import { createEvent, emitWithLegacy } from '../events/emitter.js';
 import type { MetricsCollector } from '../observability/metrics.js';
 import { computeModuleErrorRate, estimateP99FromHistogram } from '../observability/metrics-utils.js';
 import { Middleware } from './base.js';
@@ -78,12 +82,14 @@ export class PlatformNotifyMiddleware extends Middleware {
     const errorRate = this._computeErrorRate(moduleId);
     const alerted = this._getAlerted(moduleId);
     if (errorRate >= this._errorRateThreshold && !alerted.has('error_rate')) {
-      this._emitter.emit(createEvent(
+      emitWithLegacy(
+        this._emitter,
+        'apcore.health.error_threshold_exceeded',
         'error_threshold_exceeded',
         moduleId,
         'error',
         { error_rate: errorRate, threshold: this._errorRateThreshold },
-      ));
+      );
       alerted.add('error_rate');
     }
   }
@@ -95,12 +101,14 @@ export class PlatformNotifyMiddleware extends Middleware {
 
     const p99Ms = this._estimateP99Ms(moduleId);
     if (p99Ms >= this._latencyP99ThresholdMs) {
-      this._emitter.emit(createEvent(
+      emitWithLegacy(
+        this._emitter,
+        'apcore.health.latency_threshold_exceeded',
         'latency_threshold_exceeded',
         moduleId,
         'warn',
         { p99_latency_ms: p99Ms, threshold: this._latencyP99ThresholdMs },
-      ));
+      );
       alerted.add('latency');
     }
   }
