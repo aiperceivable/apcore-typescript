@@ -201,6 +201,215 @@ describe('Round-trip: inject -> extract', () => {
   });
 });
 
+describe('TraceContext.parseTracestate()', () => {
+  it('parses a single key=value pair', () => {
+    expect(TraceContext.parseTracestate('vendor=value1')).toEqual([['vendor', 'value1']]);
+  });
+
+  it('parses multiple comma-separated entries', () => {
+    expect(TraceContext.parseTracestate('a=1,b=2,c=3')).toEqual([
+      ['a', '1'],
+      ['b', '2'],
+      ['c', '3'],
+    ]);
+  });
+
+  it('trims surrounding whitespace on each entry', () => {
+    expect(TraceContext.parseTracestate(' a=1 , b=2 ')).toEqual([
+      ['a', '1'],
+      ['b', '2'],
+    ]);
+  });
+
+  it('drops malformed entries silently', () => {
+    expect(TraceContext.parseTracestate('a=1,nokey,b=2,=novalue,c=3')).toEqual([
+      ['a', '1'],
+      ['b', '2'],
+      ['c', '3'],
+    ]);
+  });
+
+  it('returns empty array for empty string', () => {
+    expect(TraceContext.parseTracestate('')).toEqual([]);
+  });
+
+  it('caps at 32 entries per W3C', () => {
+    const raw = Array.from({ length: 40 }, (_, i) => `k${i}=v${i}`).join(',');
+    const parsed = TraceContext.parseTracestate(raw);
+    expect(parsed).toHaveLength(32);
+    expect(parsed[0]).toEqual(['k0', 'v0']);
+    expect(parsed[31]).toEqual(['k31', 'v31']);
+  });
+
+  it('preserves equals signs inside the value', () => {
+    expect(TraceContext.parseTracestate('a=foo=bar')).toEqual([['a', 'foo=bar']]);
+  });
+});
+
+describe('TraceContext.formatTracestate()', () => {
+  it('joins entries with commas', () => {
+    expect(TraceContext.formatTracestate([['a', '1'], ['b', '2']])).toBe('a=1,b=2');
+  });
+
+  it('returns empty string for empty input', () => {
+    expect(TraceContext.formatTracestate([])).toBe('');
+  });
+
+  it('round-trips with parseTracestate', () => {
+    const entries: Array<[string, string]> = [['vendor1', 'opaque1'], ['vendor2', 'opaque2']];
+    const formatted = TraceContext.formatTracestate(entries);
+    const parsed = TraceContext.parseTracestate(formatted);
+    expect(parsed).toEqual(entries);
+  });
+});
+
+describe('TraceContext.extract() — case-insensitive header lookup', () => {
+  const TP = '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01';
+
+  it('finds header with mixed-case key (Traceparent)', () => {
+    const result = TraceContext.extract({ Traceparent: TP });
+    expect(result).not.toBeNull();
+    expect(result!.traceId).toBe('4bf92f3577b34da6a3ce929d0e0e4736');
+  });
+
+  it('finds header with all-uppercase key (TRACEPARENT)', () => {
+    const result = TraceContext.extract({ TRACEPARENT: TP });
+    expect(result).not.toBeNull();
+  });
+
+  it('finds tracestate with mixed-case key (TraceState)', () => {
+    const result = TraceContext.extract({ traceparent: TP, TraceState: 'a=1,b=2' });
+    expect(result).not.toBeNull();
+    expect(result!.tracestate).toEqual([['a', '1'], ['b', '2']]);
+  });
+
+  it('supports a Headers instance', () => {
+    const h = new Headers();
+    h.set('traceparent', TP);
+    h.set('tracestate', 'a=1');
+    const result = TraceContext.extract(h);
+    expect(result).not.toBeNull();
+    expect(result!.tracestate).toEqual([['a', '1']]);
+  });
+
+  it('supports a Map', () => {
+    const m = new Map<string, string>();
+    m.set('Traceparent', TP);
+    m.set('TraceState', 'x=y');
+    const result = TraceContext.extract(m);
+    expect(result).not.toBeNull();
+    expect(result!.tracestate).toEqual([['x', 'y']]);
+  });
+});
+
+describe('TraceContext.extract() — tracestate population', () => {
+  const TP = '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01';
+
+  it('populates empty tracestate when header absent', () => {
+    const result = TraceContext.extract({ traceparent: TP });
+    expect(result).not.toBeNull();
+    expect(result!.tracestate).toEqual([]);
+  });
+
+  it('parses tracestate when header present', () => {
+    const result = TraceContext.extract({ traceparent: TP, tracestate: 'congo=t61rcWkgMzE,rojo=00f067aa0ba902b7' });
+    expect(result).not.toBeNull();
+    expect(result!.tracestate).toEqual([
+      ['congo', 't61rcWkgMzE'],
+      ['rojo', '00f067aa0ba902b7'],
+    ]);
+  });
+});
+
+describe('TraceContext.inject() — dynamic traceFlags', () => {
+  it('propagates inbound traceFlags=00 (unsampled) through inject', () => {
+    const ctx = Context.create();
+    // Stash an inbound trace parent that came in with flags=00.
+    const inbound: TraceParent = {
+      version: '00',
+      traceId: ctx.traceId,
+      parentId: '00f067aa0ba902b7',
+      traceFlags: '00',
+      tracestate: [],
+    };
+    ctx.data['_apcore.trace.inbound'] = inbound;
+
+    const headers = TraceContext.inject(ctx);
+    expect(headers.traceparent.endsWith('-00')).toBe(true);
+  });
+
+  it('defaults to traceFlags=01 for new roots (no inbound)', () => {
+    const ctx = Context.create();
+    const headers = TraceContext.inject(ctx);
+    expect(headers.traceparent.endsWith('-01')).toBe(true);
+  });
+
+  it('returns tracestate header when inbound has tracestate', () => {
+    const ctx = Context.create();
+    const inbound: TraceParent = {
+      version: '00',
+      traceId: ctx.traceId,
+      parentId: '00f067aa0ba902b7',
+      traceFlags: '01',
+      tracestate: [['vendor', 'opaque']],
+    };
+    ctx.data['_apcore.trace.inbound'] = inbound;
+
+    const headers = TraceContext.inject(ctx);
+    expect(headers.tracestate).toBe('vendor=opaque');
+  });
+
+  it('omits tracestate header when inbound tracestate is empty', () => {
+    const ctx = Context.create();
+    const headers = TraceContext.inject(ctx);
+    expect(headers.tracestate).toBeUndefined();
+  });
+});
+
+describe('TraceContext.inject() — parentId override', () => {
+  it('uses the provided parentId verbatim when valid', () => {
+    const ctx = Context.create();
+    const headers = TraceContext.inject(ctx, '0123456789abcdef');
+    const parts = headers.traceparent.split('-');
+    expect(parts[2]).toBe('0123456789abcdef');
+  });
+
+  it('throws on malformed parentId (wrong length)', () => {
+    const ctx = Context.create();
+    expect(() => TraceContext.inject(ctx, 'tooShort')).toThrow();
+  });
+
+  it('throws on malformed parentId (non-hex characters)', () => {
+    const ctx = Context.create();
+    expect(() => TraceContext.inject(ctx, 'XXXXXXXXXXXXXXXX')).toThrow();
+  });
+
+  it('throws on uppercase parentId (must be lowercase hex)', () => {
+    const ctx = Context.create();
+    expect(() => TraceContext.inject(ctx, '0123456789ABCDEF')).toThrow();
+  });
+
+  it('still derives parentId from spans when override not provided', () => {
+    const ctx = Context.create();
+    const fakeSpan: Span = {
+      traceId: ctx.traceId,
+      name: 'test',
+      startTime: 0,
+      spanId: 'abcdef0123456789',
+      parentSpanId: null,
+      attributes: {},
+      endTime: null,
+      status: 'ok',
+      events: [],
+    };
+    ctx.data['_apcore.mw.tracing.spans'] = [fakeSpan];
+
+    const headers = TraceContext.inject(ctx);
+    const parts = headers.traceparent.split('-');
+    expect(parts[2]).toBe('abcdef0123456789');
+  });
+});
+
 describe('Context.create() with traceParent', () => {
   it('uses traceParent traceId as 32-hex format', () => {
     const tp: TraceParent = {
@@ -208,6 +417,7 @@ describe('Context.create() with traceParent', () => {
       traceId: '4bf92f3577b34da6a3ce929d0e0e4736',
       parentId: '00f067aa0ba902b7',
       traceFlags: '01',
+      tracestate: [],
     };
     const ctx = Context.create(null, null, undefined, tp);
     expect(ctx.traceId).toBe('4bf92f3577b34da6a3ce929d0e0e4736');
@@ -219,6 +429,7 @@ describe('Context.create() with traceParent', () => {
       traceId: '4bf92f3577b34da6a3ce929d0e0e4736',
       parentId: '00f067aa0ba902b7',
       traceFlags: '01',
+      tracestate: [],
     };
     const ctx = Context.create(null, null, undefined, tp);
     // Should match 32-hex format
