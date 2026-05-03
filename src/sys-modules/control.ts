@@ -11,7 +11,7 @@ import { createEvent } from '../events/emitter.js';
 import type { Config } from '../config.js';
 import type { Context } from '../context.js';
 import type { AuditStore } from './audit.js';
-import { buildAuditEntry } from './audit.js';
+import { buildAuditEntry, extractAuditIdentity } from './audit.js';
 import { matchPattern } from '../utils/pattern.js';
 
 const RESTRICTED_KEYS = new Set(['sys_modules.enabled']);
@@ -91,8 +91,11 @@ export class UpdateConfigModule {
       console.warn(`[apcore:audit] update_config key=${key} actor=${entry.actorId} reason=${reason}`);
     }
 
+    // Issue #45.2: Audit events carry requester identity so subscribers can
+    // attribute the change. caller_id defaults to "@external" when absent.
+    const { caller_id, identity } = extractAuditIdentity(ctx);
     this._emitter.emit(createEvent('apcore.config.updated', 'system.control.update_config', 'info', {
-      key, old_value: safeOld, new_value: safeNew,
+      key, old_value: safeOld, new_value: safeNew, caller_id, identity,
     }));
 
     console.warn(`[apcore:control] Config updated: key=${key} old_value=${safeOld} new_value=${safeNew} reason=${reason}`);
@@ -235,9 +238,13 @@ export class ReloadModule {
       console.warn(`[apcore:audit] reload_module ${moduleId} actor=${entry.actorId} reason=${reason}`);
     }
 
+    // Issue #45.2: include requester identity in reload audit event payload.
+    const { caller_id, identity } = extractAuditIdentity(ctx);
     this._emitter.emit(createEvent('apcore.module.reloaded', moduleId, 'info', {
       previous_version: previousVersion,
       new_version: newVersion,
+      caller_id,
+      identity,
     }));
 
     console.warn(

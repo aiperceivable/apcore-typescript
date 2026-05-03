@@ -6,5 +6,5 @@ export type { UpdateConfigOptions } from './control.js';
 export { UsageSummaryModule, UsageModule } from './usage.js';
 export { registerSysModules, registerSubscriberType, unregisterSubscriberType, resetSubscriberRegistry, createSubscriberFromConfig } from './registration.js';
 export type { SysModulesContext, RegisterSysModulesOptions } from './registration.js';
-export { InMemoryAuditStore, buildAuditEntry } from './audit.js';
+export { InMemoryAuditStore, buildAuditEntry, extractAuditIdentity } from './audit.js';
 export type { AuditEntry, AuditStore, AuditFilter, AuditAction } from './audit.js';

@@ -13,7 +13,7 @@ import type { EventEmitter } from '../events/emitter.js';
 import { createEvent } from '../events/emitter.js';
 import type { Context } from '../context.js';
 import type { AuditStore } from './audit.js';
-import { buildAuditEntry } from './audit.js';
+import { buildAuditEntry, extractAuditIdentity } from './audit.js';
 
 /**
  * Toggle state container. Tracks which modules are disabled.
@@ -115,9 +115,15 @@ export class ToggleFeatureModule {
       console.warn(`[apcore:audit] toggle_feature ${moduleId} actor=${entry.actorId} before=${before} after=${enabled} reason=${reason}`);
     }
 
-    // W-12: Event payload carries only { enabled } to match Python reference implementation.
-    // `reason` is returned in the module output but not emitted in the event.
-    this._emitter.emit(createEvent('apcore.module.toggled', moduleId, 'info', { enabled }));
+    // W-12: Event payload carries `enabled` (Python parity) plus requester
+    // identity per Issue #45.2 so subscribers can attribute the toggle. The
+    // `reason` field is returned in the module output but not in the event.
+    const { caller_id, identity } = extractAuditIdentity(ctx);
+    this._emitter.emit(createEvent('apcore.module.toggled', moduleId, 'info', {
+      enabled,
+      caller_id,
+      identity,
+    }));
     console.warn(`[apcore:control] Feature toggled: module_id=${moduleId} enabled=${enabled} reason=${reason}`);
     return { success: true, module_id: moduleId, enabled };
   }
