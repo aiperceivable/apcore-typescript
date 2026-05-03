@@ -6,9 +6,11 @@ export { ContextLogger, ObsLoggingMiddleware, RedactionConfig } from './context-
 export { ErrorHistory, normalizeMessage, computeFingerprint } from './error-history.js';
 export type { ErrorEntry, ErrorHistoryOptions } from './error-history.js';
 export { UsageCollector, UsageMiddleware, bucketKey } from './usage.js';
-export type { UsageRecord, CallerUsageSummary, HourlyBucket, ModuleUsageSummary, ModuleUsageDetail } from './usage.js';
+export type { UsageRecord, CallerUsageSummary, HourlyBucket, ModuleUsageSummary, ModuleUsageDetail, UsageCollectorOptions } from './usage.js';
 export { InMemoryObservabilityStore } from './store.js';
 export type { ObservabilityStore, MetricPoint } from './store.js';
+export { InMemoryStorageBackend } from './storage.js';
+export type { StorageBackend } from './storage.js';
 export { BatchSpanProcessor, SimpleSpanProcessor } from './batch-span-processor.js';
 export type { SpanProcessor, BatchSpanProcessorOptions } from './batch-span-processor.js';
 export { PrometheusExporter } from './prometheus-exporter.js';

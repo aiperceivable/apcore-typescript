@@ -10,6 +10,7 @@ import { detectIdConflicts } from './conflicts.js';
 import { resolveDependencies } from './dependencies.js';
 import { resolveEntryPoint } from './entry-point.js';
 import { mergeModuleMetadata, parseDependencies } from './metadata.js';
+import { _discoverMultiClass } from './multi-class.js';
 import { getSchema, exportSchema as exportSchemaFn } from './schema-export.js';
 import { toStrictSchema } from '../schema/strict.js';
 import { deepCopy } from '../utils/index.js';
@@ -986,6 +987,24 @@ export class Registry {
   }
 
   // ── Safe Hot-Reload (F09 / Algorithm A21) ───────────────────────
+
+  /**
+   * Discover module IDs for the classes in a single file under multi-class
+   * mode (PROTOCOL_SPEC §2.1.1).
+   *
+   * D-15: cross-language alignment with Python `Registry.discover_multi_class`
+   * and the Rust trait method. Internally delegates to the free function
+   * {@link discoverMultiClass} (re-exported as `_discoverMultiClass` for
+   * scanner internals), so behaviour is identical.
+   */
+  discoverMultiClass(
+    filePath: string,
+    classes: readonly import('./multi-class.js').ClassDescriptor[],
+    extensionsRoot: string = 'extensions',
+    multiClassEnabled: boolean = false,
+  ): import('./multi-class.js').MultiClassEntry[] {
+    return _discoverMultiClass(filePath, classes, extensionsRoot, multiClassEnabled);
+  }
 
   /**
    * Number of in-flight executions per module.

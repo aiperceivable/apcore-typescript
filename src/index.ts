@@ -220,8 +220,10 @@ export {
   UsageSummaryModule,
   ToggleFeatureModule,
   InMemoryAuditStore,
+  FileOverridesStore,
+  InMemoryOverridesStore,
 } from './sys-modules/index.js';
-export type { SysModulesContext } from './sys-modules/index.js';
+export type { SysModulesContext, OverridesStore } from './sys-modules/index.js';
 
 // Async tasks
 export {
@@ -316,7 +318,10 @@ export type {
   HourlyBucket,
   ModuleUsageSummary,
   ModuleUsageDetail,
+  UsageCollectorOptions,
 } from './observability/usage.js';
+export { InMemoryStorageBackend } from './observability/storage.js';
+export type { StorageBackend } from './observability/storage.js';
 export { BatchSpanProcessor, SimpleSpanProcessor } from './observability/batch-span-processor.js';
 export type {
   SpanProcessor,
