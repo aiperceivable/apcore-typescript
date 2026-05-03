@@ -295,6 +295,20 @@ export class Registry {
     return count;
   }
 
+  /**
+   * Default discovery pipeline (D-32 — 8 canonical stages, mirroring
+   * apcore-rust `default_discoverer.rs`):
+   *
+   *   1. _ensureIdMap            — lazy-load the optional id_map.json
+   *   2. _scanRoots              — walk extension roots
+   *   3. _applyIdMapOverrides    — rewrite canonical IDs from the map
+   *   4. _loadAllMetadata        — load each module's `module.yaml`
+   *   5. _resolveAllEntryPoints  — import the JS/TS entry point
+   *   6. _validateAll            — run module/custom validators
+   *   7. _filterIdConflicts      — batch-drop conflicting / invalid IDs
+   *   8. _resolveLoadOrder + _registerInOrder
+   *                              — topological sort then register.
+   */
   private async _discoverDefault(): Promise<number> {
     await this._ensureIdMap();
     const discovered = await this._scanRoots();
@@ -303,9 +317,10 @@ export class Registry {
     const rawMetadata = await this._loadAllMetadata(discovered);
     const resolvedModules = await this._resolveAllEntryPoints(discovered, rawMetadata);
     const validModules = await this._validateAll(resolvedModules);
-    const loadOrder = this._resolveLoadOrder(validModules, rawMetadata);
+    const filteredModules = this._filterIdConflicts(validModules, rawMetadata);
+    const loadOrder = this._resolveLoadOrder(filteredModules, rawMetadata);
 
-    return this._registerInOrder(loadOrder, validModules, rawMetadata);
+    return this._registerInOrder(loadOrder, filteredModules, rawMetadata);
   }
 
   private async _scanRoots(): Promise<import('./types.js').DiscoveredModule[]> {
@@ -393,6 +408,72 @@ export class Registry {
     return validModules;
   }
 
+  /**
+   * Stage 7 (D-32) — batch-drop modules with invalid or conflicting IDs.
+   *
+   * Mirrors apcore-python `_filter_id_conflicts` and apcore-rust
+   * `default_discoverer::filter_id_conflicts`. Two failure modes drop a
+   * module here (warn + skip) rather than aborting the whole batch:
+   *   - PROTOCOL_SPEC §2.7 ID validation (empty / pattern / length /
+   *     reserved-word first segment), and
+   *   - Algorithm A03 conflict detection (duplicate against an existing
+   *     registration, lowercase collision, reserved-word collision).
+   *
+   * Soft-severity conflicts (e.g. case-insensitive match against an
+   * already-registered ID at `warn` level) are NOT dropped here — the
+   * warning is logged and the module flows through to registration so
+   * existing behaviour is preserved. Only `error`-severity conflicts and
+   * invalid IDs are filtered out.
+   *
+   * `rawMetadata` is accepted for cross-language signature parity with
+   * the Rust/Python helpers (which may inspect metadata for additional
+   * checks); the TS implementation reads only the module ID.
+   */
+  private _filterIdConflicts(
+    validModules: Map<string, unknown>,
+    _rawMetadata: Map<string, Record<string, unknown>>,
+  ): Map<string, unknown> {
+    const filtered = new Map<string, unknown>();
+    // Track within-batch IDs (case-insensitive) so two newly-discovered
+    // modules whose IDs collide on lowercase don't both slip through.
+    const batchLowercase = new Map<string, string>(this._lowercaseMap);
+    const batchIds = new Set<string>(this._modules.keys());
+
+    for (const [modId, mod] of validModules.entries()) {
+      try {
+        validateModuleId(modId, false);
+      } catch (e) {
+        console.warn(
+          `[apcore:registry] Skipping discovered module with invalid ID '${modId}': ${(e as Error).message}`,
+        );
+        continue;
+      }
+
+      const conflict = detectIdConflicts(
+        modId,
+        batchIds,
+        RESERVED_WORDS,
+        batchLowercase,
+      );
+      if (conflict !== null) {
+        if (conflict.severity === 'error') {
+          console.warn(
+            `[apcore:registry] Skipping discovered module '${modId}' due to ID conflict: ${conflict.message}`,
+          );
+          continue;
+        }
+        // Soft severity — log but keep the module.
+        console.warn(`[apcore:registry] ID conflict: ${conflict.message}`);
+      }
+
+      filtered.set(modId, mod);
+      batchIds.add(modId);
+      batchLowercase.set(modId.toLowerCase(), modId);
+    }
+
+    return filtered;
+  }
+
   private _resolveLoadOrder(
     validModules: Map<string, unknown>,
     rawMetadata: Map<string, Record<string, unknown>>,
@@ -433,41 +514,14 @@ export class Registry {
     validModules: Map<string, unknown>,
     rawMetadata: Map<string, Record<string, unknown>>,
   ): number {
+    // Stage 8 (D-32). Conflict detection / ID validation already happened in
+    // `_filterIdConflicts` (stage 7), so this loop is purely a register pass.
     let count = 0;
     for (const modId of loadOrder) {
-      const mod = validModules.get(modId)!;
+      const mod = validModules.get(modId);
+      if (mod === undefined) continue;
       const modObj = mod as Record<string, unknown>;
       const mergedMeta = mergeModuleMetadata(modObj, rawMetadata.get(modId) ?? {});
-
-      // PROTOCOL_SPEC §2.7 ID validation + Algorithm A03 conflict detection
-      // (sync finding A-D-101). Mirrors apcore-python `_filter_id_conflicts`
-      // gating in `Registry._register_in_order`. Invalid/conflicting IDs are
-      // skipped (warn + continue) rather than aborting the whole batch.
-      try {
-        validateModuleId(modId, false);
-      } catch (e) {
-        console.warn(
-          `[apcore:registry] Skipping discovered module with invalid ID '${modId}': ${(e as Error).message}`,
-        );
-        continue;
-      }
-
-      const conflict = detectIdConflicts(
-        modId,
-        new Set(this._modules.keys()),
-        RESERVED_WORDS,
-        this._lowercaseMap,
-      );
-      if (conflict !== null) {
-        if (conflict.severity === 'error') {
-          console.warn(
-            `[apcore:registry] Skipping discovered module '${modId}' due to ID conflict: ${conflict.message}`,
-          );
-          continue;
-        } else {
-          console.warn(`[apcore:registry] ID conflict: ${conflict.message}`);
-        }
-      }
 
       this._modules.set(modId, mod);
       this._moduleMeta.set(modId, mergedMeta);

@@ -311,6 +311,11 @@ export {
 export type { ErrorEntry } from './observability/error-history.js';
 export { UsageCollector, UsageMiddleware } from './observability/usage.js';
 export {
+  NoopUsageExporter,
+  PeriodicUsageExporter,
+} from './observability/usage-exporter.js';
+export type { UsageExporter } from './observability/usage-exporter.js';
+export {
   computeModuleErrorRate,
   estimateP99FromHistogram,
   matchesModuleId,

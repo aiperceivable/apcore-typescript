@@ -8,26 +8,33 @@ import { Middleware } from '../middleware/base.js';
 import { matchPattern } from '../utils/pattern.js';
 
 /**
- * Issue #43 §5 — default sensitive field patterns. Used when the observability
- * namespace does not specify `redaction.sensitive_keys` (canonical) /
- * `redaction.field_patterns` (legacy). Wildcards follow apcore's
- * `matchPattern` semantics (segment-aware globs).
+ * Default sensitive field patterns (Issue #45 §3 — canonical superset
+ * promoted from #43 §5). Used when no `redaction.sensitive_keys`
+ * (canonical) / `redaction.field_patterns` (legacy) is configured.
+ * Wildcards follow apcore's `matchPattern` semantics (segment-aware globs).
  *
- * Aligned with apcore-python and apcore-rust defaults (sync finding
- * CRITICAL #4): `["_secret_*", "apiKey", "api_key", "token", "authorization",
- * "password"]`. The legacy `passwd` / `secret` entries remain only as
- * additional convenience defaults — removing them would weaken default
- * coverage without cross-language benefit.
+ * Aligned with apcore-python's authoritative list (Python is the canonical
+ * superset because broader default redaction is safer than narrower).
+ * `apiKey` is kept alongside `api_key` / `apikey` for camelCase parity
+ * because TypeScript's `matchPattern` is case-sensitive.
  */
 export const DEFAULT_REDACTION_FIELD_PATTERNS: readonly string[] = [
   '_secret_*',
-  'apiKey',
-  'api_key',
-  'token',
-  'authorization',
   'password',
   'passwd',
   'secret',
+  'token',
+  'api_key',
+  'apikey',
+  'apiKey',
+  'access_key',
+  'private_key',
+  'authorization',
+  'auth',
+  'credential',
+  'cookie',
+  'session',
+  'bearer',
 ];
 
 /**
