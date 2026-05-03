@@ -8,8 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Granular reload via `path_filter` input in `ReloadModule` (#45.4). Supports glob-pattern bulk reload that scopes safe-unregister + re-discovery to matching module IDs and returns a `reloaded_modules` array.
+- Error fingerprinting in `ErrorHistory` — dedup by `(error_code, module_id, normalized_message)` SHA-256 with UUID/ISO-timestamp/integer-ID placeholders, exported as `computeFingerprint` and `normalizeMessage` (#43 §4).
+- Configurable redaction via `observability.redaction.field_patterns` / `observability.redaction.value_patterns` / `observability.redaction.replacement` Config keys, plus `RedactionConfig.fromConfig(config)` and exported `DEFAULT_REDACTION_FIELD_PATTERNS` (`_secret_*`, `apiKey`, `api_key`, `token`, `authorization`, `password`, `passwd`, `secret`). Value patterns compile case-insensitively (#43 §5).
+
 ### Fixed
 
+- Async middleware hooks (`before` / `after` / `onError`) — `MiddlewareManager` now awaits the *return value* (already implemented) and `Middleware` base method signatures admit Promise-of-X return types, so higher-order-function-wrapped (Promise-returning) handlers compose without leaking unresolved Promises into `currentInputs` / `currentOutput` / recovery values (#42).
 - **Sync findings A-D-101 / A-D-102** — `Registry._registerInOrder` and `Registry._discoverCustom` now apply PROTOCOL_SPEC §2.7 ID validation (empty → pattern → length → reserved-word) and Algorithm A03 conflict detection before registering each discovered module. Invalid or conflicting IDs are skipped with a `console.warn` instead of being registered. Mirrors `apcore-python._filter_id_conflicts` and `apcore-rust::Registry::filter_id_conflicts`.
 - **Sync finding A-D-202** — `Executor.stream()` now reads the global deadline from `context.data[CTX_GLOBAL_DEADLINE]` (ms-since-epoch, where `BuiltinContextCreation` writes it) and compares against `Date.now()` directly, instead of reading the unset `Context.globalDeadline` field and dividing `Date.now()` by 1000. Stream-mode global timeout now actually triggers between chunks.
 - **Sync finding A-D-404** — `MiddlewareManager.executeOnError` now requires recovery values to be a `RetrySignal` or a non-null object before treating them as recovery. Arrow functions returning `undefined` (the default for handlers without an explicit return) no longer accidentally short-circuit the chain. Mirrors apcore-python's strict type check.

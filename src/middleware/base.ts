@@ -32,18 +32,27 @@ export class Middleware {
 
   constructor(priority: number = 100) {
     if (priority < 0 || priority > 1000) {
-      throw new RangeError(
-        `priority must be between 0 and 1000, got ${priority}`,
-      );
+      throw new RangeError(`priority must be between 0 and 1000, got ${priority}`);
     }
     this.priority = priority;
   }
 
+  /**
+   * Hooks may return either a synchronous value or a Promise. The
+   * MiddlewareManager always awaits the return value (Issue #42), so async
+   * middleware (`async before()`, higher-order Promise-returning wrappers,
+   * thenables) work transparently — no leaked Promises into currentInputs /
+   * currentOutput / recovery values.
+   */
   before(
     _moduleId: string,
     _inputs: Record<string, unknown>,
     _context: Context,
-  ): Record<string, unknown> | null {
+  ):
+    | Record<string, unknown>
+    | null
+    | Promise<Record<string, unknown> | null | undefined>
+    | undefined {
     return null;
   }
 
@@ -52,7 +61,11 @@ export class Middleware {
     _inputs: Record<string, unknown>,
     _output: Record<string, unknown>,
     _context: Context,
-  ): Record<string, unknown> | null {
+  ):
+    | Record<string, unknown>
+    | null
+    | Promise<Record<string, unknown> | null | undefined>
+    | undefined {
     return null;
   }
 
@@ -61,7 +74,12 @@ export class Middleware {
     _inputs: Record<string, unknown>,
     _error: Error,
     _context: Context,
-  ): Record<string, unknown> | RetrySignal | null {
+  ):
+    | Record<string, unknown>
+    | RetrySignal
+    | null
+    | Promise<Record<string, unknown> | RetrySignal | null | undefined>
+    | undefined {
     return null;
   }
 }

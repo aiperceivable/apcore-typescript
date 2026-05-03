@@ -4,31 +4,47 @@
  */
 
 import yaml from 'js-yaml';
-import { SchemaValidator } from './schema/validator.js';
-import { jsonSchemaToTypeBox } from './schema/loader.js';
 import {
+  ConfigBindError,
+  ConfigEnvMapConflictError,
+  ConfigEnvPrefixConflictError,
   ConfigError,
-  ConfigNotFoundError,
+  ConfigMountError,
   ConfigNamespaceDuplicateError,
   ConfigNamespaceReservedError,
-  ConfigEnvPrefixConflictError,
-  ConfigEnvMapConflictError,
-  ConfigMountError,
-  ConfigBindError,
+  ConfigNotFoundError,
 } from './errors.js';
+import { jsonSchemaToTypeBox } from './schema/loader.js';
+import { SchemaValidator } from './schema/validator.js';
 
 // Lazy-load Node.js built-in modules for browser compatibility
 let _nodeFs: typeof import('node:fs') | null = null;
-try { _nodeFs = await import('node:fs'); } catch { /* browser environment */ }
+try {
+  _nodeFs = await import('node:fs');
+} catch {
+  /* browser environment */
+}
 
 let _nodeProcess: typeof import('node:process') | null = null;
-try { _nodeProcess = await import('node:process'); } catch { /* browser environment */ }
+try {
+  _nodeProcess = await import('node:process');
+} catch {
+  /* browser environment */
+}
 
 let _nodePath: typeof import('node:path') | null = null;
-try { _nodePath = await import('node:path'); } catch { /* browser environment */ }
+try {
+  _nodePath = await import('node:path');
+} catch {
+  /* browser environment */
+}
 
 let _nodeOs: typeof import('node:os') | null = null;
-try { _nodeOs = await import('node:os'); } catch { /* browser environment */ }
+try {
+  _nodeOs = await import('node:os');
+} catch {
+  /* browser environment */
+}
 
 /** Environment variable prefix for legacy overrides. */
 const ENV_PREFIX = 'APCORE_';
@@ -45,10 +61,7 @@ const REQUIRED_FIELDS = [
 
 /** Field constraints in legacy mode: field -> [validator, errorMessage]. */
 const CONSTRAINTS: Record<string, [(v: unknown) => boolean, string]> = {
-  'acl.default_effect': [
-    (v) => v === 'allow' || v === 'deny',
-    "must be 'allow' or 'deny'",
-  ],
+  'acl.default_effect': [(v) => v === 'allow' || v === 'deny', "must be 'allow' or 'deny'"],
   'observability.tracing.sampling_rate': [
     (v) => typeof v === 'number' && v >= 0.0 && v <= 1.0,
     'must be a number in [0.0, 1.0]',
@@ -155,7 +168,7 @@ const DEFAULT_MAX_DEPTH = 5;
 interface NamespaceRegistration {
   name: string;
   schema: object | string | null;
-  envPrefix: string;  // auto-derived or explicit (never null after registration)
+  envPrefix: string; // auto-derived or explicit (never null after registration)
   defaults: Record<string, unknown> | null;
   envStyle: EnvStyle;
   maxDepth: number;
@@ -164,11 +177,9 @@ interface NamespaceRegistration {
 
 export const _globalNsRegistry = new Map<string, NamespaceRegistration>();
 const _RESERVED_NAMESPACES = new Set(['apcore', '_config']);
-export const _globalEnvMap = new Map<string, string>();  // bare env var → top-level key
-export const _envMapClaimed = new Map<string, string>();  // env var → owner (conflict detection)
+export const _globalEnvMap = new Map<string, string>(); // bare env var → top-level key
+export const _envMapClaimed = new Map<string, string>(); // env var → owner (conflict detection)
 export const _envPrefixUsed = new Set<string>();
-
-
 
 // ---------------------------------------------------------------------------
 // Utility helpers
@@ -182,8 +193,12 @@ function deepMergeDicts(
   for (const [key, value] of Object.entries(override)) {
     if (
       key in result &&
-      typeof result[key] === 'object' && result[key] !== null && !Array.isArray(result[key]) &&
-      typeof value === 'object' && value !== null && !Array.isArray(value)
+      typeof result[key] === 'object' &&
+      result[key] !== null &&
+      !Array.isArray(result[key]) &&
+      typeof value === 'object' &&
+      value !== null &&
+      !Array.isArray(value)
     ) {
       result[key] = deepMergeDicts(
         result[key] as Record<string, unknown>,
@@ -196,11 +211,19 @@ function deepMergeDicts(
   return result;
 }
 
-function getNested(data: Record<string, unknown>, dotPath: string, defaultValue?: unknown): unknown {
+function getNested(
+  data: Record<string, unknown>,
+  dotPath: string,
+  defaultValue?: unknown,
+): unknown {
   const parts = dotPath.split('.');
   let current: unknown = data;
   for (const part of parts) {
-    if (current !== null && typeof current === 'object' && part in (current as Record<string, unknown>)) {
+    if (
+      current !== null &&
+      typeof current === 'object' &&
+      part in (current as Record<string, unknown>)
+    ) {
       current = (current as Record<string, unknown>)[part];
     } else {
       return defaultValue;
@@ -239,7 +262,11 @@ export function applyEnvOverrides(data: Record<string, unknown>): Record<string,
     const suffix = envKey.slice(ENV_PREFIX.length);
     if (!suffix) continue;
     // Convert: single _ -> . (separator), double __ -> literal _
-    const dotPath = suffix.toLowerCase().replace(/__/g, '\x00').replace(/_/g, '.').replace(/\x00/g, '_');
+    const dotPath = suffix
+      .toLowerCase()
+      .replace(/__/g, '\x00')
+      .replace(/_/g, '.')
+      .replace(/\x00/g, '_');
     setNested(result, dotPath, coerceEnvValue(envValue));
   }
   return result;
@@ -267,7 +294,8 @@ export function envSuffixToDotPathWithDepth(suffix: string, maxDepth: number): s
       if (i + 1 < lower.length && lower[i + 1] === '_') {
         result.push('_'); // double __ → literal _
         i += 2;
-      } else if (dotCount < maxDepth - 1) { // Stop at maxDepth segments (maxDepth - 1 dots)
+      } else if (dotCount < maxDepth - 1) {
+        // Stop at maxDepth segments (maxDepth - 1 dots)
         result.push('.');
         dotCount++;
         i++;
@@ -288,7 +316,10 @@ export function envSuffixToDotPathWithDepth(suffix: string, maxDepth: number): s
  * Returns resolved dot-path or null if no match.
  */
 function matchSuffixToTree(
-  suffix: string, tree: Record<string, unknown>, depth: number, maxDepth: number,
+  suffix: string,
+  tree: Record<string, unknown>,
+  depth: number,
+  maxDepth: number,
 ): string | null {
   // 1. Try full suffix as a flat key.
   if (suffix in tree) return suffix;
@@ -303,7 +334,12 @@ function matchSuffixToTree(
     const remainder = suffix.slice(i + 1);
     const subtree = tree[prefix];
     if (subtree !== null && typeof subtree === 'object' && !Array.isArray(subtree)) {
-      const sub = matchSuffixToTree(remainder, subtree as Record<string, unknown>, depth + 1, maxDepth);
+      const sub = matchSuffixToTree(
+        remainder,
+        subtree as Record<string, unknown>,
+        depth + 1,
+        maxDepth,
+      );
       if (sub !== null) return prefix + '.' + sub;
     }
   }
@@ -314,7 +350,11 @@ function matchSuffixToTree(
  * Resolve env var suffix to a config key using auto mode.
  * Matches against defaults tree, falls back to nested conversion.
  */
-function autoResolveSuffix(suffix: string, defaults: Record<string, unknown> | null, maxDepth: number): string {
+function autoResolveSuffix(
+  suffix: string,
+  defaults: Record<string, unknown> | null,
+  maxDepth: number,
+): string {
   const lower = suffix.toLowerCase();
   if (defaults === null) return envSuffixToDotPathWithDepth(lower, maxDepth);
   const result = matchSuffixToTree(lower, defaults, 0, maxDepth);
@@ -325,7 +365,10 @@ function autoResolveSuffix(suffix: string, defaults: Record<string, unknown> | n
 /**
  * Resolve env var suffix to { key, isNested } based on registration env_style.
  */
-function resolveEnvSuffix(suffix: string, reg: NamespaceRegistration): { key: string; isNested: boolean } {
+function resolveEnvSuffix(
+  suffix: string,
+  reg: NamespaceRegistration,
+): { key: string; isNested: boolean } {
   if (reg.envStyle === 'flat') {
     const key = suffix.toLowerCase().replace(/__/g, '_').replace(/^_/, '');
     return { key, isNested: false };
@@ -457,9 +500,10 @@ export function discoverConfigFile(): string | null {
 
   const home = homedir();
   // W-10: Use lazy-loaded _nodeProcess so this works in non-Node environments.
-  const xdgConfig = (_nodeProcess?.platform ?? 'linux') === 'darwin'
-    ? join(home, 'Library', 'Application Support', 'apcore', 'config.yaml')
-    : join(home, '.config', 'apcore', 'config.yaml');
+  const xdgConfig =
+    (_nodeProcess?.platform ?? 'linux') === 'darwin'
+      ? join(home, 'Library', 'Application Support', 'apcore', 'config.yaml')
+      : join(home, '.config', 'apcore', 'config.yaml');
   if (existsSync(xdgConfig)) return xdgConfig;
 
   const legacy = join(home, '.apcore', 'config.yaml');
@@ -520,7 +564,15 @@ export class Config {
     maxDepth?: number | null;
     envMap?: Record<string, string> | null;
   }): void {
-    const { name, schema = null, envPrefix: rawEnvPrefix = null, defaults = null, envStyle: rawEnvStyle = null, maxDepth: rawMaxDepth = null, envMap = null } = options;
+    const {
+      name,
+      schema = null,
+      envPrefix: rawEnvPrefix = null,
+      defaults = null,
+      envStyle: rawEnvStyle = null,
+      maxDepth: rawMaxDepth = null,
+      envMap = null,
+    } = options;
     const envStyle: EnvStyle = rawEnvStyle ?? 'auto';
     if (envStyle !== 'nested' && envStyle !== 'flat' && envStyle !== 'auto') {
       throw new Error(`envStyle must be 'nested', 'flat', or 'auto', got '${envStyle as string}'`);
@@ -572,7 +624,11 @@ export class Config {
   /**
    * Return a snapshot of all registered namespaces.
    */
-  static registeredNamespaces(): Array<{ name: string; envPrefix: string | null; hasSchema: boolean }> {
+  static registeredNamespaces(): Array<{
+    name: string;
+    envPrefix: string | null;
+    hasSchema: boolean;
+  }> {
     return Array.from(_globalNsRegistry.values()).map((r) => ({
       name: r.name,
       envPrefix: r.envPrefix,
@@ -626,8 +682,11 @@ export class Config {
     const rawData = fileData as Record<string, unknown>;
     // Namespace mode requires "apcore" key to be an object/mapping — not null, scalar, or array.
     const apcoreValue = rawData['apcore'];
-    const isNamespaceMode = apcoreValue !== null && apcoreValue !== undefined &&
-      typeof apcoreValue === 'object' && !Array.isArray(apcoreValue);
+    const isNamespaceMode =
+      apcoreValue !== null &&
+      apcoreValue !== undefined &&
+      typeof apcoreValue === 'object' &&
+      !Array.isArray(apcoreValue);
 
     let config: Config;
 
@@ -730,7 +789,10 @@ export class Config {
         this._data[resolved.namespace] = value;
         return;
       }
-      if (typeof this._data[resolved.namespace] !== 'object' || this._data[resolved.namespace] === null) {
+      if (
+        typeof this._data[resolved.namespace] !== 'object' ||
+        this._data[resolved.namespace] === null
+      ) {
         this._data[resolved.namespace] = {};
       }
       setNested(this._data[resolved.namespace] as Record<string, unknown>, resolved.subPath, value);
@@ -755,7 +817,10 @@ export class Config {
    * Exactly one of fromFile or fromDict must be provided.
    * Throws ConfigMountError if namespace is "_config" or file not found.
    */
-  mount(namespace: string, options: { fromFile?: string; fromDict?: Record<string, unknown> }): void {
+  mount(
+    namespace: string,
+    options: { fromFile?: string; fromDict?: Record<string, unknown> },
+  ): void {
     if (namespace === '_config') {
       throw new ConfigMountError("Cannot mount to reserved namespace '_config'");
     }
@@ -879,7 +944,7 @@ export class Config {
     if (errors.length > 0) {
       throw new ConfigError(
         `Configuration validation failed (${errors.length} error(s)):\n` +
-        errors.map((e) => `  - ${e}`).join('\n'),
+          errors.map((e) => `  - ${e}`).join('\n'),
       );
     }
   }
@@ -894,7 +959,9 @@ export class Config {
       for (const [field, [checkFn, errMsg]] of Object.entries(CONSTRAINTS)) {
         const value = getNested(apcoreData, field);
         if (value !== undefined && value !== null && !checkFn(value)) {
-          errors.push(`Invalid value for 'apcore.${field}': ${errMsg} (got ${JSON.stringify(value)})`);
+          errors.push(
+            `Invalid value for 'apcore.${field}': ${errMsg} (got ${JSON.stringify(value)})`,
+          );
         }
       }
     }
@@ -909,7 +976,7 @@ export class Config {
       if (nsData === undefined || nsData === null) continue;
 
       const loadedSchema = this._loadNamespaceSchema(reg.name, reg.schema);
-      if (loadedSchema === null) continue;  // unresolved file path → warn-and-skip
+      if (loadedSchema === null) continue; // unresolved file path → warn-and-skip
 
       const issues = this._validateAgainstJsonSchema(reg.name, nsData, loadedSchema);
       errors.push(...issues);
@@ -918,21 +985,19 @@ export class Config {
     if (errors.length > 0) {
       throw new ConfigError(
         `Configuration validation failed (${errors.length} error(s)):\n` +
-        errors.map((e) => `  - ${e}`).join('\n'),
+          errors.map((e) => `  - ${e}`).join('\n'),
       );
     }
 
     // Strict mode: reject unknown namespaces
     const configMeta = this._data['_config'];
-    const isStrict = configMeta !== null && typeof configMeta === 'object' &&
+    const isStrict =
+      configMeta !== null &&
+      typeof configMeta === 'object' &&
       (configMeta as Record<string, unknown>)['strict'] === true;
 
     if (isStrict) {
-      const knownKeys = new Set([
-        ...Array.from(_globalNsRegistry.keys()),
-        'apcore',
-        '_config',
-      ]);
+      const knownKeys = new Set([...Array.from(_globalNsRegistry.keys()), 'apcore', '_config']);
       for (const key of Object.keys(this._data)) {
         if (!knownKeys.has(key)) {
           throw new ConfigError(`Unknown namespace '${key}' in strict mode`);
@@ -963,7 +1028,9 @@ export class Config {
         // eslint-disable-next-line @typescript-eslint/no-require-imports
         const fs = require('node:fs') as typeof import('node:fs');
         if (!fs.existsSync(schema)) {
-          console.warn(`[apcore:config] Schema file for namespace '${namespace}' not found: ${schema}`);
+          console.warn(
+            `[apcore:config] Schema file for namespace '${namespace}' not found: ${schema}`,
+          );
           return null;
         }
         const raw = fs.readFileSync(schema, 'utf-8');
@@ -1006,7 +1073,8 @@ export class Config {
     const result = validator.validate(data as Record<string, unknown>, typeBoxSchema);
     if (result.valid) return [];
     return result.errors.map(
-      (err) => `Namespace '${namespace}' failed schema validation at '${err.path || '/'}': ${err.message}`,
+      (err) =>
+        `Namespace '${namespace}' failed schema validation at '${err.path || '/'}': ${err.message}`,
     );
   }
 
@@ -1047,11 +1115,29 @@ Config.registerNamespace({
   name: 'observability',
   envPrefix: 'APCORE_OBSERVABILITY',
   defaults: {
-    tracing: { enabled: false, strategy: 'full', sampling_rate: 1.0, exporter: 'stdout', otlp_endpoint: null },
+    tracing: {
+      enabled: false,
+      strategy: 'full',
+      sampling_rate: 1.0,
+      exporter: 'stdout',
+      otlp_endpoint: null,
+    },
     metrics: { enabled: false, exporter: 'stdout' },
     logging: { enabled: true, level: 'info', format: 'json', redact_sensitive: true },
+    redaction: {
+      // Issue #43 §5 — runtime-configurable redaction.
+      // Empty arrays here mean "use library defaults" (see
+      // DEFAULT_REDACTION_FIELD_PATTERNS in observability/context-logger.ts).
+      field_patterns: [] as string[],
+      value_patterns: [] as string[],
+      replacement: '***REDACTED***',
+    },
     error_history: { max_entries_per_module: 50, max_total_entries: 1000 },
-    platform_notify: { enabled: false, error_rate_threshold: 0.1, latency_p99_threshold_ms: 5000.0 },
+    platform_notify: {
+      enabled: false,
+      error_rate_threshold: 0.1,
+      latency_p99_threshold_ms: 5000.0,
+    },
   },
 });
 
