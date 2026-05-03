@@ -64,6 +64,19 @@ export class InMemoryTaskStore implements TaskStore {
   }
 }
 
+/**
+ * Process-wide one-shot deprecation warning bookkeeping for {@link RetryConfig}
+ * (sync finding D-08). Mirrors the cross-language convention: warn once per
+ * unique deprecation key, then stay silent.
+ */
+const _RETRY_CONFIG_DEPRECATIONS_EMITTED: Set<string> = new Set();
+
+function _emitRetryConfigDeprecation(key: string, message: string): void {
+  if (_RETRY_CONFIG_DEPRECATIONS_EMITTED.has(key)) return;
+  _RETRY_CONFIG_DEPRECATIONS_EMITTED.add(key);
+  console.warn(message);
+}
+
 export class RetryConfig {
   readonly maxRetries: number;
   readonly retryDelayMs: number;
@@ -82,11 +95,32 @@ export class RetryConfig {
     this.maxRetryDelayMs = opts.maxRetryDelayMs ?? 60000;
   }
 
-  computeDelay(attempt: number): number {
+  /**
+   * Compute the delay in milliseconds before the given retry attempt.
+   *
+   * Canonical cross-language name (sync finding D-08). Mirrors
+   * `RetryConfig.compute_delay_ms` in apcore-python and
+   * `RetryConfig::compute_delay_ms` in apcore-rust.
+   */
+  computeDelayMs(attempt: number): number {
     return Math.min(
       this.retryDelayMs * Math.pow(this.backoffMultiplier, attempt),
       this.maxRetryDelayMs,
     );
+  }
+
+  /**
+   * @deprecated Use {@link RetryConfig.computeDelayMs} instead. Will be removed
+   * in the next minor release. Sync finding D-08 — the canonical cross-language
+   * method name is `computeDelayMs` (Python `compute_delay_ms`,
+   * Rust `compute_delay_ms`).
+   */
+  computeDelay(attempt: number): number {
+    _emitRetryConfigDeprecation(
+      'RetryConfig.computeDelay',
+      '[apcore] RetryConfig.computeDelay is deprecated; use computeDelayMs',
+    );
+    return this.computeDelayMs(attempt);
   }
 }
 
@@ -398,7 +432,7 @@ export class AsyncTaskManager {
           if (succeeded || internal.cancelled) return;
 
           if (retry && info.retryCount < retry.maxRetries) {
-            const delay = retry.computeDelay(info.retryCount);
+            const delay = retry.computeDelayMs(info.retryCount);
             info.retryCount += 1;
             info.status = TaskStatus.PENDING;
             info.startedAt = null;
