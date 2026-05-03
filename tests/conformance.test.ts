@@ -2200,7 +2200,7 @@ describe('apcore Conformance Suite (TypeScript)', () => {
       expect(info.retryCount).toBe(tc.expected.retry_count_after_first_failure);
 
       // Verify the backoff formula for the first retry (attempt index 0)
-      expect(retryConfig.computeDelay(0)).toBe(tc.expected.next_retry_delay_ms);
+      expect(retryConfig.computeDelayMs(0)).toBe(tc.expected.next_retry_delay_ms);
 
       vi.useRealTimers();
     });
@@ -2218,12 +2218,12 @@ describe('apcore Conformance Suite (TypeScript)', () => {
       });
 
       const exp = tc.expected;
-      expect(retryConfig.computeDelay(0)).toBe(exp.attempt_0_delay_ms);
-      expect(retryConfig.computeDelay(1)).toBe(exp.attempt_1_delay_ms);
-      expect(retryConfig.computeDelay(2)).toBe(exp.attempt_2_delay_ms);
-      expect(retryConfig.computeDelay(3)).toBe(exp.attempt_3_delay_ms);
-      expect(retryConfig.computeDelay(4)).toBe(exp.attempt_4_delay_ms);
-      expect(retryConfig.computeDelay(5)).toBe(exp.attempt_5_delay_ms);
+      expect(retryConfig.computeDelayMs(0)).toBe(exp.attempt_0_delay_ms);
+      expect(retryConfig.computeDelayMs(1)).toBe(exp.attempt_1_delay_ms);
+      expect(retryConfig.computeDelayMs(2)).toBe(exp.attempt_2_delay_ms);
+      expect(retryConfig.computeDelayMs(3)).toBe(exp.attempt_3_delay_ms);
+      expect(retryConfig.computeDelayMs(4)).toBe(exp.attempt_4_delay_ms);
+      expect(retryConfig.computeDelayMs(5)).toBe(exp.attempt_5_delay_ms);
     });
 
     // --- 7. max_retries_exhausted_becomes_failed ---

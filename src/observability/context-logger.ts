@@ -9,8 +9,15 @@ import { matchPattern } from '../utils/pattern.js';
 
 /**
  * Issue #43 §5 — default sensitive field patterns. Used when the observability
- * namespace does not specify `redaction.field_patterns`. Wildcards follow
- * apcore's `matchPattern` semantics (segment-aware globs).
+ * namespace does not specify `redaction.sensitive_keys` (canonical) /
+ * `redaction.field_patterns` (legacy). Wildcards follow apcore's
+ * `matchPattern` semantics (segment-aware globs).
+ *
+ * Aligned with apcore-python and apcore-rust defaults (sync finding
+ * CRITICAL #4): `["_secret_*", "apiKey", "api_key", "token", "authorization",
+ * "password"]`. The legacy `passwd` / `secret` entries remain only as
+ * additional convenience defaults — removing them would weaken default
+ * coverage without cross-language benefit.
  */
 export const DEFAULT_REDACTION_FIELD_PATTERNS: readonly string[] = [
   '_secret_*',
@@ -22,6 +29,24 @@ export const DEFAULT_REDACTION_FIELD_PATTERNS: readonly string[] = [
   'passwd',
   'secret',
 ];
+
+/**
+ * One-shot deprecation warning bookkeeping for legacy
+ * `observability.redaction.*` keys (sync finding CRITICAL #4). Mirrors the
+ * cross-language pattern — warn once per process when legacy keys are read,
+ * pointing migrators at the canonical `obs.redaction.*` namespace.
+ */
+const _REDACTION_LEGACY_DEPRECATION_EMITTED: { value: boolean } = { value: false };
+
+function _emitRedactionLegacyDeprecation(legacyKeys: string[]): void {
+  if (_REDACTION_LEGACY_DEPRECATION_EMITTED.value) return;
+  _REDACTION_LEGACY_DEPRECATION_EMITTED.value = true;
+  console.warn(
+    `[apcore] Config keys ${legacyKeys.join(', ')} are deprecated; ` +
+      'use obs.redaction.sensitive_keys / obs.redaction.regex_patterns / obs.redaction.replacement instead. ' +
+      'Legacy keys will be removed in a future release.',
+  );
+}
 
 // ---------------------------------------------------------------------------
 // RedactionConfig
@@ -53,20 +78,59 @@ export class RedactionConfig {
   /**
    * Build a RedactionConfig from an apcore {@link Config}.
    *
-   * Reads (Issue #43 §5):
-   *   - `observability.redaction.field_patterns` (string[])
-   *   - `observability.redaction.value_patterns` (string[]; compiled with the
-   *     case-insensitive flag)
-   *   - `observability.redaction.replacement` (string)
+   * Reads canonical keys first (sync finding CRITICAL #4 — aligns with
+   * apcore-python / apcore-rust):
+   *   - `obs.redaction.sensitive_keys` (string[])
+   *   - `obs.redaction.regex_patterns` (string[]; compiled case-insensitively)
+   *   - `obs.redaction.replacement`    (string)
    *
-   * Falls back to {@link DEFAULT_REDACTION_FIELD_PATTERNS} when no field
-   * patterns are configured so legacy `_secret_*` and standard sensitive keys
-   * (apiKey, token, authorization, password) remain redacted out of the box.
+   * For backwards compatibility, falls back to legacy keys (Issue #43 §5)
+   * when the canonical key is unset, and emits a one-shot deprecation
+   * warning the first time a legacy key is read:
+   *   - `observability.redaction.field_patterns`   (legacy of sensitive_keys)
+   *   - `observability.redaction.value_patterns`   (legacy of regex_patterns)
+   *   - `observability.redaction.replacement`      (legacy of replacement)
+   *
+   * Falls back to {@link DEFAULT_REDACTION_FIELD_PATTERNS} when no sensitive
+   * keys are configured so `_secret_*` and standard sensitive keys (apiKey,
+   * api_key, token, authorization, password) remain redacted out of the box.
    */
   static fromConfig(config: Config): RedactionConfig {
-    const rawFields = config.get('observability.redaction.field_patterns');
-    const rawValues = config.get('observability.redaction.value_patterns');
-    const replacement = config.get('observability.redaction.replacement');
+    const legacyKeysUsed: string[] = [];
+
+    // --- sensitive_keys (formerly field_patterns) ---
+    let rawFields = config.get('obs.redaction.sensitive_keys');
+    if (rawFields === undefined || rawFields === null) {
+      const legacyFields = config.get('observability.redaction.field_patterns');
+      if (legacyFields !== undefined && legacyFields !== null) {
+        rawFields = legacyFields;
+        legacyKeysUsed.push('observability.redaction.field_patterns');
+      }
+    }
+
+    // --- regex_patterns (formerly value_patterns) ---
+    let rawValues = config.get('obs.redaction.regex_patterns');
+    if (rawValues === undefined || rawValues === null) {
+      const legacyValues = config.get('observability.redaction.value_patterns');
+      if (legacyValues !== undefined && legacyValues !== null) {
+        rawValues = legacyValues;
+        legacyKeysUsed.push('observability.redaction.value_patterns');
+      }
+    }
+
+    // --- replacement ---
+    let replacement = config.get('obs.redaction.replacement');
+    if (replacement === undefined || replacement === null) {
+      const legacyReplacement = config.get('observability.redaction.replacement');
+      if (legacyReplacement !== undefined && legacyReplacement !== null) {
+        replacement = legacyReplacement;
+        legacyKeysUsed.push('observability.redaction.replacement');
+      }
+    }
+
+    if (legacyKeysUsed.length > 0) {
+      _emitRedactionLegacyDeprecation(legacyKeysUsed);
+    }
 
     const fieldPatterns =
       Array.isArray(rawFields) && rawFields.length > 0
