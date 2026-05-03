@@ -17,6 +17,8 @@ export {
 export { ErrorHistory, normalizeMessage, computeFingerprint } from './error-history.js';
 export type { ErrorEntry, ErrorHistoryOptions } from './error-history.js';
 export { UsageCollector, UsageMiddleware, bucketKey } from './usage.js';
+export { NoopUsageExporter, PeriodicUsageExporter } from './usage-exporter.js';
+export type { UsageExporter } from './usage-exporter.js';
 export type {
   UsageRecord,
   CallerUsageSummary,
