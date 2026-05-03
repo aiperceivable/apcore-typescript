@@ -301,8 +301,13 @@ export {
   ContextLogger,
   ObsLoggingMiddleware,
   RedactionConfig,
+  DEFAULT_REDACTION_FIELD_PATTERNS,
 } from './observability/context-logger.js';
-export { ErrorHistory } from './observability/error-history.js';
+export {
+  ErrorHistory,
+  computeFingerprint,
+  normalizeMessage,
+} from './observability/error-history.js';
 export type { ErrorEntry } from './observability/error-history.js';
 export { UsageCollector, UsageMiddleware } from './observability/usage.js';
 export {

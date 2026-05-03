@@ -2,9 +2,26 @@
  * Structured logging: ContextLogger, RedactionConfig, and ObsLoggingMiddleware.
  */
 
+import type { Config } from '../config.js';
 import type { Context } from '../context.js';
 import { Middleware } from '../middleware/base.js';
 import { matchPattern } from '../utils/pattern.js';
+
+/**
+ * Issue #43 §5 — default sensitive field patterns. Used when the observability
+ * namespace does not specify `redaction.field_patterns`. Wildcards follow
+ * apcore's `matchPattern` semantics (segment-aware globs).
+ */
+export const DEFAULT_REDACTION_FIELD_PATTERNS: readonly string[] = [
+  '_secret_*',
+  'apiKey',
+  'api_key',
+  'token',
+  'authorization',
+  'password',
+  'passwd',
+  'secret',
+];
 
 // ---------------------------------------------------------------------------
 // RedactionConfig
@@ -31,6 +48,48 @@ export class RedactionConfig {
     this.fieldPatterns = options.fieldPatterns ?? [];
     this.valuePatterns = options.valuePatterns ?? [];
     this.replacement = options.replacement ?? '***REDACTED***';
+  }
+
+  /**
+   * Build a RedactionConfig from an apcore {@link Config}.
+   *
+   * Reads (Issue #43 §5):
+   *   - `observability.redaction.field_patterns` (string[])
+   *   - `observability.redaction.value_patterns` (string[]; compiled with the
+   *     case-insensitive flag)
+   *   - `observability.redaction.replacement` (string)
+   *
+   * Falls back to {@link DEFAULT_REDACTION_FIELD_PATTERNS} when no field
+   * patterns are configured so legacy `_secret_*` and standard sensitive keys
+   * (apiKey, token, authorization, password) remain redacted out of the box.
+   */
+  static fromConfig(config: Config): RedactionConfig {
+    const rawFields = config.get('observability.redaction.field_patterns');
+    const rawValues = config.get('observability.redaction.value_patterns');
+    const replacement = config.get('observability.redaction.replacement');
+
+    const fieldPatterns =
+      Array.isArray(rawFields) && rawFields.length > 0
+        ? (rawFields as unknown[]).filter((p): p is string => typeof p === 'string')
+        : [...DEFAULT_REDACTION_FIELD_PATTERNS];
+
+    const valueStrings = Array.isArray(rawValues)
+      ? (rawValues as unknown[]).filter((p): p is string => typeof p === 'string')
+      : [];
+    const valuePatterns: (RegExp | string)[] = valueStrings.map((p) => {
+      try {
+        return new RegExp(p, 'i');
+      } catch {
+        // Drop invalid patterns rather than throwing at logger init.
+        return /(?!)/; // never matches
+      }
+    });
+
+    return new RedactionConfig({
+      fieldPatterns,
+      valuePatterns,
+      replacement: typeof replacement === 'string' ? replacement : undefined,
+    });
   }
 
   /** Apply redaction rules to a flat object of field name → value. */
@@ -122,15 +181,20 @@ export class ContextLogger {
     this._output = options?.output ?? { write: (s: string) => console.error(s) };
   }
 
-  static fromContext(context: Context<unknown>, name: string, options?: {
-    format?: string;
-    level?: string;
-    redactSensitive?: boolean;
-    output?: WritableOutput;
-  }): ContextLogger {
+  static fromContext(
+    context: Context<unknown>,
+    name: string,
+    options?: {
+      format?: string;
+      level?: string;
+      redactSensitive?: boolean;
+      output?: WritableOutput;
+    },
+  ): ContextLogger {
     const logger = new ContextLogger({ name, ...options });
     logger._traceId = context.traceId;
-    logger._moduleId = context.callChain.length > 0 ? context.callChain[context.callChain.length - 1] : null;
+    logger._moduleId =
+      context.callChain.length > 0 ? context.callChain[context.callChain.length - 1] : null;
     logger._callerId = context.callerId;
     return logger;
   }
@@ -159,15 +223,24 @@ export class ContextLogger {
     if (this._format === 'json') {
       this._output.write(JSON.stringify(entry) + '\n');
     } else {
-      const ts = now.toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
+      const ts = now
+        .toISOString()
+        .replace('T', ' ')
+        .replace(/\.\d+Z$/, '');
       const lvl = levelName.toUpperCase();
       const trace = this._traceId ?? 'none';
       const mod = this._moduleId ?? 'none';
       let extrasStr = '';
       if (redactedExtra) {
-        extrasStr = ' ' + Object.entries(redactedExtra).map(([k, v]) => `${k}=${v}`).join(' ');
+        extrasStr =
+          ' ' +
+          Object.entries(redactedExtra)
+            .map(([k, v]) => `${k}=${v}`)
+            .join(' ');
       }
-      this._output.write(`${ts} [${lvl}] [trace=${trace}] [module=${mod}] ${message}${extrasStr}\n`);
+      this._output.write(
+        `${ts} [${lvl}] [trace=${trace}] [module=${mod}] ${message}${extrasStr}\n`,
+      );
     }
   }
 
@@ -215,11 +288,7 @@ export class ObsLoggingMiddleware extends Middleware {
     this._redactionConfig = options?.redactionConfig ?? null;
   }
 
-  override before(
-    moduleId: string,
-    inputs: Record<string, unknown>,
-    context: Context,
-  ): null {
+  override before(moduleId: string, inputs: Record<string, unknown>, context: Context): null {
     const starts = (context.data['_apcore.mw.logging.obs_starts'] as number[]) ?? [];
     starts.push(performance.now());
     context.data['_apcore.mw.logging.obs_starts'] = starts;
