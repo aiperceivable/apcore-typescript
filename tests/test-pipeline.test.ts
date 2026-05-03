@@ -2,21 +2,21 @@
  * Tests for pipeline.ts: ExecutionStrategy, PipelineEngine, and error types.
  */
 
-import { describe, it, expect, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
+import { Context } from '../src/context.js';
 import {
   ExecutionStrategy,
-  PipelineEngine,
   PipelineAbortError,
+  PipelineEngine,
+  PipelineStepError,
+  PipelineStepNotFoundError,
+  StepNameDuplicateError,
   StepNotFoundError,
   StepNotRemovableError,
   StepNotReplaceableError,
-  StepNameDuplicateError,
   StrategyNotFoundError,
-  PipelineStepError,
-  PipelineStepNotFoundError,
 } from '../src/pipeline.js';
-import type { Step, StepResult, PipelineContext, PipelineState } from '../src/pipeline.js';
-import { Context } from '../src/context.js';
+import type { PipelineContext, PipelineState, Step, StepResult } from '../src/pipeline.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -88,20 +88,16 @@ describe('ExecutionStrategy constructor', () => {
     );
   });
 
-  it('warns when step requires a field not provided by any preceding step', () => {
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    new ExecutionStrategy('warn-test', [makeStep('a', { requires: ['output'] })]);
-    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("requires 'output'"));
-    warnSpy.mockRestore();
+  it('throws PipelineDependencyError when requires are not satisfied by any preceding step (Issue #33 §2.1)', () => {
+    expect(() => new ExecutionStrategy('bad', [makeStep('a', { requires: ['output'] })])).toThrow(
+      /requires/,
+    );
   });
 
-  it('does not warn when requires are satisfied by a preceding step', () => {
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  it('does not throw when requires are satisfied by a preceding step', () => {
     const stepA = makeStep('a', { provides: ['output'] });
     const stepB = makeStep('b', { requires: ['output'] });
-    new ExecutionStrategy('ok', [stepA, stepB]);
-    expect(warnSpy).not.toHaveBeenCalled();
-    warnSpy.mockRestore();
+    expect(() => new ExecutionStrategy('ok', [stepA, stepB])).not.toThrow();
   });
 
   it('exposes read-only steps array', () => {
@@ -273,14 +269,18 @@ describe('PipelineEngine.run - abort', () => {
   it('throws PipelineAbortError when a step returns abort', async () => {
     const engine = new PipelineEngine();
     const ctx = makeContext();
-    const s = new ExecutionStrategy('s', [makeStep('a', { action: 'abort', explanation: 'fatal' })]);
+    const s = new ExecutionStrategy('s', [
+      makeStep('a', { action: 'abort', explanation: 'fatal' }),
+    ]);
     await expect(engine.run(s, ctx)).rejects.toThrow(PipelineAbortError);
   });
 
   it('PipelineAbortError contains step name and explanation', async () => {
     const engine = new PipelineEngine();
     const ctx = makeContext();
-    const s = new ExecutionStrategy('s', [makeStep('check', { action: 'abort', explanation: 'blocked' })]);
+    const s = new ExecutionStrategy('s', [
+      makeStep('check', { action: 'abort', explanation: 'blocked' }),
+    ]);
     try {
       await engine.run(s, ctx);
     } catch (e) {
@@ -294,7 +294,10 @@ describe('PipelineEngine.run - abort', () => {
   it('PipelineAbortError attaches pipeline trace', async () => {
     const engine = new PipelineEngine();
     const ctx = makeContext();
-    const s = new ExecutionStrategy('s', [makeStep('first'), makeStep('stopper', { action: 'abort' })]);
+    const s = new ExecutionStrategy('s', [
+      makeStep('first'),
+      makeStep('stopper', { action: 'abort' }),
+    ]);
     try {
       await engine.run(s, ctx);
     } catch (e) {
@@ -314,7 +317,11 @@ describe('PipelineEngine.run - skip_to', () => {
     const engine = new PipelineEngine();
     const ctx = makeContext();
     const executedSteps: string[] = [];
-    const trackStep = (name: string, action: 'continue' | 'skip_to' = 'continue', skipTo?: string): Step => ({
+    const trackStep = (
+      name: string,
+      action: 'continue' | 'skip_to' = 'continue',
+      skipTo?: string,
+    ): Step => ({
       name,
       description: name,
       removable: true,
@@ -352,9 +359,7 @@ describe('PipelineEngine.run - matchModules', () => {
   it('skips a step whose matchModules does not match moduleId', async () => {
     const engine = new PipelineEngine();
     const ctx = makeContext('other.module');
-    const s = new ExecutionStrategy('s', [
-      makeStep('filtered', { matchModules: ['specific.*'] }),
-    ]);
+    const s = new ExecutionStrategy('s', [makeStep('filtered', { matchModules: ['specific.*'] })]);
     const [, trace] = await engine.run(s, ctx);
     expect(trace.steps[0].skipped).toBe(true);
     expect(trace.steps[0].skipReason).toBe('no_match');
@@ -363,9 +368,7 @@ describe('PipelineEngine.run - matchModules', () => {
   it('runs a step whose matchModules matches the moduleId', async () => {
     const engine = new PipelineEngine();
     const ctx = makeContext('specific.thing');
-    const s = new ExecutionStrategy('s', [
-      makeStep('matched', { matchModules: ['specific.*'] }),
-    ]);
+    const s = new ExecutionStrategy('s', [makeStep('matched', { matchModules: ['specific.*'] })]);
     const [, trace] = await engine.run(s, ctx);
     expect(trace.steps[0].skipped).toBe(false);
   });

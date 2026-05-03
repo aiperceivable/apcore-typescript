@@ -60,6 +60,68 @@ export interface PipelineState {
 }
 
 // ---------------------------------------------------------------------------
+// StepMiddleware (Issue #33 §2.2)
+// ---------------------------------------------------------------------------
+
+/**
+ * Middleware interface for intercepting pipeline step lifecycle (Issue #33 §2.2).
+ *
+ * Each method is optional. The PipelineEngine invokes them in this order
+ * around every step:
+ *
+ *   beforeStep → step.execute → afterStep   (success path)
+ *   beforeStep → step.execute → onStepError (failure path)
+ *
+ * `onStepError` MAY return a non-null recovery value to suppress the error
+ * and continue the pipeline. Returning `null` (or `undefined`) re-raises the
+ * original error after every middleware has been consulted. The first
+ * middleware to return non-null wins; later middlewares are not invoked.
+ *
+ * All methods may be sync or async. The engine awaits any thenable return
+ * value (mirroring Issue #42's middleware fix) so plain functions returning
+ * a Promise are not silently dropped.
+ */
+export interface StepMiddleware {
+  /** Invoked before a step's `execute()` runs. */
+  beforeStep?(stepName: string, state: PipelineState): void | Promise<void>;
+  /** Invoked after a step's `execute()` completes successfully. */
+  afterStep?(stepName: string, state: PipelineState, result: unknown): void | Promise<void>;
+  /**
+   * Invoked when a step's `execute()` throws. Return non-null to recover
+   * (the engine treats the value as the step's output and continues).
+   * Return null/undefined to let the next middleware try, or — if no
+   * middleware recovers — to propagate the original error.
+   */
+  onStepError?(
+    stepName: string,
+    state: PipelineState,
+    error: Error,
+  ): unknown | null | Promise<unknown | null>;
+}
+
+/**
+ * Detect a thenable (Promise-like) without calling `.then`.
+ *
+ * Mirrors the Issue #42 fix in MiddlewareManager: handlers may not be
+ * declared `async` but still return a Promise; treating those values as
+ * sync would silently drop their effects.
+ */
+function _isThenable(value: unknown): value is PromiseLike<unknown> {
+  return (
+    value != null &&
+    (typeof value === 'object' || typeof value === 'function') &&
+    typeof (value as { then?: unknown }).then === 'function'
+  );
+}
+
+async function _maybeAwait<T>(value: T | PromiseLike<T>): Promise<T> {
+  if (_isThenable(value)) {
+    return await (value as PromiseLike<T>);
+  }
+  return value as T;
+}
+
+// ---------------------------------------------------------------------------
 // PipelineContext
 // ---------------------------------------------------------------------------
 
@@ -131,16 +193,34 @@ export interface StrategyInfo {
 // ExecutionStrategy
 // ---------------------------------------------------------------------------
 
+/**
+ * Optional configuration for {@link ExecutionStrategy}.
+ *
+ * `seedProvides` lists pipeline-context fields that are guaranteed to be
+ * populated by an external caller before the first step runs. They count
+ * as "already provided" during dependency validation (Issue #33 §2.1) so
+ * that legitimate sub-strategies — for example the post-stream strategy
+ * built from {@link Step}s of a parent strategy — do not raise spurious
+ * `PipelineDependencyError`s. Use sparingly; prefer adding the missing
+ * upstream step when possible.
+ */
+export interface ExecutionStrategyOptions {
+  /** Names of pipeline-context fields the caller will pre-populate. */
+  readonly seedProvides?: readonly string[];
+}
+
 /** An ordered sequence of steps that defines how a module is executed. */
 export class ExecutionStrategy {
   readonly name: string;
   private _steps: Step[];
   private _nameToIdx: Map<string, number>;
+  private readonly _seedProvides: ReadonlySet<string>;
 
-  constructor(name: string, steps: Step[]) {
+  constructor(name: string, steps: Step[], options?: ExecutionStrategyOptions) {
     this.name = name;
     this._steps = [...steps];
     this._nameToIdx = new Map();
+    this._seedProvides = new Set(options?.seedProvides ?? []);
     // Validate unique step names
     const names = this._steps.map((s) => s.name);
     const seen = new Set<string>();
@@ -152,9 +232,7 @@ export class ExecutionStrategy {
       seen.add(n);
     }
     if (dupes.size > 0) {
-      throw new StepNameDuplicateError(
-        `Duplicate step names: ${[...dupes].join(', ')}`,
-      );
+      throw new StepNameDuplicateError(`Duplicate step names: ${[...dupes].join(', ')}`);
     }
     this._rebuildIndex();
     this._validateDependencies();
@@ -165,17 +243,27 @@ export class ExecutionStrategy {
     this._nameToIdx = new Map(this._steps.map((s, i) => [s.name, i]));
   }
 
-  /** Warn if any step's requires are not provided by a preceding step. */
+  /**
+   * Fail-fast: throw `PipelineDependencyError` if any step's `requires` are not
+   * provided by a preceding step (Issue #33 §2.1).
+   *
+   * Previously this method emitted a `console.warn` and let construction
+   * succeed; that allowed misconfigured strategies to run partway and fail
+   * with a confusing runtime error. Throwing at construction surfaces the
+   * problem immediately and tells the caller which step / field is missing.
+   */
   private _validateDependencies(): void {
-    const provided = new Set<string>();
+    const provided = new Set<string>(this._seedProvides);
     for (const step of this._steps) {
       const requires = step.requires ?? [];
+      const missing: string[] = [];
       for (const req of requires) {
         if (!provided.has(req)) {
-          console.warn(
-            `[apcore:pipeline] Step '${step.name}' requires '${req}', but no preceding step provides it. This may cause runtime errors.`,
-          );
+          missing.push(req);
         }
+      }
+      if (missing.length > 0) {
+        throw new PipelineDependencyError(step.name, missing);
       }
       for (const p of step.provides ?? []) {
         provided.add(p);
@@ -227,9 +315,7 @@ export class ExecutionStrategy {
       throw new StepNotFoundError(`Step '${stepName}' not found`);
     }
     if (!this._steps[idx].removable) {
-      throw new StepNotRemovableError(
-        `Step '${stepName}' is not removable`,
-      );
+      throw new StepNotRemovableError(`Step '${stepName}' is not removable`);
     }
     this._steps.splice(idx, 1);
     this._rebuildIndex();
@@ -242,9 +328,7 @@ export class ExecutionStrategy {
       throw new StepNotFoundError(`Step '${stepName}' not found`);
     }
     if (!this._steps[idx].replaceable) {
-      throw new StepNotReplaceableError(
-        `Step '${stepName}' is not replaceable`,
-      );
+      throw new StepNotReplaceableError(`Step '${stepName}' is not replaceable`);
     }
     this._steps[idx] = newStep;
     this._rebuildIndex();
@@ -262,9 +346,7 @@ export class ExecutionStrategy {
       throw new PipelineStepNotFoundError(stepName);
     }
     if (!this._steps[idx].replaceable) {
-      throw new StepNotReplaceableError(
-        `Step '${stepName}' is not replaceable`,
-      );
+      throw new StepNotReplaceableError(`Step '${stepName}' is not replaceable`);
     }
     // Guard: reject if newStep.name already exists at a different position.
     // Allowing it would silently produce duplicate names in _steps and corrupt
@@ -449,6 +531,40 @@ export class PipelineStepError extends ModuleError {
   }
 }
 
+/**
+ * Raised at strategy construction when a step's declared `requires` are not
+ * provided by any preceding step (Issue #33 §2.1).
+ *
+ * This replaces the previous `console.warn` in `_validateDependencies`. The
+ * error names the offending step and the missing fields so the caller can
+ * fix the strategy definition before any step runs.
+ */
+export class PipelineDependencyError extends ModuleError {
+  static override readonly DEFAULT_RETRYABLE: boolean | null = false;
+
+  readonly stepName: string;
+  readonly missingRequires: string[];
+
+  constructor(stepName: string, missingRequires: string[], options?: ErrorOptions) {
+    super(
+      'PIPELINE_DEPENDENCY_ERROR',
+      `Pipeline step '${stepName}' requires [${missingRequires.join(
+        ', ',
+      )}], but no preceding step provides ${missingRequires.length === 1 ? 'it' : 'them'}.`,
+      { stepName, missingRequires: [...missingRequires] },
+      options?.cause,
+      options?.traceId,
+      options?.retryable,
+      options?.aiGuidance,
+      options?.userFixable,
+      options?.suggestion,
+    );
+    this.name = 'PipelineDependencyError';
+    this.stepName = stepName;
+    this.missingRequires = [...missingRequires];
+  }
+}
+
 /** Raised when configureStep targets a step name that does not exist. */
 export class PipelineStepNotFoundError extends ModuleError {
   static override readonly DEFAULT_RETRYABLE: boolean | null = false;
@@ -478,11 +594,29 @@ export class PipelineStepNotFoundError extends ModuleError {
 
 /** Executes an ExecutionStrategy against a PipelineContext, returning the final output and a complete execution trace. */
 export class PipelineEngine {
+  /**
+   * Registered step-lifecycle middlewares (Issue #33 §2.2). Invoked in
+   * registration order around every step's execute() call.
+   */
+  private readonly _stepMiddlewares: StepMiddleware[] = [];
+
+  /** Read-only view of the registered step middlewares. */
+  get stepMiddlewares(): readonly StepMiddleware[] {
+    return this._stepMiddlewares;
+  }
+
+  /**
+   * Register a `StepMiddleware` to intercept every step's lifecycle
+   * (Issue #33 §2.2). beforeStep / afterStep run in registration order;
+   * onStepError is consulted in registration order until one returns a
+   * non-null recovery value.
+   */
+  addStepMiddleware(mw: StepMiddleware): void {
+    this._stepMiddlewares.push(mw);
+  }
+
   /** Run every step in the strategy against ctx, respecting flow-control actions (continue, skip_to, abort). */
-  async run(
-    strategy: ExecutionStrategy,
-    ctx: PipelineContext,
-  ): Promise<[unknown, PipelineTrace]> {
+  async run(strategy: ExecutionStrategy, ctx: PipelineContext): Promise<[unknown, PipelineTrace]> {
     const pipelineStart = performance.now();
     const steps = strategy.steps;
     const trace: PipelineTrace = {
@@ -508,9 +642,7 @@ export class PipelineEngine {
 
       // ① match_modules filter
       if (stepMatchModules !== null) {
-        const matched = stepMatchModules.some((pattern) =>
-          matchPattern(pattern, ctx.moduleId),
-        );
+        const matched = stepMatchModules.some((pattern) => matchPattern(pattern, ctx.moduleId));
         if (!matched) {
           trace.steps.push({
             name: step.name,
@@ -539,8 +671,21 @@ export class PipelineEngine {
         continue;
       }
 
-      // ③ Execute with per-step timeout
+      // ③ Execute with per-step timeout, wrapped in StepMiddleware hooks (§2.2)
       const stepStart = performance.now();
+      const stepState: PipelineState = {
+        stepName: step.name,
+        outputs: stepOutputs,
+        context: ctx,
+      };
+
+      // ③a beforeStep hooks (registration order)
+      for (const mw of this._stepMiddlewares) {
+        if (mw.beforeStep) {
+          await _maybeAwait(mw.beforeStep(step.name, stepState));
+        }
+      }
+
       let result: StepResult;
       try {
         if (stepTimeoutMs > 0) {
@@ -558,18 +703,57 @@ export class PipelineEngine {
         }
       } catch (exc) {
         const durationMs = performance.now() - stepStart;
+        const cause = exc instanceof Error ? exc : new Error(String(exc));
+
+        // ③b onStepError hooks: first non-null recovery wins (§2.2)
+        let recovery: unknown = null;
+        for (const mw of this._stepMiddlewares) {
+          if (!mw.onStepError) continue;
+          const ret = await _maybeAwait(mw.onStepError(step.name, stepState, cause));
+          if (ret != null) {
+            recovery = ret;
+            break;
+          }
+        }
+
+        if (recovery != null) {
+          // The recovery value is informational — it's surfaced to afterStep
+          // hooks and recorded in the trace explanation, but NOT auto-merged
+          // into ctx.output. Middlewares that want to publish recovery state
+          // into output should mutate ctx.output directly inside onStepError.
+          const recoveredResult: StepResult = {
+            action: 'continue',
+            explanation: `recovered from: ${cause.message}`,
+          };
+          trace.steps.push({
+            name: step.name,
+            durationMs,
+            result: recoveredResult,
+            skipped: false,
+            decisionPoint: false,
+            skipReason: 'error_recovered',
+          });
+          // afterStep hooks still fire on recovery — middlewares treat recovery
+          // as a successful (post-step) outcome and may want to record metrics.
+          for (const mw of this._stepMiddlewares) {
+            if (mw.afterStep) {
+              await _maybeAwait(mw.afterStep(step.name, stepState, recovery));
+            }
+          }
+          stepOutputs[step.name] = ctx.output != null ? { ...ctx.output } : null;
+          idx += 1;
+          continue;
+        }
+
         // ④ ignore_errors: log and continue
         if (stepIgnoreErrors) {
-          console.warn(
-            `[apcore:pipeline] Step '${step.name}' failed (ignored):`,
-            exc instanceof Error ? exc.message : String(exc),
-          );
+          console.warn(`[apcore:pipeline] Step '${step.name}' failed (ignored):`, cause.message);
           trace.steps.push({
             name: step.name,
             durationMs,
             result: {
               action: 'continue',
-              explanation: exc instanceof Error ? exc.message : String(exc),
+              explanation: cause.message,
             },
             skipped: false,
             decisionPoint: false,
@@ -584,17 +768,23 @@ export class PipelineEngine {
           durationMs,
           result: {
             action: 'abort',
-            explanation: exc instanceof Error ? exc.message : String(exc),
+            explanation: cause.message,
           },
           skipped: false,
           decisionPoint: false,
         });
         trace.totalDurationMs = performance.now() - pipelineStart;
-        const cause = exc instanceof Error ? exc : new Error(String(exc));
         throw new PipelineStepError(step.name, cause, trace);
       }
 
       const durationMs = performance.now() - stepStart;
+
+      // ③c afterStep hooks (registration order, success path)
+      for (const mw of this._stepMiddlewares) {
+        if (mw.afterStep) {
+          await _maybeAwait(mw.afterStep(step.name, stepState, result));
+        }
+      }
 
       // ⑤ Record trace
       trace.steps.push({
@@ -655,9 +845,7 @@ export class PipelineEngine {
         }
         idx = targetIdx;
       } else {
-        throw new StepNotFoundError(
-          `Unknown step action: '${result.action as string}'`,
-        );
+        throw new StepNotFoundError(`Unknown step action: '${result.action as string}'`);
       }
     }
 

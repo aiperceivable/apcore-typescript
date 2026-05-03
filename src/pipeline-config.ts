@@ -4,8 +4,34 @@
 
 import { buildStandardStrategy } from './builtin-steps.js';
 import type { StandardStrategyDeps } from './builtin-steps.js';
+import { ModuleError } from './errors.js';
+import type { ErrorOptions } from './errors.js';
 import type { PipelineContext, Step, StepResult } from './pipeline.js';
 import type { ExecutionStrategy } from './pipeline.js';
+
+/**
+ * Raised when YAML pipeline configuration references a step or anchor that
+ * does not exist (Issue #33 §1.2). Replaces the previous warn-and-continue
+ * behaviour so misconfigured `apcore.yaml` files fail loudly at load time.
+ */
+export class ConfigurationError extends ModuleError {
+  static override readonly DEFAULT_RETRYABLE: boolean | null = false;
+
+  constructor(message: string, options?: ErrorOptions) {
+    super(
+      'PIPELINE_CONFIG_INVALID',
+      message,
+      {},
+      options?.cause,
+      options?.traceId,
+      options?.retryable,
+      options?.aiGuidance,
+      options?.userFixable,
+      options?.suggestion,
+    );
+    this.name = 'ConfigurationError';
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Global step type registry
@@ -237,24 +263,35 @@ export async function buildStrategyFromConfig(
 ): Promise<ExecutionStrategy> {
   const strategy = buildStandardStrategy(deps);
 
-  // (1) Remove steps
+  // (1) Remove steps — fail fast if target does not exist (§1.2)
   for (const stepName of pipelineConfig.remove ?? []) {
-    try {
-      strategy.remove(stepName);
-    } catch (exc) {
-      console.warn(`[apcore:pipeline-config] Cannot remove step '${stepName}': ${exc}`);
+    if (strategy.findStepIndex(stepName) === undefined) {
+      throw new ConfigurationError(
+        `Cannot remove pipeline step '${stepName}': no such step in the strategy. ` +
+          `Either remove this entry from pipeline.remove or insert a matching step first.`,
+      );
     }
+    strategy.remove(stepName);
   }
 
-  // (2) Configure existing step fields
+  // (2) Configure existing step fields — fail fast if target does not exist (§1.2)
   for (const [stepName, overrides] of Object.entries(pipelineConfig.configure ?? {})) {
+    if (strategy.findStepIndex(stepName) === undefined) {
+      throw new ConfigurationError(
+        `Cannot configure pipeline step '${stepName}': no such step in the strategy. ` +
+          `Either remove this entry from pipeline.configure or insert a matching step first.`,
+      );
+    }
     for (const step of strategy.steps) {
       if (step.name === stepName) {
         for (const [key, value] of Object.entries(overrides)) {
           if (key in step) {
             (step as unknown as Record<string, unknown>)[key] = value;
           } else {
-            console.warn(`[apcore:pipeline-config] Step '${stepName}' has no field '${key}'`);
+            throw new ConfigurationError(
+              `Pipeline step '${stepName}' has no field '${key}'. ` +
+                `Valid fields include: matchModules, ignoreErrors, pure, timeoutMs.`,
+            );
           }
         }
         break;
@@ -262,18 +299,31 @@ export async function buildStrategyFromConfig(
     }
   }
 
-  // (3) Resolve and insert custom steps
+  // (3) Resolve and insert custom steps — anchors must exist (§1.2)
   for (const stepDef of pipelineConfig.steps ?? []) {
     const step = await _resolveStep(stepDef);
     const after = stepDef.after;
     const before = stepDef.before;
     if (after) {
+      if (strategy.findStepIndex(after) === undefined) {
+        throw new ConfigurationError(
+          `Cannot insert pipeline step '${step.name}' after '${after}': ` +
+            `anchor step does not exist. Insert an anchor step first or use a valid anchor name.`,
+        );
+      }
       strategy.insertAfter(after, step);
     } else if (before) {
+      if (strategy.findStepIndex(before) === undefined) {
+        throw new ConfigurationError(
+          `Cannot insert pipeline step '${step.name}' before '${before}': ` +
+            `anchor step does not exist. Insert an anchor step first or use a valid anchor name.`,
+        );
+      }
       strategy.insertBefore(before, step);
     } else {
-      console.warn(
-        `[apcore:pipeline-config] Step '${step.name}' has neither 'after' nor 'before' -- skipping`,
+      throw new ConfigurationError(
+        `Pipeline step '${step.name}' has neither 'after' nor 'before'. ` +
+          `Specify one (or remove the step from pipeline.steps).`,
       );
     }
   }
