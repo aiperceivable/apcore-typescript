@@ -9,6 +9,7 @@ import type { Executor } from '../executor.js';
 import type { Config } from '../config.js';
 import type { MetricsCollector } from '../observability/metrics.js';
 import type { AuditStore } from './audit.js';
+import type { OverridesStore } from './overrides.js';
 import { SysModuleRegistrationError } from '../errors.js';
 import { ErrorHistory } from '../observability/error-history.js';
 import { ErrorHistoryMiddleware } from '../middleware/error-history.js';
@@ -203,6 +204,8 @@ export interface SysModulesContext {
 export interface RegisterSysModulesOptions {
   failOnError?: boolean;
   overridesPath?: string;
+  /** Pluggable persistent override store (Issue #45.1). */
+  overridesStore?: OverridesStore;
   auditStore?: AuditStore;
 }
 
@@ -219,6 +222,7 @@ export function registerSysModules(
   const result: SysModulesContext = {};
   const failOnError = options?.failOnError ?? false;
   const overridesPath = options?.overridesPath ?? null;
+  const overridesStore = options?.overridesStore ?? null;
   const auditStore = options?.auditStore ?? null;
 
   // §9.15.3: prefer config.namespace('sys_modules') in namespace mode
@@ -240,6 +244,25 @@ export function registerSysModules(
       }
     } catch (err) {
       console.warn('[apcore:sys-modules] Failed to load overrides file:', err);
+    }
+  }
+
+  // Apply overrides from the OverridesStore (Issue #45.1) — async stores are
+  // not supported here; if `load()` returns a Promise we log and skip.
+  if (overridesStore !== null) {
+    try {
+      const loaded = overridesStore.load();
+      if (loaded !== null && typeof (loaded as { then?: unknown }).then === 'function') {
+        console.warn(
+          '[apcore:sys-modules] OverridesStore.load() returned a Promise; async stores cannot be applied during synchronous registerSysModules. Pre-load and inject into Config directly.',
+        );
+      } else {
+        for (const [key, value] of Object.entries(loaded as Record<string, unknown>)) {
+          config.set(key, value);
+        }
+      }
+    } catch (err) {
+      console.warn('[apcore:sys-modules] Failed to load overrides from OverridesStore:', err);
     }
   }
 
@@ -301,10 +324,17 @@ export function registerSysModules(
     result.platformNotifyMiddleware = pnMiddleware;
 
     // Control modules (require EventEmitter)
-    reg('system.control.toggle_feature', new ToggleFeatureModule(registry, eventEmitter, undefined, auditStore ?? undefined));
+    reg('system.control.toggle_feature', new ToggleFeatureModule(
+      registry,
+      eventEmitter,
+      undefined,
+      auditStore ?? undefined,
+      overridesStore ?? undefined,
+    ));
     reg('system.control.update_config', new UpdateConfigModule(config, eventEmitter, {
       auditStore: auditStore ?? undefined,
       overridesPath: overridesPath ?? undefined,
+      overridesStore: overridesStore ?? undefined,
     }));
     reg('system.control.reload_module', new ReloadModule(registry, eventEmitter, auditStore ?? undefined));
 

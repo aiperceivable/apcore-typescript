@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Issue #43 §1 — `StorageBackend` interface** (`src/observability/storage.ts`). Pluggable key/value storage with `save` / `get` / `list` / `delete` operations and namespace partitioning. Default `InMemoryStorageBackend` is the implicit fallback. `ErrorHistory`, `UsageCollector`, and `MetricsCollector` accept an optional `storage` constructor option so SDK consumers can wire redis, postgres, etc. without forking the collectors. Re-exported from the package root.
+- **Issue #45.1 — `OverridesStore` interface** (`src/sys-modules/overrides.ts`). Pluggable persistent override store mirroring the Python `_load_overrides` / `_write_overrides` and Rust `load_overrides` / `write_override` flows. `FileOverridesStore` writes a YAML file with atomic tempfile + rename semantics; `InMemoryOverridesStore` is provided for tests. `registerSysModules` accepts `overridesStore` and applies persisted overrides on startup before registering modules. `UpdateConfigModule` and `ToggleFeatureModule` persist each successful mutation through the store. Re-exported from the package root.
+- **D-15 — `Registry.discoverMultiClass` method.** New instance method on `Registry` matching the Python `Registry.discover_multi_class` and Rust trait surface. Wraps the existing free function (now also re-exported as `_discoverMultiClass` for internal scanner use) so cross-language code can call `registry.discoverMultiClass(filePath, classes, ...)` consistently.
+
 ### Fixed
 
 - **Sync findings A-D-101 / A-D-102** — `Registry._registerInOrder` and `Registry._discoverCustom` now apply PROTOCOL_SPEC §2.7 ID validation (empty → pattern → length → reserved-word) and Algorithm A03 conflict detection before registering each discovered module. Invalid or conflicting IDs are skipped with a `console.warn` instead of being registered. Mirrors `apcore-python._filter_id_conflicts` and `apcore-rust::Registry::filter_id_conflicts`.

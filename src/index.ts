@@ -181,8 +181,10 @@ export {
   UsageSummaryModule,
   ToggleFeatureModule,
   InMemoryAuditStore,
+  FileOverridesStore,
+  InMemoryOverridesStore,
 } from './sys-modules/index.js';
-export type { SysModulesContext } from './sys-modules/index.js';
+export type { SysModulesContext, OverridesStore } from './sys-modules/index.js';
 
 // Async tasks
 export { AsyncTaskManager, TaskStatus, InMemoryTaskStore, RetryConfig as AsyncRetryConfig } from './async-task.js';
@@ -232,7 +234,9 @@ export { ErrorHistory } from './observability/error-history.js';
 export type { ErrorEntry } from './observability/error-history.js';
 export { UsageCollector, UsageMiddleware } from './observability/usage.js';
 export { computeModuleErrorRate, estimateP99FromHistogram, matchesModuleId, METRIC_CALLS_TOTAL, METRIC_DURATION_SECONDS } from './observability/metrics-utils.js';
-export type { UsageRecord, CallerUsageSummary, HourlyBucket, ModuleUsageSummary, ModuleUsageDetail } from './observability/usage.js';
+export type { UsageRecord, CallerUsageSummary, HourlyBucket, ModuleUsageSummary, ModuleUsageDetail, UsageCollectorOptions } from './observability/usage.js';
+export { InMemoryStorageBackend } from './observability/storage.js';
+export type { StorageBackend } from './observability/storage.js';
 export { BatchSpanProcessor, SimpleSpanProcessor } from './observability/batch-span-processor.js';
 export type { SpanProcessor, BatchSpanProcessorOptions } from './observability/batch-span-processor.js';
 export { PrometheusExporter } from './observability/prometheus-exporter.js';

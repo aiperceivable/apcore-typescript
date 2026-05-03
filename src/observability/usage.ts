@@ -4,6 +4,7 @@
 
 import { Middleware } from '../middleware/base.js';
 import type { Context } from '../context.js';
+import { InMemoryStorageBackend, type StorageBackend } from './storage.js';
 
 export interface UsageRecord {
   readonly timestamp: string;
@@ -65,18 +66,49 @@ function computeTrend(currentCount: number, previousCount: number): string {
   return 'stable';
 }
 
+export interface UsageCollectorOptions {
+  retentionHours?: number;
+  maxRecordsPerBucket?: number;
+  /** Pluggable key/value storage backend (Issue #43 §1). Optional. */
+  storage?: StorageBackend;
+}
+
 /**
  * In-memory usage tracker with hourly buckets and configurable retention.
  */
 export class UsageCollector {
   readonly retentionHours: number;
   private readonly _maxRecordsPerBucket: number;
+  private readonly _storage: StorageBackend;
   // moduleId -> bucketKey -> UsageRecord[]
   private readonly _data: Map<string, Map<string, UsageRecord[]>> = new Map();
 
-  constructor(retentionHours: number = 168, maxRecordsPerBucket: number = 10000) {
-    this.retentionHours = retentionHours;
-    this._maxRecordsPerBucket = maxRecordsPerBucket;
+  /**
+   * Construct a `UsageCollector`.
+   *
+   * Two construction shapes are supported for backwards compatibility:
+   * - Positional: `new UsageCollector(retentionHours, maxRecordsPerBucket)`.
+   * - Options:    `new UsageCollector({ retentionHours, maxRecordsPerBucket, storage })`.
+   */
+  constructor(
+    optionsOrRetentionHours?: UsageCollectorOptions | number,
+    maxRecordsPerBucket: number = 10000,
+  ) {
+    if (typeof optionsOrRetentionHours === 'object' && optionsOrRetentionHours !== null) {
+      const options = optionsOrRetentionHours;
+      this.retentionHours = options.retentionHours ?? 168;
+      this._maxRecordsPerBucket = options.maxRecordsPerBucket ?? 10000;
+      this._storage = options.storage ?? new InMemoryStorageBackend();
+    } else {
+      this.retentionHours = optionsOrRetentionHours ?? 168;
+      this._maxRecordsPerBucket = maxRecordsPerBucket;
+      this._storage = new InMemoryStorageBackend();
+    }
+  }
+
+  /** The pluggable storage backend (Issue #43 §1). */
+  get storage(): StorageBackend {
+    return this._storage;
   }
 
   record(

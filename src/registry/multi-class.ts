@@ -63,6 +63,10 @@ function computeBaseId(filePath: string, extensionsRoot: string): string {
  *   the file), the bare base_id is returned to preserve existing module IDs.
  * - Otherwise the class segment is appended: base_id.class_segment.
  *
+ * @internal Prefer `Registry.discoverMultiClass` (D-15) for the canonical
+ * cross-language API surface; this free function is retained for backwards
+ * compatibility and direct use by the scanner.
+ *
  * @throws ModuleIdConflictError — two classes produce the same class_segment
  * @throws InvalidSegmentError   — a segment does not match ^[a-z][a-z0-9_]*$
  * @throws IdTooLongError        — a derived module_id exceeds 192 characters
@@ -134,3 +138,13 @@ export function discoverMultiClass(
 
   return results;
 }
+
+/**
+ * Internal alias of {@link discoverMultiClass}. Use {@link Registry.discoverMultiClass}
+ * instead — this name is preserved so the scanner and other internal callers
+ * have a stable reference that signals the surface is not part of the public
+ * API.
+ *
+ * @internal
+ */
+export const _discoverMultiClass = discoverMultiClass;

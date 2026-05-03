@@ -6,6 +6,7 @@
 import { createHash } from 'node:crypto';
 import { ModuleError } from '../errors.js';
 import { InMemoryObservabilityStore, type ObservabilityStore } from './store.js';
+import { InMemoryStorageBackend, type StorageBackend } from './storage.js';
 
 export interface ErrorEntry {
   readonly moduleId: string;
@@ -119,6 +120,8 @@ export interface ErrorHistoryOptions {
   maxEntriesPerModule?: number;
   maxTotalEntries?: number;
   store?: ObservabilityStore;
+  /** Pluggable key/value storage backend (Issue #43 §1). Optional. */
+  storage?: StorageBackend;
 }
 
 /**
@@ -135,6 +138,7 @@ export class ErrorHistory {
   private readonly _maxEntriesPerModule: number;
   private readonly _maxTotalEntries: number;
   private readonly _store: ObservabilityStore;
+  private readonly _storage: StorageBackend;
   private readonly _fpIndex: Map<string, ErrorEntry> = new Map();
   private readonly _moduleIndex: Map<string, ErrorEntry[]> = new Map();
   private readonly _heap: MinHeap = new MinHeap();
@@ -144,10 +148,16 @@ export class ErrorHistory {
     this._maxEntriesPerModule = options.maxEntriesPerModule ?? 50;
     this._maxTotalEntries = options.maxTotalEntries ?? 1000;
     this._store = options.store ?? new InMemoryObservabilityStore();
+    this._storage = options.storage ?? new InMemoryStorageBackend();
   }
 
   get store(): ObservabilityStore {
     return this._store;
+  }
+
+  /** The pluggable storage backend (Issue #43 §1). */
+  get storage(): StorageBackend {
+    return this._storage;
   }
 
   record(moduleId: string, error: ModuleError): void {

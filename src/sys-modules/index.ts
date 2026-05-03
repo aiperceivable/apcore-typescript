@@ -8,3 +8,5 @@ export { registerSysModules, registerSubscriberType, unregisterSubscriberType, r
 export type { SysModulesContext, RegisterSysModulesOptions } from './registration.js';
 export { InMemoryAuditStore, buildAuditEntry } from './audit.js';
 export type { AuditEntry, AuditStore, AuditFilter, AuditAction } from './audit.js';
+export { FileOverridesStore, InMemoryOverridesStore } from './overrides.js';
+export type { OverridesStore } from './overrides.js';

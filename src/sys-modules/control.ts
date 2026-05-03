@@ -13,6 +13,7 @@ import type { Context } from '../context.js';
 import type { AuditStore } from './audit.js';
 import { buildAuditEntry } from './audit.js';
 import { matchPattern } from '../utils/pattern.js';
+import type { OverridesStore } from './overrides.js';
 
 const RESTRICTED_KEYS = new Set(['sys_modules.enabled']);
 
@@ -28,6 +29,8 @@ function isSensitiveKey(key: string): boolean {
 export interface UpdateConfigOptions {
   auditStore?: AuditStore;
   overridesPath?: string;
+  /** Pluggable persistent override store (Issue #45.1). */
+  overridesStore?: OverridesStore;
 }
 
 export class UpdateConfigModule {
@@ -57,12 +60,14 @@ export class UpdateConfigModule {
   private readonly _emitter: EventEmitter;
   private readonly _auditStore: AuditStore | null;
   private readonly _overridesPath: string | null;
+  private readonly _overridesStore: OverridesStore | null;
 
   constructor(config: Config, eventEmitter: EventEmitter, options?: UpdateConfigOptions) {
     this._config = config;
     this._emitter = eventEmitter;
     this._auditStore = options?.auditStore ?? null;
     this._overridesPath = options?.overridesPath ?? null;
+    this._overridesStore = options?.overridesStore ?? null;
   }
 
   execute(inputs: Record<string, unknown>, context: unknown): Record<string, unknown> {
@@ -84,6 +89,10 @@ export class UpdateConfigModule {
       this._persistOverride(key, value);
     }
 
+    if (this._overridesStore !== null) {
+      this._persistOverrideToStore(key, value);
+    }
+
     const entry = buildAuditEntry('update_config', 'system.control.update_config', ctx, { before: safeOld, after: safeNew });
     if (this._auditStore !== null) {
       this._auditStore.append(entry);
@@ -98,6 +107,35 @@ export class UpdateConfigModule {
     console.warn(`[apcore:control] Config updated: key=${key} old_value=${safeOld} new_value=${safeNew} reason=${reason}`);
 
     return { success: true, key, old_value: safeOld, new_value: safeNew };
+  }
+
+  private _persistOverrideToStore(key: string, value: unknown): void {
+    try {
+      const store = this._overridesStore!;
+      const loaded = store.load();
+      if (loaded !== null && typeof (loaded as { then?: unknown }).then === 'function') {
+        // Async store — fire-and-forget the read-modify-write so execute() stays sync.
+        (loaded as Promise<Record<string, unknown>>)
+          .then((existing) => {
+            existing[key] = value;
+            return store.save(existing);
+          })
+          .catch((err: unknown) => {
+            console.warn(`[apcore:control] Failed to persist override for key '${key}' via OverridesStore:`, err);
+          });
+        return;
+      }
+      const existing = loaded as Record<string, unknown>;
+      existing[key] = value;
+      const saveResult = store.save(existing);
+      if (saveResult !== undefined && typeof (saveResult as { then?: unknown }).then === 'function') {
+        (saveResult as Promise<void>).catch((err: unknown) => {
+          console.warn(`[apcore:control] Failed to persist override for key '${key}' via OverridesStore:`, err);
+        });
+      }
+    } catch (err) {
+      console.warn(`[apcore:control] Failed to persist override for key '${key}' via OverridesStore:`, err);
+    }
   }
 
   private _persistOverride(key: string, value: unknown): void {

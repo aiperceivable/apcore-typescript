@@ -6,6 +6,7 @@ import type { Context } from '../context.js';
 import { ModuleError } from '../errors.js';
 import { Middleware } from '../middleware/base.js';
 import { InMemoryObservabilityStore, type ObservabilityStore } from './store.js';
+import { InMemoryStorageBackend, type StorageBackend } from './storage.js';
 
 const DESCRIPTIONS: Record<string, string> = {
   apcore_module_calls_total: 'Total module calls',
@@ -20,6 +21,8 @@ function labelsKey(labels: Record<string, string>): string {
 export interface MetricsCollectorOptions {
   buckets?: number[];
   store?: ObservabilityStore;
+  /** Pluggable key/value storage backend (Issue #43 §1). Optional. */
+  storage?: StorageBackend;
 }
 
 export class MetricsCollector {
@@ -29,6 +32,7 @@ export class MetricsCollector {
 
   private _buckets: number[];
   private readonly _store: ObservabilityStore;
+  private readonly _storage: StorageBackend;
   private _counters: Map<string, number> = new Map();
   private _histogramSums: Map<string, number> = new Map();
   private _histogramCounts: Map<string, number> = new Map();
@@ -38,15 +42,22 @@ export class MetricsCollector {
     if (Array.isArray(optionsOrBuckets)) {
       this._buckets = [...optionsOrBuckets].sort((a, b) => a - b);
       this._store = new InMemoryObservabilityStore();
+      this._storage = new InMemoryStorageBackend();
     } else {
       const buckets = optionsOrBuckets?.buckets;
       this._buckets = buckets ? [...buckets].sort((a, b) => a - b) : [...MetricsCollector.DEFAULT_BUCKETS];
       this._store = optionsOrBuckets?.store ?? new InMemoryObservabilityStore();
+      this._storage = optionsOrBuckets?.storage ?? new InMemoryStorageBackend();
     }
   }
 
   get store(): ObservabilityStore {
     return this._store;
+  }
+
+  /** The pluggable storage backend (Issue #43 §1). */
+  get storage(): StorageBackend {
+    return this._storage;
   }
 
   get buckets(): readonly number[] {
