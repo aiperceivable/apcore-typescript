@@ -19,6 +19,11 @@ const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf-8'));
 // Use a variable so TypeScript doesn't statically resolve the dist path during `tsc --noEmit`.
 const DIST_ENTRY = resolve(ROOT, 'dist', 'index.js');
 
+// The dist entry re-exports ~234 symbols across many modules. A cold import takes ~1.5s in
+// isolation, but under full-suite parallelism (100+ test files) the first import can easily
+// exceed the default 5s timeout. Give these tests headroom.
+const IMPORT_TIMEOUT_MS = 30_000;
+
 describe('package.json publishing config', () => {
   it('has "files" field that includes dist', () => {
     expect(pkg.files).toBeDefined();
@@ -65,7 +70,7 @@ describe('dist exports are loadable', () => {
     const mod = await import(DIST_ENTRY);
     expect(mod).toBeDefined();
     expect(typeof mod).toBe('object');
-  });
+  }, IMPORT_TIMEOUT_MS);
 
   it('exports key symbols', async () => {
     const mod = await import(DIST_ENTRY);
@@ -89,12 +94,12 @@ describe('dist exports are loadable', () => {
     // Error classes
     expect(mod.ModuleError).toBeDefined();
     expect(mod.ErrorCodes).toBeDefined();
-  });
+  }, IMPORT_TIMEOUT_MS);
 });
 
 describe('VERSION constant', () => {
   it('matches package.json version', async () => {
     const mod = await import(DIST_ENTRY);
     expect(mod.VERSION).toBe(pkg.version);
-  });
+  }, IMPORT_TIMEOUT_MS);
 });

@@ -102,10 +102,14 @@ export class UpdateConfigModule {
 
     // Issue #45.2: Audit events carry requester identity so subscribers can
     // attribute the change. caller_id defaults to "@external" when absent.
+    // When identity is null the field is OMITTED from the payload (not
+    // emitted as null).
     const { caller_id, identity } = extractAuditIdentity(ctx);
-    this._emitter.emit(createEvent('apcore.config.updated', 'system.control.update_config', 'info', {
-      key, old_value: safeOld, new_value: safeNew, caller_id, identity,
-    }));
+    const updatedPayload: Record<string, unknown> = {
+      key, old_value: safeOld, new_value: safeNew, caller_id,
+    };
+    if (identity !== null) updatedPayload['identity'] = identity;
+    this._emitter.emit(createEvent('apcore.config.updated', 'system.control.update_config', 'info', updatedPayload));
 
     console.warn(`[apcore:control] Config updated: key=${key} old_value=${safeOld} new_value=${safeNew} reason=${reason}`);
 
@@ -278,12 +282,14 @@ export class ReloadModule {
 
     // Issue #45.2: include requester identity in reload audit event payload.
     const { caller_id, identity } = extractAuditIdentity(ctx);
-    this._emitter.emit(createEvent('apcore.module.reloaded', moduleId, 'info', {
+    const reloadedPayload: Record<string, unknown> = {
+      module_id: moduleId,
       previous_version: previousVersion,
       new_version: newVersion,
       caller_id,
-      identity,
-    }));
+    };
+    if (identity !== null) reloadedPayload['identity'] = identity;
+    this._emitter.emit(createEvent('apcore.module.reloaded', moduleId, 'info', reloadedPayload));
 
     console.warn(
       `[apcore:control] Module reloaded: module_id=${moduleId} previous_version=${previousVersion} new_version=${newVersion} reason=${reason}`,

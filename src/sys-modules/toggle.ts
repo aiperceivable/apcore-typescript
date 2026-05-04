@@ -128,11 +128,13 @@ export class ToggleFeatureModule {
     // identity per Issue #45.2 so subscribers can attribute the toggle. The
     // `reason` field is returned in the module output but not in the event.
     const { caller_id, identity } = extractAuditIdentity(ctx);
-    this._emitter.emit(createEvent('apcore.module.toggled', moduleId, 'info', {
+    const toggledPayload: Record<string, unknown> = {
+      module_id: moduleId,
       enabled,
       caller_id,
-      identity,
-    }));
+    };
+    if (identity !== null) toggledPayload['identity'] = identity;
+    this._emitter.emit(createEvent('apcore.module.toggled', moduleId, 'info', toggledPayload));
     console.warn(`[apcore:control] Feature toggled: module_id=${moduleId} enabled=${enabled} reason=${reason}`);
 
     if (this._overridesStore !== null) {

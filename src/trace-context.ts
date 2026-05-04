@@ -58,9 +58,11 @@ export class TraceContext {
     let chosenParent: string;
     if (parentId !== undefined) {
       if (!PARENT_ID_RE.test(parentId)) {
-        throw new Error(
+        const err = new Error(
           `Malformed parentId override: ${JSON.stringify(parentId)}. Expected 16 lowercase hex chars matching /^[0-9a-f]{16}$/.`,
         );
+        (err as Error & { code?: string }).code = 'INVALID_PARENT_ID';
+        throw err;
       }
       chosenParent = parentId;
     } else {

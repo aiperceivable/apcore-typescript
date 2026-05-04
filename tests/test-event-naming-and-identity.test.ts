@@ -188,13 +188,13 @@ describe('Issue #45.2 — control modules include caller_id / identity in audit 
       emitter.subscribe({ onEvent: (e) => { events.push(e); } });
     });
 
-    it('defaults caller_id to "@external" and identity to null when context is null', () => {
+    it('defaults caller_id to "@external" and OMITS identity when context is null', () => {
       mod.execute({ key: 'some.name', value: 'v', reason: 'r' }, null);
 
       const evt = events.find(e => e.eventType === 'apcore.config.updated');
       expect(evt).toBeDefined();
       expect(evt!.data['caller_id']).toBe('@external');
-      expect(evt!.data['identity']).toBeNull();
+      expect('identity' in evt!.data).toBe(false);
     });
 
     it('extracts caller_id and identity from a Context', () => {
@@ -218,7 +218,7 @@ describe('Issue #45.2 — control modules include caller_id / identity in audit 
 
       const evt = events.find(e => e.eventType === 'apcore.config.updated');
       expect(evt!.data['caller_id']).toBe('@external');
-      expect(evt!.data['identity']).toBeNull();
+      expect('identity' in evt!.data).toBe(false);
     });
   });
 
@@ -254,7 +254,7 @@ describe('Issue #45.2 — control modules include caller_id / identity in audit 
 
       const evt = events.find(e => e.eventType === 'apcore.module.toggled');
       expect(evt!.data['caller_id']).toBe('@external');
-      expect(evt!.data['identity']).toBeNull();
+      expect('identity' in evt!.data).toBe(false);
     });
   });
 

@@ -195,10 +195,13 @@ describe('ToggleFeatureModule', () => {
     expect(canonicalEvent.eventType).toBe('apcore.module.toggled');
     expect(canonicalEvent.moduleId).toBe('test.dummy');
     expect(canonicalEvent.severity).toBe('info');
+    // Per docs/features/system-modules.md §"Contextual auditing", the
+    // payload includes module_id and OMITS `identity` when the context
+    // identity is null (do not emit `null`).
     expect(canonicalEvent.data).toEqual({
+      module_id: 'test.dummy',
       enabled: false,
       caller_id: '@external',
-      identity: null,
     });
   });
 

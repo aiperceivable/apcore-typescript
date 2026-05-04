@@ -5,7 +5,9 @@
 import type { Config } from '../config.js';
 import type { Context } from '../context.js';
 import { Middleware } from '../middleware/base.js';
-import { matchPattern } from '../utils/pattern.js';
+// matchPattern intentionally not imported — sensitive_keys uses
+// fnmatch-style globs against lowercased keys, not apcore's segment-aware
+// pattern matcher (which is case-sensitive and segment-anchored).
 
 /**
  * Default sensitive field patterns (Issue #45 §3 — canonical superset
@@ -59,7 +61,60 @@ function _emitRedactionLegacyDeprecation(legacyKeys: string[]): void {
 // RedactionConfig
 // ---------------------------------------------------------------------------
 
-const PROTECTED_LOG_FIELDS = new Set(['trace_id', 'caller_id', 'module_id']);
+const PROTECTED_LOG_FIELDS = new Set([
+  'trace_id',
+  'caller_id',
+  'target_id',
+  'module_id',
+  'span_id',
+]);
+
+/**
+ * Normalize a field name for substring matching: lowercase + collapse
+ * hyphens / spaces to underscores. Mirrors apcore-python's
+ * `_normalize_key_for_match` so `X-API-Key` matches `api_key`.
+ */
+function _normalizeKeyForMatch(s: string): string {
+  return s.toLowerCase().replace(/[- ]/g, '_');
+}
+
+/**
+ * Compact normalization: lowercase with hyphen / underscore / space
+ * stripped entirely. Mirrors apcore-python's `_compact_for_match` so
+ * camelCase keys like `AccessKey` substring-match the `access_key` pattern
+ * (D-54 canonical default expectation).
+ */
+function _compactKeyForMatch(s: string): string {
+  return s.toLowerCase().replace(/[-_ ]/g, '');
+}
+
+/**
+ * Compile a sensitive_keys glob into a case-insensitive RegExp matching the
+ * full lowercase key. Mirrors fnmatch semantics: `*` -> `.*`, `?` -> `.`,
+ * `[abc]` is treated as a character class as-is.
+ */
+function _globToRegExp(pattern: string): RegExp {
+  let out = '';
+  for (let i = 0; i < pattern.length; i++) {
+    const ch = pattern[i];
+    if (ch === '*') out += '.*';
+    else if (ch === '?') out += '.';
+    else if (ch === '[') {
+      const close = pattern.indexOf(']', i + 1);
+      if (close === -1) {
+        out += '\\[';
+      } else {
+        out += pattern.slice(i, close + 1);
+        i = close;
+      }
+    } else if ('\\^$.|+(){}'.includes(ch)) {
+      out += '\\' + ch;
+    } else {
+      out += ch;
+    }
+  }
+  return new RegExp(`^${out}$`, 'i');
+}
 
 /**
  * Runtime-configurable redaction rules for ObsLoggingMiddleware.
@@ -179,8 +234,25 @@ export class RedactionConfig {
   private _shouldRedact(fieldName: string, value: unknown): boolean {
     if (PROTECTED_LOG_FIELDS.has(fieldName)) return false;
 
+    const lowerKey = fieldName.toLowerCase();
+    const normKey = _normalizeKeyForMatch(fieldName);
+    const compactKey = _compactKeyForMatch(fieldName);
     for (const pattern of this.fieldPatterns) {
-      if (matchPattern(pattern, fieldName)) return true;
+      if (!pattern) continue;
+      const lowerPat = pattern.toLowerCase();
+      const isGlob = /[*?[]/.test(lowerPat);
+      if (isGlob) {
+        if (_globToRegExp(lowerPat).test(lowerKey)) return true;
+      } else {
+        // Plain case-insensitive substring match with hyphen/space ↔ underscore
+        // equivalence (apcore-python behavioral parity).
+        const normPat = _normalizeKeyForMatch(pattern);
+        if (normKey.includes(normPat)) return true;
+        // Also try the compact (separator-stripped) form so that camelCase
+        // keys like "AccessKey" match the "access_key" canonical pattern.
+        const compactPat = _compactKeyForMatch(pattern);
+        if (compactKey.includes(compactPat)) return true;
+      }
     }
 
     if (typeof value === 'string') {

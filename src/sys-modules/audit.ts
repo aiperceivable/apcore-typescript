@@ -63,25 +63,62 @@ export function buildAuditEntry(
   };
 }
 
+/** Identity attribute substrings treated as x-sensitive in audit payloads. */
+const SENSITIVE_IDENTITY_ATTR_SUBSTRINGS = [
+  'token',
+  'secret',
+  'password',
+  'passwd',
+  'credential',
+  'api_key',
+  'apikey',
+  'access_key',
+  'private_key',
+  'authorization',
+  'cookie',
+  'bearer',
+];
+
 /**
  * Issue #45.2: Extract requester identity fields for audit event payloads.
  *
  * Returns `caller_id` (defaulting to `"@external"` when absent so that audit
- * events always carry a non-null requester marker) and a serialised `identity`
- * snapshot (or `null` when the context has no identity).
+ * events always carry a non-null requester marker) and a redacted-safe
+ * `identity` snapshot (or `null` when the context has no identity).
+ *
+ * Per docs/features/system-modules.md §"Contextual auditing", the snapshot
+ * MUST contain `id`, `type`, and (optionally) `display_name`; any attribute
+ * whose key looks x-sensitive (bearer_token, api_key, etc.) is replaced with
+ * the literal string `"<redacted>"` rather than dropped, so subscribers can
+ * see that a sensitive credential was involved without leaking its value.
  */
 export function extractAuditIdentity(
   context: Context | null,
 ): { caller_id: string; identity: Record<string, unknown> | null } {
-  const callerId = context?.callerId ?? '@external';
+  const callerIdRaw = context?.callerId;
+  const callerId = callerIdRaw == null || callerIdRaw === '' ? '@external' : callerIdRaw;
   const ident = context?.identity ?? null;
-  const identity = ident
-    ? {
-        id: ident.id,
-        type: ident.type,
-        roles: [...ident.roles],
-        attrs: { ...ident.attrs },
-      }
-    : null;
-  return { caller_id: callerId, identity };
+  if (!ident) {
+    return { caller_id: callerId, identity: null };
+  }
+  const snapshot: Record<string, unknown> = {
+    id: ident.id,
+    type: ident.type,
+    roles: [...ident.roles],
+  };
+  // Surface display_name from attrs if present (spec #45.2 calls it out as
+  // an optional first-class field on the audit identity snapshot).
+  const displayName = (ident.attrs as Record<string, unknown>)['display_name'];
+  if (typeof displayName === 'string' && displayName.length > 0) {
+    snapshot['display_name'] = displayName;
+  }
+  // Pass through any other attrs, redacting those whose key matches a
+  // sensitive substring (case-insensitive).
+  for (const [k, v] of Object.entries(ident.attrs)) {
+    if (k === 'display_name') continue;
+    const lk = k.toLowerCase();
+    const sensitive = SENSITIVE_IDENTITY_ATTR_SUBSTRINGS.some((s) => lk.includes(s));
+    snapshot[k] = sensitive ? '<redacted>' : v;
+  }
+  return { caller_id: callerId, identity: snapshot };
 }
