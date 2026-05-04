@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
-## [Unreleased]
+## [0.20.0] - 2026-05-04
 
 ### Added
 
@@ -50,9 +50,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Sync finding B-002** — README now documents that `APCore.disable()` / `APCore.enable()` (and the `on`/`off` toggle event) require `sys_modules.enabled: true` in the `Config` passed to `APCore`. Quick Start gains a Config-passing variant that wires sys-modules.
 
-## [0.20.0] - 2026-04-30
-
-### Added
+### Added — PROTOCOL_SPEC hardening (Issues #32–#45)
 
 #### Event Management Hardening (Issue #36)
 
@@ -114,7 +112,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`ModuleReloadConflictError`** (code `MODULE_RELOAD_CONFLICT`) — thrown when both `module_id` and `path_filter` are supplied to `system.control.reload_module`.
 - **`SysModuleRegistrationError`** (code `SYS_MODULE_REGISTRATION_FAILED`) — thrown by `registerSysModules()` when `failOnError: true` and any system module fails to register.
 
-### Changed
+### Changed — PROTOCOL_SPEC hardening (Issue #45)
 
 - **`registerSysModules()`** 5th parameter changed from (none) to optional `RegisterSysModulesOptions`. Fully backward-compatible — existing calls with 3–4 arguments are unaffected.
 - **`UpdateConfigModule`** constructor now accepts optional `UpdateConfigOptions { auditStore?, overridesPath? }` as third argument. Existing two-argument construction is unchanged.
