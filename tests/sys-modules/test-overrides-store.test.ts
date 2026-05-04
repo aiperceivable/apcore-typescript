@@ -6,7 +6,7 @@
  * interface so tests and embeddings can inject in-memory storage.
  */
 
-import { afterEach, beforeEach, describe, it, expect } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -68,6 +68,68 @@ describe('FileOverridesStore', () => {
   it('returns empty object when file does not exist', async () => {
     const store = new FileOverridesStore(path.join(tmpDir, 'absent.yaml'));
     expect(await store.load()).toEqual({});
+  });
+
+  it('returns empty object and warns when file contents are invalid YAML', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    fs.writeFileSync(tmpPath, ': : not valid yaml :\n   foo: [unclosed', 'utf-8');
+    const store = new FileOverridesStore(tmpPath);
+    expect(await store.load()).toEqual({});
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it('returns empty object and warns when YAML root is not a mapping', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    fs.writeFileSync(tmpPath, '- a\n- b\n', 'utf-8');
+    const store = new FileOverridesStore(tmpPath);
+    expect(await store.load()).toEqual({});
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it('returns empty object on empty file content', async () => {
+    fs.writeFileSync(tmpPath, '', 'utf-8');
+    const store = new FileOverridesStore(tmpPath);
+    expect(await store.load()).toEqual({});
+  });
+
+  it('exposes the configured path via the path getter', () => {
+    const store = new FileOverridesStore(tmpPath);
+    expect(store.path).toBe(tmpPath);
+  });
+
+  it('save() logs and aborts when the parent directory cannot be created', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    // Plant a regular file where the parent directory should be — mkdirSync
+    // (recursive) then fails with ENOTDIR/EEXIST.
+    const blockerPath = path.join(tmpDir, 'blocker');
+    fs.writeFileSync(blockerPath, 'plain file', 'utf-8');
+    const conflictPath = path.join(blockerPath, 'overrides.yaml');
+
+    const store = new FileOverridesStore(conflictPath);
+    await store.save({ a: 1 });
+
+    expect(errSpy).toHaveBeenCalled();
+    // Original blocker file is untouched.
+    expect(fs.readFileSync(blockerPath, 'utf-8')).toBe('plain file');
+    errSpy.mockRestore();
+  });
+
+  it('save() logs when the rename target is an existing directory and cleans up the tempfile', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    // Make the override path itself a populated directory so rename fails.
+    fs.mkdirSync(tmpPath, { recursive: true });
+    fs.writeFileSync(path.join(tmpPath, 'inside.txt'), 'x', 'utf-8');
+
+    const store = new FileOverridesStore(tmpPath);
+    await store.save({ a: 1 });
+
+    expect(errSpy).toHaveBeenCalled();
+    // No leftover .tmp files should remain in the parent dir.
+    const leftovers = fs.readdirSync(tmpDir).filter(n => n.endsWith('.tmp'));
+    expect(leftovers).toEqual([]);
+    errSpy.mockRestore();
   });
 });
 

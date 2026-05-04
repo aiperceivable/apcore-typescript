@@ -93,4 +93,85 @@ describe('UsageExporter (#45 §3)', () => {
     vi.advanceTimersByTime(1);
     expect(exportSpy).toHaveBeenCalledTimes(1);
   });
+
+  it('start() is idempotent — calling twice does not double-schedule', () => {
+    const collector = new UsageCollector();
+    const exportSpy = vi.fn();
+    const exporter: UsageExporter = { export: exportSpy, shutdown() {} };
+
+    const periodic = new PeriodicUsageExporter(collector, exporter, 100);
+    periodic.start();
+    periodic.start();
+
+    vi.advanceTimersByTime(100);
+    expect(exportSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('stop() before start() is a no-op (no shutdown error)', async () => {
+    const collector = new UsageCollector();
+    const shutdownSpy = vi.fn().mockResolvedValue(undefined);
+    const exporter: UsageExporter = { export: vi.fn(), shutdown: shutdownSpy };
+
+    const periodic = new PeriodicUsageExporter(collector, exporter, 100);
+    await expect(periodic.stop()).resolves.toBeUndefined();
+    expect(shutdownSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('logs and skips when collector.getSummary() throws', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const broken = {
+      getSummary(): never { throw new Error('summary fail'); },
+    } as unknown as UsageCollector;
+    const exportSpy = vi.fn();
+    const exporter: UsageExporter = { export: exportSpy, shutdown() {} };
+
+    const periodic = new PeriodicUsageExporter(broken, exporter, 50);
+    periodic.start();
+
+    vi.advanceTimersByTime(50);
+    expect(exportSpy).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it('logs when exporter.export() throws synchronously and continues running', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const collector = new UsageCollector();
+    let threw = 0;
+    const exporter: UsageExporter = {
+      export(): void { threw++; throw new Error('boom'); },
+      shutdown() {},
+    };
+
+    const periodic = new PeriodicUsageExporter(collector, exporter, 50);
+    periodic.start();
+
+    vi.advanceTimersByTime(50);
+    expect(threw).toBe(1);
+    expect(warn).toHaveBeenCalled();
+
+    // Subsequent ticks still fire — a single failure must not unschedule the timer.
+    vi.advanceTimersByTime(50);
+    expect(threw).toBe(2);
+    warn.mockRestore();
+  });
+
+  it('logs when exporter.export() returns a rejected promise', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const collector = new UsageCollector();
+    const exporter: UsageExporter = {
+      export(): Promise<void> { return Promise.reject(new Error('async fail')); },
+      shutdown() {},
+    };
+
+    const periodic = new PeriodicUsageExporter(collector, exporter, 50);
+    periodic.start();
+    vi.advanceTimersByTime(50);
+
+    // Allow the rejection handler to run.
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
 });
