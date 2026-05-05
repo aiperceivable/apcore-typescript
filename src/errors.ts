@@ -619,42 +619,6 @@ export class BindingStrictSchemaIncompatibleError extends ModuleError {
 }
 
 /**
- * Raised when a binding entry field violates a configured policy limit
- * (e.g., description exceeds policy.max_description_length).
- * See DECLARATIVE_CONFIG_SPEC.md §7.1 and §9.
- */
-export class BindingPolicyViolationError extends ModuleError {
-  static override readonly DEFAULT_RETRYABLE: boolean | null = false;
-
-  constructor(
-    moduleId: string,
-    fieldName: string,
-    policyPath: string,
-    reason: string,
-    limitValue: unknown,
-    filePath?: string,
-    line?: number,
-    options?: ErrorOptions,
-  ) {
-    const loc = filePath ? (line !== undefined ? `${filePath}:${line}: ` : `${filePath}: `) : '';
-    super(
-      'BINDING_POLICY_VIOLATION',
-      `${loc}binding '${moduleId}' field '${fieldName}' violates policy ` +
-        `'${policyPath}': ${reason} (configured limit: ${String(limitValue)}). ` +
-        'Adjust the limit in apcore.yaml or shorten the value.',
-      { moduleId, fieldName, policyPath, reason, limitValue, filePath, line },
-      options?.cause,
-      options?.traceId,
-      options?.retryable,
-      options?.aiGuidance,
-      options?.userFixable,
-      options?.suggestion,
-    );
-    this.name = 'BindingPolicyViolationError';
-  }
-}
-
-/**
  * Raised when a function parameter has no type annotation or a forward
  * reference cannot be resolved during auto-schema inference.
  */
@@ -1300,7 +1264,6 @@ export const ErrorCodes = Object.freeze({
   BINDING_SCHEMA_INFERENCE_FAILED: 'BINDING_SCHEMA_INFERENCE_FAILED',
   BINDING_SCHEMA_MODE_CONFLICT: 'BINDING_SCHEMA_MODE_CONFLICT',
   BINDING_STRICT_SCHEMA_INCOMPATIBLE: 'BINDING_STRICT_SCHEMA_INCOMPATIBLE',
-  BINDING_POLICY_VIOLATION: 'BINDING_POLICY_VIOLATION',
   BINDING_FILE_INVALID: 'BINDING_FILE_INVALID',
   CIRCULAR_DEPENDENCY: 'CIRCULAR_DEPENDENCY',
   MIDDLEWARE_CHAIN_ERROR: 'MIDDLEWARE_CHAIN_ERROR',

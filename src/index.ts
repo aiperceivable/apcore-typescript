@@ -112,7 +112,6 @@ export {
   BindingSchemaInferenceFailedError,
   BindingSchemaModeConflictError,
   BindingStrictSchemaIncompatibleError,
-  BindingPolicyViolationError,
   BindingFileInvalidError,
   FuncMissingTypeHintError,
   FuncMissingReturnTypeError,
