@@ -28,7 +28,14 @@ import {
   RetrySignal,
 } from './middleware/index.js';
 import { MiddlewareChainError, MiddlewareManager } from './middleware/manager.js';
-import type { Module, ModuleAnnotations, PreflightCheckResult, PreflightResult } from './module.js';
+import type {
+  Change,
+  Module,
+  ModuleAnnotations,
+  PreflightCheckResult,
+  PreflightResult,
+  PreviewResult,
+} from './module.js';
 import { createPreflightResult } from './module.js';
 import type { PipelineContext, PipelineTrace, StrategyInfo } from './pipeline.js';
 import {
@@ -759,7 +766,45 @@ export class Executor {
       }
     }
 
-    return createPreflightResult(checks, requiresApproval);
+    // Module-level preview() (optional, RFC `rfc-preview-method.md` — Draft / RFC).
+    // Invoked only after the standard validation pipeline has been processed.
+    // Returning null is equivalent to omitting the method. Exceptions (sync
+    // throws or async rejections) are treated as advisory warnings and do NOT
+    // fail validation, mirroring `preflight()` semantics (RFC Open Question 1).
+    let predictedChanges: Change[] | undefined;
+    if (pipeCtx.module != null) {
+      const mod = pipeCtx.module as Record<string, unknown>;
+      const modWithPreview = mod as { preview?: Module['preview'] };
+      if (typeof modWithPreview.preview === 'function') {
+        try {
+          const raw = modWithPreview.preview(effectiveInputs, pipeCtx.context);
+          // Support both sync and async preview() implementations.
+          const result: PreviewResult | null =
+            raw != null && typeof (raw as Promise<unknown>).then === 'function'
+              ? await (raw as Promise<PreviewResult | null>)
+              : (raw as PreviewResult | null);
+          if (result != null && Array.isArray(result.changes) && result.changes.length > 0) {
+            predictedChanges = result.changes;
+            checks.push({ check: 'module_preview', passed: true });
+          } else {
+            // Method present but returned null / empty — record the no-op
+            // check so consumers can distinguish "module has preview()" from
+            // "module does not implement preview()" if desired.
+            checks.push({ check: 'module_preview', passed: true });
+          }
+        } catch (exc: unknown) {
+          const excName = exc instanceof Error ? exc.constructor.name : 'Error';
+          const excMsg = exc instanceof Error ? exc.message : String(exc);
+          checks.push({
+            check: 'module_preview',
+            passed: true,
+            warnings: [`preview() raised ${excName}: ${excMsg}`],
+          });
+        }
+      }
+    }
+
+    return createPreflightResult(checks, requiresApproval, predictedChanges);
   }
 
   /** Map pipeline step names to PreflightResult check names. */
