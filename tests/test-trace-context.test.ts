@@ -364,6 +364,37 @@ describe('TraceContext.inject() — dynamic traceFlags', () => {
     const headers = TraceContext.inject(ctx);
     expect(headers.tracestate).toBeUndefined();
   });
+
+  // D11-002a: Context.create must propagate the inbound TraceParent into
+  // data so downstream TraceContext.inject() can honour the inbound W3C
+  // sampling decision and vendor state. Previously TS Context.create only
+  // seeded traceId, dropping traceFlags + tracestate, so inbound `00`
+  // (unsampled) was silently upgraded to `01` (sampled) downstream.
+  it('Context.create propagates inbound traceFlags=00 to inject() without manual stash', () => {
+    const inbound: TraceParent = {
+      version: '00',
+      traceId: '0af7651916cd43dd8448eb211c80319c',
+      parentId: '00f067aa0ba902b7',
+      traceFlags: '00',
+      tracestate: [],
+    };
+    const ctx = Context.create(null, null, undefined, inbound);
+    const headers = TraceContext.inject(ctx);
+    expect(headers.traceparent.endsWith('-00')).toBe(true);
+  });
+
+  it('Context.create propagates inbound tracestate to inject() without manual stash', () => {
+    const inbound: TraceParent = {
+      version: '00',
+      traceId: '0af7651916cd43dd8448eb211c80319c',
+      parentId: '00f067aa0ba902b7',
+      traceFlags: '01',
+      tracestate: [['vendor', 'opaque']],
+    };
+    const ctx = Context.create(null, null, undefined, inbound);
+    const headers = TraceContext.inject(ctx);
+    expect(headers.tracestate).toBe('vendor=opaque');
+  });
 });
 
 describe('TraceContext.inject() — parentId override', () => {
