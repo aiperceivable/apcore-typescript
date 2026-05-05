@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [Unreleased]
+
+### Changed
+
+- **Issue #28 — `Registry.discoverMultiClass` signature cleanup (apcore decision-log D-06).** The 4th `multiClassEnabled` argument is dropped from the canonical method surface; the method is now `discoverMultiClass(filePath, classes, extensionsRoot?)`. Per-class opt-in via the new `ClassDescriptor.multiClass?: boolean` field is the sole source of truth — when at least one qualifying class sets `multiClass: true`, the discovery routine derives a distinct module ID per class; otherwise whole-file mode applies. Mirrors the upstream apcore doc-side cleanup in commit [`973410b`](https://github.com/aiperceivable/apcore/commit/973410b) which removed the dead global `extensions.multi_class_discovery` config toggle.
+  - **DEPRECATION:** the legacy 4-arg overload `discoverMultiClass(filePath, classes, extensionsRoot, multiClassEnabled)` is retained for backward compatibility and emits a one-shot `console.warn` deprecation notice on first use. The `multiClassEnabled` argument is **functionally inert** — the per-class `multiClass` field is read regardless of what is passed. The 4-arg overload will be removed in **v0.22.0**. Migration: drop the boolean and mark each `ClassDescriptor` you want as a separate module with `multiClass: true`.
+  - The free function `discoverMultiClass(...)` re-exported from `apcore-js/registry` keeps its existing 4-arg shape for internal callers and is unchanged.
+
 ## [0.20.0] - 2026-05-05
 
 ### Added

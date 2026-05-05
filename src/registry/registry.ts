@@ -64,6 +64,39 @@ async function lazyScanMultiRoot(
 }
 
 /**
+ * One-shot deprecation flag for the legacy 4-arg
+ * `Registry.discoverMultiClass(filePath, classes, extensionsRoot, multiClassEnabled)`
+ * call shape. Cleared per process so the warning fires at most once even
+ * across many invocations from the same caller. See apcore decision-log
+ * D-06 (apcore commit 973410b).
+ *
+ * @internal exported for tests so they can reset between cases.
+ */
+let _multiClassEnabledDeprecationWarned = false;
+
+/**
+ * Reset the one-shot deprecation flag for the legacy 4-arg
+ * `Registry.discoverMultiClass` overload. Test-only — production callers
+ * never need this.
+ *
+ * @internal
+ */
+export function _resetMultiClassEnabledDeprecationWarned(): void {
+  _multiClassEnabledDeprecationWarned = false;
+}
+
+function warnMultiClassEnabledDeprecated(): void {
+  if (_multiClassEnabledDeprecationWarned) return;
+  _multiClassEnabledDeprecationWarned = true;
+  console.warn(
+    '[apcore:registry] DEPRECATION: the `multiClassEnabled` argument to ' +
+    '`Registry.discoverMultiClass()` is deprecated and ignored under apcore ' +
+    'decision-log D-06. Mark each `ClassDescriptor` with `multiClass: true` ' +
+    'instead. The 4-arg overload will be removed in v0.22.0.',
+  );
+}
+
+/**
  * Standard registry event names.
  */
 export const REGISTRY_EVENTS = Object.freeze({
@@ -1074,14 +1107,50 @@ export class Registry {
    * and the Rust trait method. Internally delegates to the free function
    * {@link discoverMultiClass} (re-exported as `_discoverMultiClass` for
    * scanner internals), so behaviour is identical.
+   *
+   * **apcore decision-log D-06**: the per-class `ClassDescriptor.multiClass`
+   * flag is the sole opt-in mechanism for multi-class discovery. When any
+   * qualifying class sets `multiClass: true`, the discovery routine derives
+   * a distinct module ID per class; otherwise whole-file mode is used.
+   *
+   * @param filePath - Source file path (relative to project root).
+   * @param classes - Class descriptors; each may carry `multiClass: true`
+   *   to opt into per-class module ID derivation.
+   * @param extensionsRoot - Extensions root directory (defaults to
+   *   `'extensions'`).
+   *
+   * **Deprecated 4-arg overload**: passing a `multiClassEnabled` boolean as
+   * the fourth argument is retained for backward compatibility through one
+   * minor release and will be removed in v0.22.0. The argument is now
+   * functionally inert — the per-class `multiClass` field is the source of
+   * truth. A one-shot deprecation notice is emitted on first use.
    */
   discoverMultiClass(
     filePath: string,
     classes: readonly import('./multi-class.js').ClassDescriptor[],
+    extensionsRoot?: string,
+  ): import('./multi-class.js').MultiClassEntry[];
+  /** @deprecated Pass `multiClass: true` on each `ClassDescriptor` instead. The `multiClassEnabled` argument will be removed in v0.22.0. */
+  discoverMultiClass(
+    filePath: string,
+    classes: readonly import('./multi-class.js').ClassDescriptor[],
+    extensionsRoot: string,
+    multiClassEnabled: boolean,
+  ): import('./multi-class.js').MultiClassEntry[];
+  discoverMultiClass(
+    filePath: string,
+    classes: readonly import('./multi-class.js').ClassDescriptor[],
     extensionsRoot: string = 'extensions',
-    multiClassEnabled: boolean = false,
+    multiClassEnabled?: boolean,
   ): import('./multi-class.js').MultiClassEntry[] {
-    return _discoverMultiClass(filePath, classes, extensionsRoot, multiClassEnabled);
+    if (multiClassEnabled !== undefined) {
+      warnMultiClassEnabledDeprecated();
+      // The argument is functionally inert under D-06: the per-class
+      // `multiClass` field is the source of truth. We intentionally ignore
+      // `multiClassEnabled` and recompute from the descriptors below.
+    }
+    const enabled = classes.some((c) => c.implementsModule && c.multiClass === true);
+    return _discoverMultiClass(filePath, classes, extensionsRoot, enabled);
   }
 
   /**
