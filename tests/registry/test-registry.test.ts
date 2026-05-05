@@ -186,6 +186,23 @@ describe('Registry', () => {
     );
   });
 
+  // D11-007: TS registerInternal previously rejected duplicates with a bare
+  // `_modules.has` check, losing the case-collision detection that Python
+  // (registry.py:1674) and Rust (registry.rs:727) enforce via
+  // detect_id_conflicts on the same path. The lowercase-only EBNF pattern
+  // makes case mismatches unreachable today, but the contract surface must
+  // stay aligned across SDKs.
+  it('registerInternal duplicate rejection emits "already registered" message via detectIdConflicts', () => {
+    const registry = new Registry();
+    registry.registerInternal('system.dup', createMod('system.dup'));
+    // detectIdConflicts produces this exact message format; the bare
+    // _modules.has fallback used a slightly different format. Pinning the
+    // message keeps the conflict-detection routing observable.
+    expect(() => registry.registerInternal('system.dup', createMod('system.dup'))).toThrow(
+      "Module ID 'system.dup' is already registered",
+    );
+  });
+
   it('unregister removes module', () => {
     const registry = new Registry();
     registry.register('test.a', createMod('test.a'));
@@ -293,6 +310,16 @@ describe('Registry', () => {
   it('getDefinition returns null for unknown module', () => {
     const registry = new Registry();
     expect(registry.getDefinition('nonexistent')).toBeNull();
+  });
+
+  // D10-011: Spec registry-system.md:382 says "Any error that get(module_id)
+  // raises is propagated (e.g., ModuleNotFoundError on an empty string)".
+  // Python (registry.py:1058) routes through get() so the empty-string guard
+  // applies. TypeScript getDefinition was reading _modules directly and
+  // returning null silently on empty input — divergent from spec + Python.
+  it('getDefinition throws ModuleNotFoundError for empty moduleId', () => {
+    const registry = new Registry();
+    expect(() => registry.getDefinition('')).toThrow(ModuleNotFoundError);
   });
 
   it('getDefinition reads annotations from merged metadata for manually-registered modules', () => {

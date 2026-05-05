@@ -718,6 +718,14 @@ export class Registry {
     // `_versionHint` accepted for cross-language API parity with apcore-python
     // (sync finding A-002 / §5.4). Ignored under the single-version registry;
     // see `get()` for the rationale.
+    //
+    // D10-011: spec registry-system.md:382 says any error that `get(module_id)`
+    // raises is propagated. The empty-string guard mirrors `get()` (line 669)
+    // so callers using getDefinition see the same ModuleNotFoundError as
+    // get(), matching apcore-python where getDefinition routes through get().
+    if (moduleId === '') {
+      throw new ModuleNotFoundError('');
+    }
     const module = this._modules.get(moduleId);
     if (module == null) return null;
     // INVARIANT: every registration site (`register`, `registerInternal`,
@@ -984,8 +992,24 @@ export class Registry {
   registerInternal(moduleId: string, module: unknown): void {
     validateModuleId(moduleId, true);
 
-    if (this._modules.has(moduleId)) {
-      throw new InvalidInputError(`Module ID '${moduleId}' is already registered`);
+    // D11-007: route duplicate detection through detectIdConflicts (with an
+    // empty reserved-words set so the bypass for system.* prefixes is
+    // preserved). This restores the case-collision branch present in
+    // apcore-python (registry.py:1674) and apcore-rust (registry.rs:727).
+    // The lowercase-only EBNF in validateModuleId makes case collisions
+    // unreachable today, but the contract surface stays aligned across SDKs.
+    const conflict = detectIdConflicts(
+      moduleId,
+      new Set(this._modules.keys()),
+      new Set<string>(),
+      this._lowercaseMap,
+    );
+    if (conflict !== null) {
+      if (conflict.severity === 'error') {
+        throw new InvalidInputError(conflict.message);
+      } else {
+        console.warn(`[apcore:registry] ID conflict: ${conflict.message}`);
+      }
     }
 
     this._modules.set(moduleId, module);
