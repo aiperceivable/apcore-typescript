@@ -37,6 +37,8 @@ export {
   MODULE_ID_PATTERN,
   MAX_MODULE_ID_LENGTH,
   RESERVED_WORDS,
+  EPHEMERAL_NAMESPACE_PREFIX,
+  isEphemeralModuleId,
 } from './registry/registry.js';
 export type { Discoverer, ModuleValidator } from './registry/registry.js';
 export {

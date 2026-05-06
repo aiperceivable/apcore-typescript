@@ -17,6 +17,7 @@ const ANNOTATION_FIELDS: ReadonlyArray<keyof ModuleAnnotations> = [
   'cacheKeyFields',
   'paginated',
   'paginationStyle',
+  'discoverable',
   'extra',
 ];
 

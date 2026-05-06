@@ -621,6 +621,29 @@ describe('apcore Conformance Suite (TypeScript)', () => {
 
   // --- annotations_extra_round_trip ---
   const annotationsFixture = loadFixture('annotations_extra_round_trip');
+  /**
+   * Pilot-tolerant comparator for the v0.21.0 `discoverable` rollout.
+   *
+   * Per RFC `apcore/docs/spec/rfc-ephemeral-modules.md` "Conformance plan /
+   * Transitional fixture handling", the canonical
+   * `annotations_extra_round_trip.json` fixture MUST NOT be updated to
+   * require `discoverable` until ALL three SDKs have shipped support.
+   * During the rollout window, SDKs that have shipped the field strip it
+   * from the actual serialized output before equality comparison so the
+   * conformance suite stays green. apcore-python PR #26 implements the
+   * same pattern; once the synchronized fixture update lands, this
+   * helper can be removed.
+   */
+  const stripDiscoverableForPilot = (
+    actual: Record<string, unknown>,
+    expected: Record<string, unknown>,
+  ): Record<string, unknown> => {
+    if ('discoverable' in actual && !('discoverable' in expected)) {
+      const { discoverable: _omit, ...rest } = actual;
+      return rest;
+    }
+    return actual;
+  };
   describe('Annotations Extra Round-trip', () => {
     annotationsFixture.test_cases.forEach((tc: any) => {
       it(tc.id, () => {
@@ -630,7 +653,8 @@ describe('apcore Conformance Suite (TypeScript)', () => {
           expect(ann.extra).toEqual(tc.expected_deserialized_extra);
           if (tc.expected_reserialized) {
             const reserialized = annotationsToJSON(ann);
-            expect(reserialized).toEqual(tc.expected_reserialized);
+            expect(stripDiscoverableForPilot(reserialized, tc.expected_reserialized))
+              .toEqual(tc.expected_reserialized);
           }
           return;
         }
@@ -673,7 +697,8 @@ describe('apcore Conformance Suite (TypeScript)', () => {
           extra: tc.input.extra ?? {},
         });
         const serialized = annotationsToJSON(ann);
-        expect(serialized).toEqual(tc.expected_serialized);
+        expect(stripDiscoverableForPilot(serialized, tc.expected_serialized))
+          .toEqual(tc.expected_serialized);
 
         // Deserialize back and check extra
         const restored = annotationsFromJSON(serialized as Record<string, unknown>);

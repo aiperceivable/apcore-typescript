@@ -8,6 +8,125 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-05-06
+
+Aligns apcore-typescript with PROTOCOL_SPEC.md v0.21.0 (apcore commit
+[`c191b85`](https://github.com/aiperceivable/apcore/commit/c191b85) — RFC
+`docs/spec/rfc-ephemeral-modules.md` promoted to `Accepted`). Mirrors the
+[apcore-python PR #26](https://github.com/aiperceivable/apcore-python/pull/26)
+reference implementation.
+
+### Added
+
+- **`ephemeral.*` namespace reservation (PROTOCOL_SPEC §2.5 / RFC
+  `rfc-ephemeral-modules`).** New exported constant
+  `EPHEMERAL_NAMESPACE_PREFIX = "ephemeral."` and `isEphemeralModuleId(id)`
+  helper. Filesystem discovery (`Registry._discoverDefault` /
+  `Registry._discoverCustom`) rejects any module ID falling under the
+  `ephemeral.*` namespace — the default-discoverer raises `InvalidInputError`
+  with a message pointing the caller to `Registry.register()`, the custom
+  discoverer skips the entry with a `console.warn`. The namespace is reserved
+  for programmatically-registered modules synthesized at runtime
+  (Agent-synthesized tools, on-the-fly composition).
+- **`ModuleAnnotations.discoverable: boolean` (PROTOCOL_SPEC §4.4).**
+  Defaults to `true`; declared optional on the interface so v0.20.x
+  callers building literals keep compiling. When set to `false` the
+  module is hidden from `Registry.list()`, `Registry.iter()`, and
+  `Registry.moduleIds` — but remains callable by exact ID through
+  `get()` / `has()` / `Executor.execute()`. Pass
+  `Registry.list({ includeHidden: true })` (or
+  `iter({ includeHidden: true })`) to enumerate every registered module
+  (mirrors apcore-python's `include_hidden` kwarg). `ephemeral.*` modules
+  SHOULD set `discoverable: false`.
+- **Audit-event single-emit rule for `ephemeral.*` registrations.** New
+  `Registry.setEventEmitter(emitter)` wires an `EventEmitter` onto the
+  registry; ephemeral.* `register()` / `unregister()` calls emit exactly
+  one canonical `apcore.registry.module_registered` /
+  `apcore.registry.module_unregistered` event with the D-35 contextual
+  payload (`caller_id` defaulting to `"@external"`, `identity` snapshot,
+  `namespace_class: "ephemeral"`). The bridge in
+  `sys-modules/registration.ts` short-circuits on `ephemeral.*` IDs so
+  the empty-payload bridge emit does not double-fire — one registration,
+  one event. Non-ephemeral modules retain the existing empty-payload
+  bridge behavior verbatim.
+- **`Registry.register()` / `Registry.unregister()` accept an optional
+  `{ context?: Context | null }` argument** (5th positional / 2nd
+  positional respectively). Forwards `Context.callerId` and
+  `Context.identity` into the ephemeral.* audit-event payload. Ignored
+  for non-ephemeral modules.
+- **Soft-warning when an `ephemeral.*` module is registered without
+  `requiresApproval: true`.** `Registry.register()` emits
+  `console.warn(...)` per the RFC ("agent-synthesized modules SHOULD
+  declare `requires_approval: true` so a human gates execution"). The
+  registry never refuses the registration — warning only.
+- **`Registry.registerInternal()` rejects `ephemeral.*` IDs.** Throws
+  `InvalidInputError` with a clear pointer to `Registry.register()`.
+  Per the RFC's "register_internal() interaction" rule, namespace
+  prefix → registration mechanism is a 1:1 mapping: `system.*` only
+  via `registerInternal()`, `ephemeral.*` only via `register()`. Mixing
+  the two backdoors blurs the audit-trail distinction between
+  framework-emitted (`system.*`) and caller-emitted (`ephemeral.*`)
+  modules.
+- **PreflightResult.predictedChanges finalized
+  ([#29](https://github.com/aiperceivable/apcore-typescript/pull/29)).**
+  Stage 2 of the v0.21.0 alignment, shipped to `main` ahead of this
+  release: the optional `predictedChanges?: Change[]` field on
+  `PreflightResult` plus the `Module.preview()` method, the `Change` /
+  `PreviewResult` types, and the TypeBox `TChange` / `TPreviewResult`
+  schemas (with `Type.Unsafe` + `patternProperties` for `x-*` extension
+  keys per [iter-11]). v0.21.0 finalizes this surface alongside the
+  Stage 3 ephemeral pilot.
+- 21 new tests covering namespace reservation, filesystem-discovery
+  rejection, `discoverable` filter on `list` / `iter` / `moduleIds`,
+  audit-event single-emit, soft-warn on missing `requiresApproval`, and
+  `registerInternal` rejection (`tests/registry/test-ephemeral-namespace.test.ts`).
+
+### Changed
+
+- **`Registry.discoverMultiClass` signature cleanup
+  ([#28](https://github.com/aiperceivable/apcore-typescript/pull/30) /
+  apcore decision-log D-06).** Already on `main` ahead of this release.
+  The 4th `multiClassEnabled` argument is dropped from the canonical
+  method surface; the method is now
+  `discoverMultiClass(filePath, classes, extensionsRoot?)`. Per-class
+  opt-in via `ClassDescriptor.multiClass?: boolean` is the sole source
+  of truth — when at least one qualifying class sets `multiClass: true`,
+  the discovery routine derives a distinct module ID per class;
+  otherwise whole-file mode applies. Mirrors apcore commit
+  [`973410b`](https://github.com/aiperceivable/apcore/commit/973410b).
+  - **DEPRECATION** — the legacy 4-arg overload
+    `discoverMultiClass(filePath, classes, extensionsRoot, multiClassEnabled)`
+    is retained with a one-shot `console.warn` and is **functionally
+    inert**. Removal scheduled for **v0.22.0**. Migration: drop the
+    boolean and mark each `ClassDescriptor` with `multiClass: true`.
+  - The free function `discoverMultiClass(...)` re-exported from
+    `apcore-js/registry` keeps its existing 4-arg shape for internal
+    callers and is unchanged.
+- **`RESERVED_WORDS` unchanged.** The `ephemeral` segment is intentionally
+  **not** added to `RESERVED_WORDS` because that set is consulted by
+  `_validateModuleId` to *reject* IDs whose first segment matches; adding
+  `ephemeral` there would block the very registration path the spec
+  prescribes. The reservation is enforced through the discovery-path
+  rejection and `registerInternal` rejection paths instead. Mirrors
+  apcore-python's `RESERVED_WORDS` frozenset.
+- Conformance test runner is **pilot-tolerant** for the rollout window —
+  when `expected_serialized` / `expected_reserialized` lacks the
+  `discoverable` field (the canonical fixture has not yet been updated
+  per the RFC's "Conformance plan / Transitional fixture handling"), the
+  field is stripped from the actual serialized output before equality
+  comparison. Mirrors the apcore-python PR #26 pattern; will be removed
+  once the synchronized `conformance/fixtures/annotations_extra_round_trip.json`
+  update lands.
+
+### Lifecycle
+
+- **Caller-managed.** `ephemeral.*` modules live until the caller
+  explicitly calls `Registry.unregister(moduleId)`. There is no TTL
+  sweeper or background GC — TTL-driven cleanup is deferred to a v2
+  follow-up if leakage is observed in practice.
+
+## [0.20.0] - 2026-05-05
+
 ### Changed
 
 - **Issue #28 — `Registry.discoverMultiClass` signature cleanup (apcore decision-log D-06).** The 4th `multiClassEnabled` argument is dropped from the canonical method surface; the method is now `discoverMultiClass(filePath, classes, extensionsRoot?)`. Per-class opt-in via the new `ClassDescriptor.multiClass?: boolean` field is the sole source of truth — when at least one qualifying class sets `multiClass: true`, the discovery routine derives a distinct module ID per class; otherwise whole-file mode applies. Mirrors the upstream apcore doc-side cleanup in commit [`973410b`](https://github.com/aiperceivable/apcore/commit/973410b) which removed the dead global `extensions.multi_class_discovery` config toggle.

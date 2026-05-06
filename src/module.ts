@@ -22,6 +22,19 @@ export interface ModuleAnnotations {
   readonly paginated: boolean;
   /** Pagination strategy. Accepts any string. */
   readonly paginationStyle: string;
+  /**
+   * Whether the module appears in enumeration surfaces (`Registry.list()`,
+   * `Registry.find()`, manifest export, MCP `tools/list`). Defaults to `true`
+   * so existing modules remain visible. Setting `false` keeps the module
+   * callable by exact ID but hides it from discovery — `ephemeral.*` modules
+   * SHOULD set this to `false` per PROTOCOL_SPEC §4.4 / RFC
+   * `apcore/docs/spec/rfc-ephemeral-modules.md`.
+   *
+   * Optional on the interface so v0.20.x callers building `ModuleAnnotations`
+   * literals keep compiling; absent values default to `true` per spec when
+   * `Registry._isDiscoverable` interprets them.
+   */
+  readonly discoverable?: boolean;
   /** Extension dictionary for ecosystem package metadata. */
   readonly extra: Readonly<Record<string, unknown>>;
 }
@@ -38,6 +51,7 @@ export const DEFAULT_ANNOTATIONS: ModuleAnnotations = Object.freeze({
   cacheKeyFields: null,
   paginated: false,
   paginationStyle: 'cursor',
+  discoverable: true,
   extra: Object.freeze({}),
 });
 
@@ -64,7 +78,7 @@ export function createAnnotations(
 const KNOWN_WIRE_KEYS = new Set([
   'readonly', 'destructive', 'idempotent', 'requires_approval',
   'open_world', 'streaming', 'cacheable', 'cache_ttl',
-  'cache_key_fields', 'paginated', 'pagination_style', 'extra',
+  'cache_key_fields', 'paginated', 'pagination_style', 'discoverable', 'extra',
 ]);
 
 /**
@@ -83,6 +97,7 @@ export function annotationsToJSON(a: ModuleAnnotations): Record<string, unknown>
     cache_key_fields: a.cacheKeyFields,
     paginated: a.paginated,
     pagination_style: a.paginationStyle,
+    discoverable: a.discoverable,
     extra: a.extra,
   };
 }
@@ -122,6 +137,9 @@ export function annotationsFromJSON(data: Record<string, unknown>): ModuleAnnota
     cacheKeyFields: (data['cache_key_fields'] as string[] | null) ?? null,
     paginated: (data['paginated'] as boolean) ?? false,
     paginationStyle: (data['pagination_style'] as string) ?? 'cursor',
+    // PROTOCOL_SPEC §4.4 — defaults to true so wires from older SDKs that
+    // don't yet emit the field stay backward-compatible.
+    discoverable: (data['discoverable'] as boolean | undefined) ?? true,
     // §4.4.1 rule 7: nested explicit `extra` wins over legacy top-level overflow.
     extra: Object.freeze({ ...overflow, ...explicitExtra }),
   });

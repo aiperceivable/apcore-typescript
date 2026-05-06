@@ -338,11 +338,28 @@ export function registerSysModules(
     }));
     reg('system.control.reload_module', new ReloadModule(registry, eventEmitter, auditStore ?? undefined));
 
+    // Wire the EventEmitter on the registry so ephemeral.* register /
+    // unregister calls emit the rich D-35 contextual audit payload directly
+    // (RFC `apcore/docs/spec/rfc-ephemeral-modules.md` "Audit-event
+    // single-emit rule"). Non-ephemeral modules continue to flow through
+    // the bridge below with empty payloads for backward compatibility.
+    registry.setEventEmitter(eventEmitter);
+
     // Bridge registry events.
     // §Issue #36: emit canonical apcore.registry.* names and legacy aliases
     // (with deprecated: true) during the deprecation window. Once the legacy
     // names are removed, drop the emitWithLegacy() wrapper for direct emit().
+    //
+    // Single-emit rule for ephemeral.* registrations: the registry-side
+    // direct emit (`Registry._emitEphemeralAudit`) already fires the
+    // canonical event with the full D-35 contextual payload. We
+    // short-circuit the empty-payload bridge for ephemeral.* IDs to avoid
+    // dual emission for the same event_type. Mirrors apcore-python
+    // `_bridge_registry_events`. See apcore RFC
+    // `apcore/docs/spec/rfc-ephemeral-modules.md` "Audit-event single-emit
+    // rule".
     registry.on('register', (moduleId: string) => {
+      if (moduleId.startsWith('ephemeral.')) return;
       emitWithLegacy(
         eventEmitter,
         'apcore.registry.module_registered',
@@ -353,6 +370,7 @@ export function registerSysModules(
       );
     });
     registry.on('unregister', (moduleId: string) => {
+      if (moduleId.startsWith('ephemeral.')) return;
       emitWithLegacy(
         eventEmitter,
         'apcore.registry.module_unregistered',

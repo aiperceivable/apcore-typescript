@@ -4,6 +4,8 @@
 
 import type { Config } from '../config.js';
 import { getDefault } from '../config.js';
+import type { Context } from '../context.js';
+import type { ApCoreEvent, EventEmitter } from '../events/emitter.js';
 import { InvalidInputError, ModuleNotFoundError } from '../errors.js';
 import type { ModuleAnnotations, ModuleExample } from '../module.js';
 import { detectIdConflicts } from './conflicts.js';
@@ -126,6 +128,27 @@ export const MAX_MODULE_ID_LENGTH = 192;
 export const RESERVED_WORDS = new Set(['system', 'internal', 'core', 'apcore', 'plugin', 'schema', 'acl']);
 
 /**
+ * Namespace prefix reserved for programmatically-registered modules
+ * synthesized at runtime (PROTOCOL_SPEC §2.5; RFC
+ * `apcore/docs/spec/rfc-ephemeral-modules.md`). IDs in this namespace MUST
+ * be registered through {@link Registry.register} only — the filesystem
+ * discoverer rejects matching IDs because the namespace has no
+ * directory-rooted source of truth, and {@link Registry.registerInternal}
+ * rejects them too so the audit-trail provenance distinction between
+ * framework-emitted (`system.*`) and caller-emitted (`ephemeral.*`)
+ * modules stays clean.
+ *
+ * The trailing dot is required so module IDs whose first segment merely
+ * *starts with* `ephemeral` (e.g. `ephemerals`) are not falsely classified.
+ */
+export const EPHEMERAL_NAMESPACE_PREFIX = 'ephemeral.';
+
+/** Return true when `moduleId` belongs to the reserved `ephemeral.*` namespace. */
+export function isEphemeralModuleId(moduleId: string): boolean {
+  return moduleId === 'ephemeral' || moduleId.startsWith(EPHEMERAL_NAMESPACE_PREFIX);
+}
+
+/**
  * Validate a module ID against PROTOCOL_SPEC §2.7 in canonical order.
  *
  * Order: empty → pattern → length → reserved (first-segment).
@@ -211,6 +234,17 @@ export class Registry {
   private _refCounts: Map<string, number> = new Map();
   private _draining: Set<string> = new Set();
   private _drainResolvers: Map<string, Array<() => void>> = new Map();
+
+  /**
+   * Optional EventEmitter for the ephemeral.* registry-side audit emits
+   * (RFC `apcore/docs/spec/rfc-ephemeral-modules.md` "Audit-event single-emit
+   * rule"). Set via {@link setEventEmitter}; when null, ephemeral audit
+   * events are warn-logged so they never silently disappear.
+   *
+   * Mirrors apcore-python `Registry._event_emitter` /
+   * `Registry.set_event_emitter`.
+   */
+  private _eventEmitter: EventEmitter | null = null;
 
   constructor(options?: {
     config?: Config | null;
@@ -317,6 +351,19 @@ export class Registry {
         continue;
       }
 
+      // RFC `apcore/docs/spec/rfc-ephemeral-modules.md`: filesystem /
+      // discoverer paths MUST reject `ephemeral.*` IDs. The custom
+      // discoverer is functionally a discovery path too, so the same
+      // contract applies — ephemeral.* must land via Registry.register().
+      if (isEphemeralModuleId(moduleId)) {
+        console.warn(
+          `[apcore:registry] Skipping custom-discovered module '${moduleId}': ` +
+          `'ephemeral.*' is reserved for programmatic registration via ` +
+          `Registry.register(); see docs/spec/rfc-ephemeral-modules.md.`,
+        );
+        continue;
+      }
+
       try {
         this._registerImpl(moduleId, mod);
         count++;
@@ -346,6 +393,7 @@ export class Registry {
     await this._ensureIdMap();
     const discovered = await this._scanRoots();
     await this._applyIdMapOverrides(discovered);
+    this._rejectEphemeralDiscoveries(discovered);
 
     const rawMetadata = await this._loadAllMetadata(discovered);
     const resolvedModules = await this._resolveAllEntryPoints(discovered, rawMetadata);
@@ -369,6 +417,35 @@ export class Registry {
       return lazyScanMultiRoot(this._extensionRoots, maxDepth, followSymlinks);
     }
     return lazyScanExtensions(this._extensionRoots[0]['root'] as string, maxDepth, followSymlinks);
+  }
+
+  /**
+   * Reject filesystem-derived IDs that fall in the reserved `ephemeral.*`
+   * namespace.
+   *
+   * Per the apcore ephemeral-modules RFC pilot (`apcore/docs/spec/
+   * rfc-ephemeral-modules.md`), `ephemeral.*` is reserved for
+   * programmatically-registered modules synthesized at runtime. Any
+   * filesystem layout that produces such an ID is a configuration error —
+   * either the directory is misnamed or the namespace prefix is being
+   * misused. We surface this as an `InvalidInputError` so callers cannot
+   * accidentally pollute the registry with filesystem-rooted ephemerals.
+   *
+   * Mirrors apcore-python `Registry._reject_ephemeral_discoveries`.
+   */
+  private _rejectEphemeralDiscoveries(
+    discovered: import('./types.js').DiscoveredModule[],
+  ): void {
+    const offenders = discovered.filter((dm) => isEphemeralModuleId(dm.canonicalId));
+    if (offenders.length === 0) return;
+    const ids = [...new Set(offenders.map((dm) => dm.canonicalId))].sort();
+    throw new InvalidInputError(
+      `Filesystem discovery produced module ID(s) in the reserved ` +
+      `'ephemeral.*' namespace: ${JSON.stringify(ids)}. The ephemeral.* ` +
+      `namespace is reserved for programmatically-registered modules and ` +
+      `may only be used via Registry.register(). Rename the offending ` +
+      `directory or extension namespace.`,
+    );
   }
 
   private async _applyIdMapOverrides(discovered: import('./types.js').DiscoveredModule[]): Promise<void> {
@@ -597,8 +674,19 @@ export class Registry {
     module: unknown,
     version?: string | null,
     metadata?: Record<string, unknown> | null,
+    options?: { context?: Context | null },
   ): void {
     validateModuleId(moduleId, false);
+
+    // ephemeral.* registrations only land via this programmatic path —
+    // the filesystem discoverer rejects matching IDs upstream (see
+    // `_rejectEphemeralDiscoveries`). When invoked here the RFC pilot
+    // recommends `requires_approval=true` so a human gates execution of
+    // agent-synthesized code; we soft-warn but never refuse.
+    const ephemeral = isEphemeralModuleId(moduleId);
+    if (ephemeral) {
+      this._warnIfMissingApproval(moduleId, module);
+    }
 
     if (this._customValidator !== null) {
       const result = this._customValidator.validate(module);
@@ -617,6 +705,14 @@ export class Registry {
       overrides['version'] = version;
     }
     this._registerImpl(moduleId, module, overrides);
+
+    if (ephemeral) {
+      this._emitEphemeralAudit(
+        'apcore.registry.module_registered',
+        moduleId,
+        options?.context ?? null,
+      );
+    }
   }
 
   /** Inner registration — no validator, no ID validation. Used by discover() paths that run their own checks. */
@@ -663,7 +759,7 @@ export class Registry {
     this._triggerEvent(REGISTRY_EVENTS.REGISTER, moduleId, module);
   }
 
-  unregister(moduleId: string): boolean {
+  unregister(moduleId: string, options?: { context?: Context | null }): boolean {
     if (!this._modules.has(moduleId)) return false;
 
     const module = this._modules.get(moduleId)!;
@@ -683,6 +779,13 @@ export class Registry {
     }
 
     this._triggerEvent(REGISTRY_EVENTS.UNREGISTER, moduleId, module);
+    if (isEphemeralModuleId(moduleId)) {
+      this._emitEphemeralAudit(
+        'apcore.registry.module_unregistered',
+        moduleId,
+        options?.context ?? null,
+      );
+    }
     return true;
   }
 
@@ -709,8 +812,22 @@ export class Registry {
     return this._modules.has(moduleId);
   }
 
-  list(options?: { tags?: string[]; prefix?: string }): string[] {
+  /**
+   * Return sorted list of registered module IDs, optionally filtered by
+   * `prefix` / `tags`.
+   *
+   * Modules whose `ModuleAnnotations.discoverable === false` are excluded
+   * by default per PROTOCOL_SPEC §4.4 (RFC
+   * `apcore/docs/spec/rfc-ephemeral-modules.md`). Pass
+   * `includeHidden: true` to enumerate every registered module — useful
+   * for introspection tools, debug consoles, and tests.
+   */
+  list(options?: { tags?: string[]; prefix?: string; includeHidden?: boolean }): string[] {
     let ids = [...this._modules.keys()];
+
+    if (options?.includeHidden !== true) {
+      ids = ids.filter((id) => this._isDiscoverable(id));
+    }
 
     if (options?.prefix != null) {
       ids = ids.filter((id) => id.startsWith(options.prefix!));
@@ -735,16 +852,76 @@ export class Registry {
     return ids.sort();
   }
 
-  iter(): IterableIterator<[string, unknown]> {
-    return this._modules.entries();
+  /**
+   * Iterate `[moduleId, module]` pairs. Hides modules annotated
+   * `discoverable: false` by default; pass `includeHidden: true` to walk
+   * every registered module.
+   */
+  iter(options?: { includeHidden?: boolean }): IterableIterator<[string, unknown]> {
+    if (options?.includeHidden === true) {
+      return this._modules.entries();
+    }
+    const visible: Array<[string, unknown]> = [];
+    for (const [id, mod] of this._modules.entries()) {
+      if (this._isDiscoverable(id)) visible.push([id, mod]);
+    }
+    return visible[Symbol.iterator]();
   }
 
+  /** Total number of registered modules (includes `discoverable: false`). */
   get count(): number {
     return this._modules.size;
   }
 
+  /**
+   * Sorted list of registered module IDs (excludes
+   * `ModuleAnnotations.discoverable === false` modules). Use
+   * {@link list} with `includeHidden: true` when the full set is required.
+   */
   get moduleIds(): string[] {
-    return [...this._modules.keys()].sort();
+    return [...this._modules.keys()]
+      .filter((id) => this._isDiscoverable(id))
+      .sort();
+  }
+
+  /**
+   * Return false when the module's annotations declare
+   * `discoverable: false`. Anything else (including missing annotations)
+   * keeps the module visible — the default `true` preserves backward
+   * compatibility.
+   *
+   * Resolution order matches `mergeModuleMetadata`:
+   * 1. The merged `annotations` slot in `_moduleMeta` (which already
+   *    accounts for YAML > code precedence).
+   * 2. The module instance's `annotations` attribute (covers paths that
+   *    bypassed the merge, e.g. `registerInternal`).
+   */
+  private _isDiscoverable(moduleId: string): boolean {
+    const meta = this._moduleMeta.get(moduleId);
+    if (meta != null) {
+      const ann = meta['annotations'];
+      if (ann != null) {
+        const dv = this._readDiscoverable(ann);
+        if (dv === false) return false;
+        if (dv === true) return true;
+      }
+    }
+    const mod = this._modules.get(moduleId);
+    if (mod == null) return true;
+    const ann = (mod as Record<string, unknown>)['annotations'];
+    if (ann == null) return true;
+    return this._readDiscoverable(ann) !== false;
+  }
+
+  private _readDiscoverable(ann: unknown): boolean | undefined {
+    if (ann == null) return undefined;
+    if (typeof ann === 'object') {
+      // Accept both ModuleAnnotations instances and YAML-style dicts.
+      const rec = ann as Record<string, unknown>;
+      const v = rec['discoverable'];
+      if (v === true || v === false) return v;
+    }
+    return undefined;
   }
 
   getDefinition(moduleId: string, _versionHint?: string | null): ModuleDescriptor | null {
@@ -1023,6 +1200,19 @@ export class Registry {
    * `Registry::register_internal`.
    */
   registerInternal(moduleId: string, module: unknown): void {
+    // RFC `apcore/docs/spec/rfc-ephemeral-modules.md` "register_internal()
+    // interaction": ephemeral.* IDs MUST be rejected here. Namespace →
+    // registration-mechanism is a 1:1 mapping; mixing blurs the audit-trail
+    // distinction between framework-emitted (`system.*`) and caller-emitted
+    // (`ephemeral.*`) modules.
+    if (isEphemeralModuleId(moduleId)) {
+      throw new InvalidInputError(
+        `ephemeral.* module IDs must be registered via Registry.register(), ` +
+        `not registerInternal() (got: '${moduleId}'). See apcore ` +
+        `docs/spec/rfc-ephemeral-modules.md "register_internal() ` +
+        `interaction" for rationale.`,
+      );
+    }
     validateModuleId(moduleId, true);
 
     // D11-007: route duplicate detection through detectIdConflicts (with an
@@ -1270,6 +1460,127 @@ export class Registry {
    *
    * Returns true if drained cleanly, false if force-unloaded after timeout.
    */
+  // ── Ephemeral namespace pilot (RFC: rfc-ephemeral-modules) ──────
+
+  /**
+   * Wire an EventEmitter for registry-side audit emits.
+   *
+   * Per the apcore RFC `apcore/docs/spec/rfc-ephemeral-modules.md`
+   * "Audit-event single-emit rule", `ephemeral.*` registrations and
+   * unregistrations emit a single `apcore.registry.module_registered` /
+   * `apcore.registry.module_unregistered` event with the D-35 contextual
+   * payload. When no emitter is wired, the event is logged at INFO so it
+   * never silently disappears — useful for the v1 pilot where most
+   * callers will not have an emitter attached.
+   *
+   * Pilot scope: only `ephemeral.*` registrations trigger registry-side
+   * emits. The pre-existing bridge in
+   * `sys-modules/registration.ts` continues to emit empty-payload events
+   * for non-ephemeral modules and short-circuits for ephemerals so the
+   * single-emit rule holds.
+   */
+  setEventEmitter(emitter: EventEmitter | null): void {
+    this._eventEmitter = emitter;
+  }
+
+  /**
+   * Soft-warn when an `ephemeral.*` module is registered without
+   * `requiresApproval: true`. Per the ephemeral-modules RFC pilot,
+   * agent-synthesized modules SHOULD declare `requiresApproval` so a
+   * human gates execution. The registry only warns; it does not refuse
+   * the registration.
+   */
+  private _warnIfMissingApproval(moduleId: string, module: unknown): void {
+    const ann = (module as { annotations?: unknown })?.annotations;
+    let requiresApproval = false;
+    if (ann != null && typeof ann === 'object') {
+      const rec = ann as Record<string, unknown>;
+      requiresApproval = rec['requiresApproval'] === true || rec['requires_approval'] === true;
+    }
+    if (!requiresApproval) {
+      console.warn(
+        `[apcore:registry] ephemeral.* module '${moduleId}' registered without ` +
+        `requiresApproval=true. The apcore RFC docs/spec/rfc-ephemeral-modules.md ` +
+        `recommends setting ModuleAnnotations.requiresApproval=true so ` +
+        `agent-synthesized code does not run unattended.`,
+      );
+    }
+  }
+
+  /**
+   * Build the D-35 audit payload (`caller_id` plus optional `identity`
+   * snapshot) for an ephemeral.* register/unregister. Mirrors the shape
+   * `extractAuditIdentity` produces for `system.control.*` events so
+   * subscribers can apply identical redaction rules.
+   */
+  private _buildEphemeralAuditPayload(context: Context | null): Record<string, unknown> {
+    const callerIdRaw = context?.callerId;
+    const callerId = callerIdRaw == null || callerIdRaw === '' ? '@external' : callerIdRaw;
+    const ident = context?.identity ?? null;
+    if (!ident) {
+      return { caller_id: callerId, identity: null, namespace_class: 'ephemeral' };
+    }
+    const snapshot: Record<string, unknown> = {
+      id: ident.id,
+      type: ident.type,
+      roles: [...ident.roles],
+    };
+    const displayName = (ident.attrs as Record<string, unknown>)['display_name'];
+    if (typeof displayName === 'string' && displayName.length > 0) {
+      snapshot['display_name'] = displayName;
+    }
+    return { caller_id: callerId, identity: snapshot, namespace_class: 'ephemeral' };
+  }
+
+  /**
+   * Emit the canonical ephemeral.* audit event to the wired EventEmitter
+   * (or warn-log if none is wired). The bridge in
+   * `sys-modules/registration.ts` short-circuits on ephemeral.* IDs so
+   * exactly one event lands per registration / unregistration.
+   */
+  private _emitEphemeralAudit(
+    eventType: string,
+    moduleId: string,
+    context: Context | null,
+  ): void {
+    let payload: Record<string, unknown>;
+    try {
+      payload = this._buildEphemeralAuditPayload(context);
+    } catch (e) {
+      console.warn(
+        `[apcore:registry] Failed to extract audit payload for ephemeral '${moduleId}': ${(e as Error).message}. ` +
+        `Falling back to caller_id='@external'.`,
+      );
+      payload = { caller_id: '@external', identity: null, namespace_class: 'ephemeral' };
+    }
+
+    const emitter = this._eventEmitter;
+    if (emitter === null) {
+      console.info(
+        `[apcore:registry] ephemeral audit event ${eventType} module_id=${moduleId} ` +
+        `payload=${JSON.stringify(payload)} (no EventEmitter wired; call ` +
+        `Registry.setEventEmitter to capture)`,
+      );
+      return;
+    }
+
+    const event: ApCoreEvent = {
+      eventType,
+      moduleId,
+      timestamp: new Date().toISOString(),
+      severity: 'info',
+      data: payload,
+    };
+    try {
+      emitter.emit(event);
+    } catch (e) {
+      console.error(
+        `[apcore:registry] EventEmitter.emit failed for ephemeral audit event ` +
+        `${eventType} on '${moduleId}':`, e,
+      );
+    }
+  }
+
   async safeUnregister(moduleId: string, timeoutMs: number = 5000): Promise<boolean> {
     if (!this._modules.has(moduleId)) return false;
 
