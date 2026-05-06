@@ -10,9 +10,11 @@
 
 import { describe, it, expect } from 'vitest';
 import { Type } from '@sinclair/typebox';
+import { Value } from '@sinclair/typebox/value';
 import { Executor } from '../src/executor.js';
 import { FunctionModule } from '../src/decorator.js';
 import { Registry } from '../src/registry/registry.js';
+import { TChange } from '../src/module.js';
 import type {
   Change,
   Module,
@@ -228,5 +230,59 @@ describe('Module.preview() / PreflightResult.predictedChanges', () => {
     const changes = result.predictedChanges as Change[];
     expect(changes).toHaveLength(1);
     expect(changes[0]!['x-confidence']).toBe(0.95);
+  });
+
+  it('preserves Change.x-* extension fields end-to-end and validates against TChange', async () => {
+    // Per upstream RFC `apcore/docs/spec/rfc-preview-method.md` ("Change.x-*
+    // extension fields — cross-SDK schema-encoding note"), TChange uses
+    // `patternProperties: { "^x-": {} }` + `additionalProperties: false`.
+    // This test is the litmus check: x-* keys round-trip through
+    // Executor.validate(), Value.Check(TChange, ...) accepts them, and
+    // unknown non-x- keys are rejected.
+    const mod: Module = {
+      inputSchema,
+      outputSchema,
+      description: 'Preview with x-* extension round-trip',
+      execute: () => ({ ok: true }),
+      preview: (): PreviewResult => ({
+        changes: [
+          {
+            action: 'write',
+            target: 'x',
+            summary: 's',
+            'x-foo': 'bar',
+            'x-count': 42,
+          },
+        ],
+      }),
+    };
+    const executor = buildExecutor('preview.xroundtrip', mod);
+    const result = await executor.validate('preview.xroundtrip', { id: 'x' });
+
+    // 1. End-to-end: x-* keys survive through Executor.validate().
+    expect(result.valid).toBe(true);
+    const changes = result.predictedChanges as Change[];
+    expect(changes).toHaveLength(1);
+    const change = changes[0]!;
+    expect(change['x-foo']).toBe('bar');
+    expect(change['x-count']).toBe(42);
+
+    // 2. Schema validation: TChange admits arbitrary x-* keys.
+    expect(Value.Check(TChange, change)).toBe(true);
+
+    // 3. Schema validation: a Change with only required fields still passes.
+    expect(
+      Value.Check(TChange, { action: 'a', target: 't', summary: 's' }),
+    ).toBe(true);
+
+    // 4. Regression for additionalProperties: false — unknown non-x- keys
+    //    must be rejected by TChange.
+    const bogus = {
+      action: 'a',
+      target: 't',
+      summary: 's',
+      random_key: 'no',
+    };
+    expect(Value.Check(TChange, bogus)).toBe(false);
   });
 });

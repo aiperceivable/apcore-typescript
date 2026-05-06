@@ -2,7 +2,7 @@
  * Module interface and related data types.
  */
 
-import { type TSchema, Type } from '@sinclair/typebox';
+import { Kind, type TSchema, Type, TypeRegistry } from '@sinclair/typebox';
 import type { Context } from './context.js';
 
 export interface ModuleAnnotations {
@@ -224,35 +224,83 @@ export interface PreviewResult {
 }
 
 /**
+ * Custom TypeBox kind for `Change`.
+ *
+ * Encoded via `Type.Unsafe<Change>(...)` so the underlying JSON Schema can
+ * carry both `patternProperties: { "^x-": {} }` (admitting arbitrary `x-*`
+ * extension keys per PROTOCOL_SPEC §4.4 / §4.6 conventions) and
+ * `additionalProperties: false` (rejecting unknown non-`x-` keys). TypeBox
+ * 0.34's `Type.Object` schema-checker does not consult `patternProperties`,
+ * so a `Type.Object({...}, { additionalProperties: false })` form would
+ * incorrectly reject `x-*` keys; and `Type.Intersect([Object, Record])`
+ * loses `additionalProperties: false` precision. The cross-SDK
+ * schema-encoding table in `apcore/docs/spec/rfc-preview-method.md`
+ * ("Change.x-* extension fields") prescribes the `Type.Unsafe` escape hatch.
+ *
+ * To make the schema usable with `Value.Check` (which routes by `[Kind]`), we
+ * register a custom `'apcore:Change'` kind whose checker enforces the same
+ * shape the JSON Schema describes. The JSON Schema body remains the canonical
+ * cross-SDK wire form.
+ */
+const CHANGE_KIND = 'apcore:Change';
+
+if (!TypeRegistry.Has(CHANGE_KIND)) {
+  TypeRegistry.Set(CHANGE_KIND, (_schema, value): boolean => {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+      return false;
+    }
+    const v = value as Record<string, unknown>;
+    if (typeof v.action !== 'string') return false;
+    if (typeof v.target !== 'string') return false;
+    if (typeof v.summary !== 'string') return false;
+    const known = new Set(['action', 'target', 'summary', 'before', 'after']);
+    for (const key of Object.keys(v)) {
+      if (known.has(key)) continue;
+      // Anything else MUST start with `x-` (any value).
+      if (!key.startsWith('x-')) return false;
+    }
+    return true;
+  });
+}
+
+/**
  * TypeBox schema mirroring `Change`. Exported alongside the TypeScript type
  * for runtime validation / wire-format use. Mirrors the JSON Schema sketch in
- * `apcore/docs/spec/rfc-preview-method.md`.
- *
- * `before` / `after` are typed as `Type.Unknown()` (free-form per module class
- * per the RFC). The interface-level `x-*` extension fields are not encoded at
- * the TypeBox level — JSON Schema's `patternProperties` is the tool for that
- * if/when the RFC tightens to a closed schema.
+ * `apcore/docs/spec/rfc-preview-method.md`. The raw JSON Schema body
+ * (`type`, `required`, `properties`, `patternProperties`,
+ * `additionalProperties: false`) is the canonical cross-SDK wire format; the
+ * `[Kind]` field routes `Value.Check` to the registered checker above.
  */
-export const TChange = Type.Object({
-  action: Type.String({
-    description: 'Free-form verb describing the kind of change.',
-  }),
-  target: Type.String({
-    description: 'Free-form identifier of what is changed.',
-  }),
-  summary: Type.String({
-    description: 'Required, human-readable single-line summary of the change.',
-  }),
-  before: Type.Optional(
-    Type.Unknown({
+export const TChange = Type.Unsafe<Change>({
+  [Kind]: CHANGE_KIND,
+  type: 'object',
+  required: ['action', 'target', 'summary'],
+  properties: {
+    action: {
+      type: 'string',
+      description: 'Free-form verb describing the kind of change.',
+    },
+    target: {
+      type: 'string',
+      description: 'Free-form identifier of what is changed.',
+    },
+    summary: {
+      type: 'string',
+      description: 'Required, human-readable single-line summary of the change.',
+    },
+    before: {
+      // unknown — module-class specific. JSON Schema `{}` accepts any value.
       description: 'Optional. Snapshot of the prior state, when observable.',
-    }),
-  ),
-  after: Type.Optional(
-    Type.Unknown({
+    },
+    after: {
       description: 'Optional. Predicted new state.',
-    }),
-  ),
+    },
+  },
+  patternProperties: {
+    // Arbitrary x-* extension keys with arbitrary values (PROTOCOL_SPEC §4.4).
+    '^x-': {},
+  },
+  additionalProperties: false,
 });
 
 /** TypeBox schema mirroring `PreviewResult`. */

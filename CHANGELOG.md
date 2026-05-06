@@ -31,6 +31,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Promise. Exceptions (sync throw or async reject) are treated as advisory
   warnings via a `module_preview` check entry and do **not** fail validation
   — mirrors `preflight()` semantics (RFC Open Question 1).
+- **`TChange` schema upgraded to `Type.Unsafe<Change>` form** with raw JSON
+  Schema `patternProperties: { "^x-": {} }` + `additionalProperties: false`
+  in line with the upstream apcore RFC iter-11 cross-SDK schema-encoding
+  table (apcore commit
+  [`81df336`](https://github.com/aiperceivable/apcore/commit/81df336)). A
+  custom `apcore:Change` TypeBox kind is registered so `Value.Check(TChange,
+  ...)` accepts arbitrary `x-*` extension keys and rejects unknown non-`x-`
+  additional keys, closing the runtime-validation gap left by the previous
+  `Type.Object` form. Conformance test added: a `Change` with `x-foo` /
+  `x-count` round-trips through `Executor.validate()` and passes
+  `Value.Check`, while a `Change` with a plain `random_key` fails.
 
 > **Note:** This is a **speculative implementation** ahead of formal upstream
 > RFC acceptance. The RFC at `apcore/docs/spec/rfc-preview-method.md` is in
