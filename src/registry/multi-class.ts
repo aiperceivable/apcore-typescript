@@ -13,6 +13,20 @@ const MAX_MODULE_ID_LEN = 192;
 export interface ClassDescriptor {
   readonly name: string;
   readonly implementsModule: boolean;
+  /**
+   * Per-class opt-in marker for multi-class mode (apcore decision-log D-06).
+   *
+   * When at least one qualifying class in the file has `multiClass: true`,
+   * the discovery routine derives a distinct module ID per class. When no
+   * qualifying class sets the flag, whole-file mode is used and the bare
+   * base_id is returned.
+   *
+   * This field replaces the previous global `multiClassEnabled` parameter
+   * on `Registry.discoverMultiClass`. See apcore commit 973410b for the
+   * upstream cleanup that removed the dead `extensions.multi_class_discovery`
+   * config toggle.
+   */
+  readonly multiClass?: boolean;
 }
 
 export interface MultiClassEntry {
