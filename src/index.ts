@@ -54,6 +54,8 @@ export {
   annotationsToJSON,
   annotationsFromJSON,
   createPreflightResult,
+  TChange,
+  TPreviewResult,
 } from './module.js';
 export type {
   ModuleAnnotations,
@@ -63,6 +65,8 @@ export type {
   PreflightCheckResult,
   PreflightResult,
   Module,
+  Change,
+  PreviewResult,
 } from './module.js';
 
 // Config
