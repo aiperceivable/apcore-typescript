@@ -6,6 +6,48 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [Unreleased]
+
+### Added
+
+#### Module.preview() — speculative ahead of upstream RFC (Issue #27)
+
+- **Optional `Module.preview(inputs, ctx)` method** returning a structured
+  `PreviewResult | null | Promise<PreviewResult | null>`. Modules implement
+  this to self-report what side-effects executing the call would produce.
+  Detection mirrors `preflight()` / `stream()` (`typeof module.preview ===
+  'function'`).
+- **`PreviewResult` and `Change` types** — `Change` requires `action`,
+  `target`, `summary` (free-form strings); `before` / `after` are optional
+  `unknown` snapshots. `x-*` extension fields are permitted on `Change` records.
+- **`TPreviewResult` and `TChange` TypeBox schemas** exported alongside the
+  types for runtime validation / wire-format use.
+- **`PreflightResult.predictedChanges?: Change[]`** — populated by
+  `Executor.validate()` when the resolved module implements `preview()` and it
+  returns a non-null `PreviewResult`. Existing consumers reading `.valid`,
+  `.checks`, `.requiresApproval`, `.errors` are unaffected.
+- **`Executor.validate()` integration** — invokes `module.preview()` after the
+  standard validation pipeline succeeds, awaiting the result if it's a
+  Promise. Exceptions (sync throw or async reject) are treated as advisory
+  warnings via a `module_preview` check entry and do **not** fail validation
+  — mirrors `preflight()` semantics (RFC Open Question 1).
+- **`TChange` schema upgraded to `Type.Unsafe<Change>` form** with raw JSON
+  Schema `patternProperties: { "^x-": {} }` + `additionalProperties: false`
+  in line with the upstream apcore RFC iter-11 cross-SDK schema-encoding
+  table (apcore commit
+  [`81df336`](https://github.com/aiperceivable/apcore/commit/81df336)). A
+  custom `apcore:Change` TypeBox kind is registered so `Value.Check(TChange,
+  ...)` accepts arbitrary `x-*` extension keys and rejects unknown non-`x-`
+  additional keys, closing the runtime-validation gap left by the previous
+  `Type.Object` form. Conformance test added: a `Change` with `x-foo` /
+  `x-count` round-trips through `Executor.validate()` and passes
+  `Value.Check`, while a `Change` with a plain `random_key` fails.
+
+> **Note:** This is a **speculative implementation** ahead of formal upstream
+> RFC acceptance. The RFC at `apcore/docs/spec/rfc-preview-method.md` is in
+> `Draft / RFC` status; field names and semantics may shift before the RFC
+> is accepted into PROTOCOL_SPEC.
+
 ## [0.20.0] - 2026-05-05
 
 ### Added
