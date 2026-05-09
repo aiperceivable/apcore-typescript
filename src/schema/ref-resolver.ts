@@ -2,15 +2,12 @@
  * $ref resolution for JSON Schema documents following Algorithm A05.
  */
 
+import { existsSync, readFileSync } from 'node:fs';
+import * as nodePath from 'node:path';
+import { dirname, resolve } from 'node:path';
 import yaml from 'js-yaml';
 import { SchemaCircularRefError, SchemaNotFoundError, SchemaParseError } from '../errors.js';
 import { deepCopy } from '../utils/index.js';
-
-// Lazy-load Node.js built-in modules for browser compatibility
-let _nodeFs: typeof import('node:fs') | null = null;
-let _nodePath: typeof import('node:path') | null = null;
-try { _nodeFs = await import('node:fs'); } catch { /* browser environment */ }
-try { _nodePath = await import('node:path'); } catch { /* browser environment */ }
 
 const INLINE_SENTINEL = '__inline__';
 
@@ -20,7 +17,6 @@ export class RefResolver {
   private _fileCache: Map<string, Record<string, unknown>> = new Map();
 
   constructor(schemasDir: string, maxDepth: number = 32) {
-    const { resolve } = _nodePath!;
     this._schemasDir = resolve(schemasDir);
     this._maxDepth = maxDepth;
   }
@@ -131,7 +127,6 @@ export class RefResolver {
   }
 
   private _parseRef(refString: string, currentFile: string | null): [string, string] {
-    const { resolve, dirname } = _nodePath!;
     if (refString.startsWith('#')) {
       const pointer = refString.slice(1);
       if (currentFile) return [currentFile, pointer];
@@ -157,15 +152,14 @@ export class RefResolver {
   }
 
   private _assertWithinSchemasDir(resolvedPath: string, refString: string): void {
-    const pathMod = _nodePath!;
     if (resolvedPath === this._schemasDir) return;
-    const rel = pathMod.relative(this._schemasDir, resolvedPath);
+    const rel = nodePath.relative(this._schemasDir, resolvedPath);
     // A path is inside schemasDir iff its relative form is non-empty, not
     // absolute, and does not start with a parent-directory traversal segment.
     // Using path.relative() makes this check cross-platform — the previous
     // startsWith(schemasDir + '/') check was hard-coded to POSIX separators
     // and silently disabled on Windows where resolve() emits backslash paths.
-    if (!rel || pathMod.isAbsolute(rel) || rel === '..' || rel.startsWith('..' + pathMod.sep)) {
+    if (!rel || nodePath.isAbsolute(rel) || rel === '..' || rel.startsWith('..' + nodePath.sep)) {
       throw new SchemaNotFoundError(
         `Reference '${refString}' resolves outside schemas directory`,
       );
@@ -173,7 +167,6 @@ export class RefResolver {
   }
 
   private _convertCanonicalToPath(uri: string): [string, string] {
-    const { resolve } = _nodePath!;
     const remainder = uri.slice('apcore://'.length);
     const parts = remainder.split('/');
     const canonicalId = parts[0];
@@ -216,8 +209,6 @@ export class RefResolver {
       return this._fileCache.get(INLINE_SENTINEL) ?? {};
     }
 
-    const { resolve } = _nodePath!;
-    const { existsSync, readFileSync } = _nodeFs!;
     const resolved = resolve(filePath);
     const cached = this._fileCache.get(resolved);
     if (cached !== undefined) return cached;

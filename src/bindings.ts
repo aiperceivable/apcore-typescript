@@ -2,23 +2,12 @@
  * YAML binding loader for zero-code-modification module integration.
  */
 
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import { type TSchema, Type } from '@sinclair/typebox';
 import yaml from 'js-yaml';
 import { FunctionModule } from './decorator.js';
 
-// Lazy-load Node.js built-in modules for browser compatibility
-let _nodeFs: typeof import('node:fs') | null = null;
-let _nodePath: typeof import('node:path') | null = null;
-try {
-  _nodeFs = await import('node:fs');
-} catch {
-  /* browser environment */
-}
-try {
-  _nodePath = await import('node:path');
-} catch {
-  /* browser environment */
-}
 import {
   BindingCallableNotFoundError,
   BindingFileInvalidError,
@@ -83,8 +72,6 @@ function parseAnnotations(raw: Record<string, unknown>): ModuleAnnotations {
 
 export class BindingLoader {
   async loadBindings(filePath: string, registry: Registry): Promise<FunctionModule[]> {
-    const { readFileSync } = _nodeFs!;
-    const { dirname } = _nodePath!;
     const bindingFileDir = dirname(filePath);
 
     let content: string;
@@ -151,8 +138,6 @@ export class BindingLoader {
     registry: Registry,
     pattern: string = '*.binding.yaml',
   ): Promise<FunctionModule[]> {
-    const { existsSync, statSync, readdirSync } = _nodeFs!;
-    const { join } = _nodePath!;
     if (!existsSync(dirPath) || !statSync(dirPath).isDirectory()) {
       throw new BindingFileInvalidError(dirPath, 'Directory does not exist');
     }
@@ -234,8 +219,6 @@ export class BindingLoader {
     bindingFileDir: string,
     filePath?: string,
   ): Promise<FunctionModule> {
-    const { existsSync, readFileSync } = _nodeFs!;
-    const { resolve } = _nodePath!;
     const targetString = binding['target'] as string;
     const func = await this.resolveTarget(targetString);
     const moduleId = binding['module_id'] as string;

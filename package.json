@@ -1,17 +1,29 @@
 {
   "name": "apcore-js",
-  "version": "0.21.0",
-  "description": "AI-Perceivable Core — schema-driven module standard",
+  "version": "0.21.1",
+  "description": "AI-Perceivable Core \u2014 schema-driven module standard",
   "type": "module",
   "main": "./dist/index.js",
+  "browser": "./dist/browser/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
-      "import": "./dist/index.js",
-      "types": "./dist/index.d.ts"
+      "types": {
+        "browser": "./dist/browser/index.d.ts",
+        "default": "./dist/index.d.ts"
+      },
+      "browser": "./dist/browser/index.js",
+      "node": "./dist/index.js",
+      "default": "./dist/index.js"
     }
   },
-  "sideEffects": false,
+  "sideEffects": [
+    "./dist/index.js",
+    "./dist/acl-file.js",
+    "./dist/middleware/tracing-otel-default.js",
+    "./dist/sys-modules/install.js",
+    "./dist/sys-modules/overrides-file.js"
+  ],
   "files": [
     "dist",
     "README.md"

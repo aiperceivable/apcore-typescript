@@ -2,14 +2,10 @@
  * Directory scanner for discovering TypeScript/JavaScript extension modules.
  */
 
+import { statSync, readdirSync, lstatSync, realpathSync } from 'node:fs';
+import { resolve, relative, join, extname, basename, sep } from 'node:path';
 import { ConfigError, ConfigNotFoundError } from '../errors.js';
 import type { DiscoveredModule } from './types.js';
-
-// Lazy-load Node.js built-in modules for browser compatibility
-let _nodeFs: typeof import('node:fs') | null = null;
-let _nodePath: typeof import('node:path') | null = null;
-try { _nodeFs = await import('node:fs'); } catch { /* browser environment */ }
-try { _nodePath = await import('node:path'); } catch { /* browser environment */ }
 
 const SKIP_DIR_NAMES = new Set(['node_modules', '__pycache__']);
 const VALID_EXTENSIONS = new Set(['.ts', '.js']);
@@ -17,7 +13,7 @@ const SKIP_SUFFIXES = ['.d.ts', '.test.ts', '.test.js', '.spec.ts', '.spec.js'];
 
 function existsAndIsDir(p: string): boolean {
   try {
-    return _nodeFs!.statSync(p).isDirectory();
+    return statSync(p).isDirectory();
   } catch {
     return false;
   }
@@ -28,8 +24,6 @@ export function scanExtensions(
   maxDepth: number = 8,
   followSymlinks: boolean = false,
 ): DiscoveredModule[] {
-  const { readdirSync, statSync, lstatSync, realpathSync } = _nodeFs!;
-  const { resolve, relative, join, extname, basename, sep } = _nodePath!;
   const rootResolved = resolve(root);
   if (!existsAndIsDir(rootResolved)) {
     throw new ConfigNotFoundError(rootResolved);
@@ -150,7 +144,6 @@ export function scanMultiRoot(
   maxDepth: number = 8,
   followSymlinks: boolean = false,
 ): DiscoveredModule[] {
-  const { basename } = _nodePath!;
   const allResults: DiscoveredModule[] = [];
   const seenNamespaces = new Set<string>();
 

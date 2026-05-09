@@ -3,7 +3,7 @@
  */
 
 import type { Config } from '../config.js';
-import { getDefault } from '../config.js';
+import { getDefault } from '../config-defaults.js';
 import type { Context } from '../context.js';
 import type { ApCoreEvent, EventEmitter } from '../events/emitter.js';
 import { InvalidInputError, ModuleNotFoundError } from '../errors.js';
@@ -11,7 +11,7 @@ import type { ModuleAnnotations, ModuleExample } from '../module.js';
 import { detectIdConflicts } from './conflicts.js';
 import { resolveDependencies } from './dependencies.js';
 import { resolveEntryPoint } from './entry-point.js';
-import { mergeModuleMetadata, parseDependencies } from './metadata.js';
+import { mergeModuleMetadata, parseDependencies } from './metadata-pure.js';
 import { _discoverMultiClass } from './multi-class.js';
 import { getSchema, exportSchema as exportSchemaFn } from './schema-export.js';
 import { toStrictSchema } from '../schema/strict.js';

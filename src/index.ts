@@ -12,7 +12,19 @@
  *   const apcore = new APCore();
  *   export { apcore };
  *   // then: apcore.call('module.id', inputs);
+ *
+ * This file is the Node entry point. `package.json` `exports` routes browser
+ * bundlers to `./browser/index.ts` instead, which exposes a curated subset
+ * that does not depend on `node:*` builtins.
  */
+
+// Side-effect installs: wire Node-only filesystem loaders onto the
+// browser-safe runtime modules. Must be imported before any user-facing
+// re-export so the loaders are in place before APCore consumers run.
+import './acl-file.js';
+import './middleware/tracing-otel-default.js';
+import './sys-modules/overrides-file.js';
+import './sys-modules/install.js';
 
 // Client
 export { APCore } from './client.js';

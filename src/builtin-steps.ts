@@ -12,7 +12,7 @@ import type { ACL } from './acl.js';
 import type { ApprovalHandler, ApprovalResult } from './approval.js';
 import { createApprovalRequest } from './approval.js';
 import type { Config } from './config.js';
-import { getDefault } from './config.js';
+import { getDefault } from './config-defaults.js';
 import { Context } from './context.js';
 import {
   ACLDeniedError,
@@ -34,7 +34,7 @@ import { DEFAULT_ANNOTATIONS } from './module.js';
 import type { PipelineContext, Step, StepResult } from './pipeline.js';
 import { ExecutionStrategy } from './pipeline.js';
 import type { Registry } from './registry/registry.js';
-import { jsonSchemaToTypeBox } from './schema/loader.js';
+import { jsonSchemaToTypeBox } from './schema/loader-pure.js';
 import { SchemaValidator } from './schema/validator.js';
 import { guardCallChain } from './utils/call-chain.js';
 

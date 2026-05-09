@@ -3,7 +3,7 @@
  */
 
 import type { TSchema } from '@sinclair/typebox';
-import { Config } from './config.js';
+import type { Config } from './config.js';
 import type { Context } from './context.js';
 import { FunctionModule, module as createModule } from './decorator.js';
 import type { ApCoreEvent, EventSubscriber } from './events/emitter.js';
@@ -13,8 +13,30 @@ import type { Middleware } from './middleware/index.js';
 import type { ModuleAnnotations, ModuleExample, PreflightResult } from './module.js';
 import type { MetricsCollector } from './observability/metrics.js';
 import { Registry } from './registry/registry.js';
-import { registerSysModules } from './sys-modules/registration.js';
 import type { SysModulesContext } from './sys-modules/registration.js';
+
+/**
+ * Optional Node-side hook that auto-registers system modules when an
+ * `APCore` is constructed with a non-null `Config`. Installed by the
+ * Node entry's side-effect import of `./sys-modules/install.ts`.
+ *
+ * Browser bundles never import the installer, so `_sysModulesInstaller`
+ * stays `null` and the constructor skips auto-registration. Browser
+ * callers either pass `config: undefined` (the recommended path) or
+ * register sys-modules manually after construction.
+ */
+type SysModulesInstaller = (
+  registry: Registry,
+  executor: Executor,
+  config: Config,
+  metricsCollector?: MetricsCollector | null,
+) => SysModulesContext;
+let _sysModulesInstaller: SysModulesInstaller | null = null;
+
+/** @internal — used by the Node-only `./sys-modules/install.ts` side-effect. */
+export function _setSysModulesInstaller(fn: SysModulesInstaller): void {
+  _sysModulesInstaller = fn;
+}
 
 export interface APCoreOptions {
   registry?: Registry;
@@ -63,9 +85,13 @@ export class APCore {
         config: this.config,
       });
 
-    // Auto-register sys modules if config is provided and enabled
-    if (this.config) {
-      this._sysModulesContext = registerSysModules(
+    // Auto-register sys modules if config is provided AND the Node-side
+    // installer is wired up. In browser bundles `_sysModulesInstaller`
+    // remains null, so this branch is skipped — keeping the chain to
+    // `node:fs`/`node:path` (sys-modules/registration.ts and friends)
+    // out of the browser closure.
+    if (this.config && _sysModulesInstaller) {
+      this._sysModulesContext = _sysModulesInstaller(
         this.registry,
         this.executor,
         this.config,

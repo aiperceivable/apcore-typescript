@@ -54,14 +54,29 @@ describe('dist entry points exist', () => {
     expect(existsSync(typesPath), `${pkg.types} should exist`).toBe(true);
   });
 
-  it('exports "." import entry exists', () => {
-    const importPath = resolve(ROOT, pkg.exports['.'].import);
-    expect(existsSync(importPath), `exports["."].import should exist`).toBe(true);
+  it('exports "." node entry exists', () => {
+    const nodeEntry = pkg.exports['.'].node;
+    expect(existsSync(resolve(ROOT, nodeEntry)), `${nodeEntry} should exist`).toBe(true);
   });
 
-  it('exports "." types entry exists', () => {
-    const typesPath = resolve(ROOT, pkg.exports['.'].types);
-    expect(existsSync(typesPath), `exports["."].types should exist`).toBe(true);
+  it('exports "." browser entry exists', () => {
+    const browserEntry = pkg.exports['.'].browser;
+    expect(existsSync(resolve(ROOT, browserEntry)), `${browserEntry} should exist`).toBe(true);
+  });
+
+  it('exports "." default entry exists', () => {
+    const defaultEntry = pkg.exports['.'].default;
+    expect(existsSync(resolve(ROOT, defaultEntry)), `${defaultEntry} should exist`).toBe(true);
+  });
+
+  it('exports "." types entries exist for both conditions', () => {
+    const types = pkg.exports['.'].types;
+    expect(existsSync(resolve(ROOT, types.browser)), `${types.browser} should exist`).toBe(true);
+    expect(existsSync(resolve(ROOT, types.default)), `${types.default} should exist`).toBe(true);
+  });
+
+  it('top-level "browser" field points at the browser build', () => {
+    expect(existsSync(resolve(ROOT, pkg.browser)), `${pkg.browser} should exist`).toBe(true);
   });
 });
 

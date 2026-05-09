@@ -3,6 +3,10 @@
  * Supports legacy mode (flat YAML) and namespace mode (apcore top-level key).
  */
 
+import { existsSync, readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+import process from 'node:process';
 import yaml from 'js-yaml';
 import {
   ConfigBindError,
@@ -14,37 +18,13 @@ import {
   ConfigNamespaceReservedError,
   ConfigNotFoundError,
 } from './errors.js';
-import { jsonSchemaToTypeBox } from './schema/loader.js';
+import { jsonSchemaToTypeBox } from './schema/loader-pure.js';
 import { SchemaValidator } from './schema/validator.js';
+import { DEFAULTS, getDefault } from './config-defaults.js';
 
-// Lazy-load Node.js built-in modules for browser compatibility
-let _nodeFs: typeof import('node:fs') | null = null;
-try {
-  _nodeFs = await import('node:fs');
-} catch {
-  /* browser environment */
-}
-
-let _nodeProcess: typeof import('node:process') | null = null;
-try {
-  _nodeProcess = await import('node:process');
-} catch {
-  /* browser environment */
-}
-
-let _nodePath: typeof import('node:path') | null = null;
-try {
-  _nodePath = await import('node:path');
-} catch {
-  /* browser environment */
-}
-
-let _nodeOs: typeof import('node:os') | null = null;
-try {
-  _nodeOs = await import('node:os');
-} catch {
-  /* browser environment */
-}
+// Re-exported so existing `import { DEFAULTS, getDefault } from './config.js'`
+// paths keep working unchanged.
+export { DEFAULTS, getDefault } from './config-defaults.js';
 
 /** Environment variable prefix for legacy overrides. */
 const ENV_PREFIX = 'APCORE_';
@@ -87,75 +67,6 @@ const CONSTRAINTS: Record<string, [(v: unknown) => boolean, string]> = {
     'must be a positive integer',
   ],
 };
-
-/**
- * Default configuration values for legacy mode.
- *
- * NOTE: `version` is the frozen baseline for legacy-mode configs (those that
- * omit an explicit `version` field). It identifies the spec version whose
- * semantics legacy mode parses against, NOT the current SDK version. Do not
- * bump this with each spec MINOR — only when legacy-mode parsing semantics
- * actually change.
- */
-const DEFAULTS: Record<string, unknown> = {
-  version: '0.16.0',
-  extensions: {
-    root: './extensions',
-    auto_discover: true,
-    max_depth: 8,
-    follow_symlinks: false,
-  },
-  schema: {
-    root: './schemas',
-    strategy: 'yaml_first',
-    max_ref_depth: 32,
-  },
-  acl: {
-    root: './acl',
-    default_effect: 'deny',
-  },
-  executor: {
-    default_timeout: 30000,
-    global_timeout: 60000,
-    max_call_depth: 32,
-    max_module_repeat: 3,
-  },
-  observability: {
-    tracing: {
-      enabled: false,
-      sampling_rate: 1.0,
-    },
-    metrics: {
-      enabled: false,
-    },
-  },
-  project: {
-    name: 'apcore',
-  },
-  sys_modules: {
-    enabled: false,
-  },
-  stream: {
-    max_merge_depth: 32,
-  },
-};
-
-/**
- * Single source of truth for default values.
- * Components MUST use this instead of hardcoding defaults.
- */
-export function getDefault(key: string, fallback?: unknown): unknown {
-  const parts = key.split('.');
-  let node: unknown = DEFAULTS;
-  for (const part of parts) {
-    if (node != null && typeof node === 'object' && part in (node as Record<string, unknown>)) {
-      node = (node as Record<string, unknown>)[part];
-    } else {
-      return fallback;
-    }
-  }
-  return node;
-}
 
 // ---------------------------------------------------------------------------
 // Namespace registry (module-level singletons)
@@ -256,7 +167,7 @@ function coerceEnvValue(value: string): unknown {
 
 export function applyEnvOverrides(data: Record<string, unknown>): Record<string, unknown> {
   const result = JSON.parse(JSON.stringify(data)) as Record<string, unknown>;
-  const env = _nodeProcess?.env ?? {};
+  const env = process.env;
   for (const [envKey, envValue] of Object.entries(env)) {
     if (!envKey.startsWith(ENV_PREFIX) || envValue === undefined) continue;
     const suffix = envKey.slice(ENV_PREFIX.length);
@@ -384,7 +295,7 @@ function resolveEnvSuffix(
 
 export function applyNamespaceEnvOverrides(data: Record<string, unknown>): Record<string, unknown> {
   const result = JSON.parse(JSON.stringify(data)) as Record<string, unknown>;
-  const env = _nodeProcess?.env ?? {};
+  const env = process.env;
 
   // Sort registrations by envPrefix length descending (longest first)
   const registrations = Array.from(_globalNsRegistry.values())
@@ -483,12 +394,7 @@ function resolveNamespacePath(key: string): { namespace: string; subPath: string
  * Returns the path of the first found file, or null if none found.
  */
 export function discoverConfigFile(): string | null {
-  const env = _nodeProcess?.env ?? {};
-  const existsSync = _nodeFs?.existsSync;
-  const join = _nodePath?.join;
-  const homedir = _nodeOs?.homedir;
-
-  if (!existsSync || !join || !homedir) return null;
+  const env = process.env;
 
   const envPath = env['APCORE_CONFIG_FILE'];
   if (envPath) return envPath;
@@ -499,9 +405,8 @@ export function discoverConfigFile(): string | null {
   }
 
   const home = homedir();
-  // W-10: Use lazy-loaded _nodeProcess so this works in non-Node environments.
   const xdgConfig =
-    (_nodeProcess?.platform ?? 'linux') === 'darwin'
+    process.platform === 'darwin'
       ? join(home, 'Library', 'Application Support', 'apcore', 'config.yaml')
       : join(home, '.config', 'apcore', 'config.yaml');
   if (existsSync(xdgConfig)) return xdgConfig;
@@ -541,9 +446,19 @@ export class Config {
   // Static namespace registry methods
   // -------------------------------------------------------------------------
 
-  /** Returns true if the current environment is a browser (filesystem not available). */
+  /**
+   * Returns true if the current environment is a browser (filesystem not
+   * available).
+   *
+   * @deprecated since v0.21.1 — environment detection is now bundler-time
+   * via `package.json` `exports.browser` / `node` conditions, so the Node
+   * build always returns `false` and the browser build never imports
+   * `Config` at all. This method is retained for downstream code that
+   * historically branched on it; remove your call sites and the method
+   * itself will be removed in a future minor release.
+   */
   static isBrowser(): boolean {
-    return _nodeFs === null;
+    return typeof process === 'undefined' || !process.versions?.node;
   }
 
   /**
@@ -654,11 +569,6 @@ export class Config {
       yamlPath = found;
     }
 
-    // C-5: Guard against non-Node environments where fs may not be available.
-    if (_nodeFs === null) {
-      throw new ConfigError(`Cannot load config file '${yamlPath}': filesystem not available`);
-    }
-    const { existsSync, readFileSync } = _nodeFs;
     if (!existsSync(yamlPath)) {
       throw new ConfigNotFoundError(yamlPath);
     }
@@ -839,10 +749,6 @@ export class Config {
     let mountData: Record<string, unknown>;
 
     if (hasFile) {
-      if (_nodeFs === null) {
-        throw new ConfigMountError('Cannot mount from file: filesystem not available');
-      }
-      const { existsSync, readFileSync } = _nodeFs;
       if (!existsSync(fromFile!)) {
         throw new ConfigMountError(`Mount file not found: ${fromFile}`);
       }
@@ -1023,17 +929,13 @@ export class Config {
     }
     if (typeof schema === 'string') {
       try {
-        // Avoid eager top-level `node:fs` import — file-mode schemas are uncommon
-        // and the dynamic require keeps the browser bundle clean.
-        // eslint-disable-next-line @typescript-eslint/no-require-imports
-        const fs = require('node:fs') as typeof import('node:fs');
-        if (!fs.existsSync(schema)) {
+        if (!existsSync(schema)) {
           console.warn(
             `[apcore:config] Schema file for namespace '${namespace}' not found: ${schema}`,
           );
           return null;
         }
-        const raw = fs.readFileSync(schema, 'utf-8');
+        const raw = readFileSync(schema, 'utf-8');
         return JSON.parse(raw) as Record<string, unknown>;
       } catch (e) {
         console.warn(

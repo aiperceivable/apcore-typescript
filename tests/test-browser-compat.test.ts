@@ -1,24 +1,23 @@
 /**
- * Browser-compatibility tests for lazy-loaded node: modules.
+ * Pure-logic APIs and Node-side filesystem behaviour.
  *
- * After the lazy-load refactoring, ALL source files use top-level
- * `await import('node:...')` wrapped in try/catch instead of static
- * `import ... from 'node:fs'` / `'node:path'` so that a browser bundler
- * can tree-shake or polyfill them without crashing at parse time.
+ * Browser compatibility is now enforced at the package level via two
+ * separate builds wired through `package.json` `exports`:
+ *   - `apcore-js` Node entry  → `dist/index.js` (uses static `node:*` imports)
+ *   - `apcore-js` browser entry → `dist/browser/index.js` (zero `node:*`)
  *
- * These tests verify:
- * 1. Every refactored module can be dynamically imported (top-level await works).
- * 2. Pure-logic APIs that never touch the filesystem work in isolation.
- * 3. The Node.js environment correctly populates the lazy-load variables
- *    (filesystem-dependent APIs still function).
+ * The browser entry's transitive import graph is audited by
+ * `tests/browser-entry.test.ts`. This file focuses on the runtime
+ * behaviour of the Node-side surface plus the pure helpers that are
+ * shared by both builds.
  */
 
 import { describe, it, expect } from 'vitest';
 
 // ─── 1. Module import health ───────────────────────────────────────
-// Ensures top-level `await import('node:...')` does not break module loading.
+// Ensures every source module loads cleanly under Node.
 
-describe('lazy-load module imports', () => {
+describe('module imports', () => {
   it('src/acl.ts can be imported', async () => {
     const mod = await import('../src/acl.js');
     expect(mod.ACL).toBeDefined();
@@ -227,10 +226,9 @@ describe('Registry pure-logic (no filesystem)', () => {
 });
 
 // ─── 3. Filesystem-dependent APIs work in Node.js ──────────────────
-// Verifies that lazy-loaded node:fs / node:path are correctly populated
-// and the filesystem-dependent code paths still function.
+// Verifies the Node-side build wires up node:fs / node:path correctly.
 
-describe('lazy-loaded node: modules are available in Node.js', () => {
+describe('node: modules wired up in Node.js', () => {
   it('ACL.load() uses lazy-loaded fs successfully', async () => {
     const { writeFileSync, mkdtempSync, rmSync } = await import('node:fs');
     const { join } = await import('node:path');
@@ -313,34 +311,48 @@ rules:
   });
 });
 
-// ─── 4. No static node: imports in source ──────────────────────────
+// ─── 4. No top-level `await import('node:*')` chains ──────────────
+//
+// Top-level await in module-init code chains through bundler-generated
+// import graphs and deadlocks older `bun` runtimes (root cause of the
+// 0.21.0 init hang). Static `import 'node:*'` is allowed for Node-only
+// files; lazy `await import('node:*')` is allowed only inside async
+// function bodies (deferred to method invocation time).
 
-describe('source files have no top-level static node: imports', () => {
-  it('no "import ... from node:" at line start in src/', async () => {
-    const { readFileSync } = await import('node:fs');
+describe('no top-level await import("node:*")', () => {
+  it('no source file initialises lazily at module top-level', async () => {
+    const { readFileSync, readdirSync, statSync } = await import('node:fs');
     const { resolve, join } = await import('node:path');
 
-    // Files that were refactored to lazy-load
-    const files = [
-      'src/acl.ts',
-      'src/bindings.ts',
-      'src/schema/loader.ts',
-      'src/schema/ref-resolver.ts',
-      'src/registry/metadata.ts',
-      'src/registry/scanner.ts',
-      'src/registry/registry.ts',
-      'src/trace-context.ts',
-      'src/observability/tracing.ts',
-      'src/observability/context-logger.ts',
-    ];
+    const srcRoot = resolve(import.meta.dirname, '..', 'src');
 
-    const root = resolve(import.meta.dirname, '..');
-    const staticImportRe = /^import\s+.*from\s+['"]node:/m;
+    function walk(dir: string): string[] {
+      const out: string[] = [];
+      for (const name of readdirSync(dir)) {
+        const full = join(dir, name);
+        if (statSync(full).isDirectory()) out.push(...walk(full));
+        else if (full.endsWith('.ts') && !full.endsWith('.d.ts')) out.push(full);
+      }
+      return out;
+    }
 
-    for (const file of files) {
-      const content = readFileSync(join(root, file), 'utf-8');
-      const match = staticImportRe.test(content);
-      expect(match, `${file} should not have static node: imports`).toBe(false);
+    // A top-level await sits at column 0 (no leading whitespace). Inside an
+    // async function body the same statement is indented and is fine —
+    // it only fires when the method is called.
+    const topLevelDeclRe = /^(?:const|let|var)\s+\w+\s*=\s*await\s+import\s*\(\s*['"]node:/m;
+    const topLevelAssignRe = /^\w+\s*=\s*await\s+import\s*\(\s*['"]node:/m;
+    const bareTopLevelAwaitRe = /^await\s+import\s*\(\s*['"]node:/m;
+
+    for (const file of walk(srcRoot)) {
+      const content = readFileSync(file, 'utf-8');
+      const hit =
+        topLevelDeclRe.test(content) ||
+        topLevelAssignRe.test(content) ||
+        bareTopLevelAwaitRe.test(content);
+      expect(
+        hit,
+        `${file.slice(srcRoot.length + 1)} must not use top-level await import('node:*')`,
+      ).toBe(false);
     }
   });
 });

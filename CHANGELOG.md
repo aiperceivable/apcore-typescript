@@ -6,6 +6,118 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [0.21.1] - 2026-05-09
+
+Patch release. Fixes the init-time deadlock observed under older Bun
+runtimes when `apcore-js` is consumed via the `apcore-cli` /
+`apcore-toolkit` chain, and ships a separate browser build so consumers
+that bundle apcore-js for the browser stop pulling Node built-ins into
+their bundle. Public Node API is unchanged — every existing
+`import { ... } from 'apcore-js'` keeps working.
+
+### Fixed
+
+- **Init-time deadlock under Bun (root cause: 18 top-level
+  `await import('node:*')` chains).** The browser-compat soft-import
+  pattern (`let _nodeFs = null; try { _nodeFs = await import('node:fs') }
+  catch {}` at module top) chained through the import graph and
+  deadlocked Bun 1.2.x at module-resolution time. Every soft-import has
+  been converted: Node-only files now use static `import * as fs from
+  'node:fs'`; browser-shared files keep no top-level `await` at all.
+  Touches `acl.ts`, `bindings.ts`, `config.ts`, `schema/loader.ts`,
+  `schema/ref-resolver.ts`, `registry/scanner.ts`,
+  `registry/metadata.ts`, `utils/index.ts`. `registry/registry.ts`
+  retains its existing in-method lazy `await import(...)` pattern,
+  which is browser-bundler-safe and never fired the deadlock.
+
+### Added
+
+- **Browser build (`./dist/browser/index.js`) selected automatically
+  via `package.json` `exports.browser`.** Consumers keep the unified
+  `import { APCore, Registry, Executor, ... } from 'apcore-js'` —
+  bundlers (Vite / Next.js / webpack 5 / esbuild / Rollup / Parcel)
+  pick the browser build at resolve time; Node and Bun pick the Node
+  build via the `node` / `default` condition. A top-level
+  `"browser": "./dist/browser/index.js"` field is also published as a
+  fallback for legacy webpack 4. **No `./browser` subpath is exposed**
+  — the unified entry is the only supported import string.
+- **`contentHashAsync(schema)`** — WebCrypto SubtleCrypto-backed
+  SHA-256 of the canonical JSON form. Output matches the existing
+  Node-only sync `contentHash` byte-for-byte (PROTOCOL_SPEC
+  §schema-system §4.15.5). Use this from browser code; the sync
+  variant remains Node-only because `node:crypto.createHash` is
+  unavailable in the browser.
+- **`tests/browser-entry.test.ts`** — static import-graph guard +
+  runtime contract tests. Walks every relative static import reachable
+  from `src/browser/index.ts` and fails CI if any `node:*` reference
+  appears in the closure. Pins the runtime contracts: `ACL.load()`
+  throws a guidance error in browser builds, `Registry` +
+  `FunctionModule` + `Executor` + `AutoApproveHandler` chain runs
+  end-to-end in browser, and `contentHashAsync` agrees with the sync
+  `contentHash` digest across a fixture set (cross-language hash
+  alignment).
+
+### Changed
+
+- **Side-effect installer pattern for Node-only methods on browser-
+  shared classes.** `ACL.load(yamlPath)`, `registerSysModules`'s
+  `overridesPath` file loader, `TracingMiddleware`'s
+  `@opentelemetry/api` auto-detection, and `APCore`'s sys-modules
+  auto-registration all moved into Node-only side-effect modules
+  (`src/acl-file.ts`, `src/sys-modules/overrides-file.ts`,
+  `src/middleware/tracing-otel-default.ts`, `src/sys-modules/install.ts`)
+  imported by the Node entry. Browser bundles never reach these
+  files, so `node:fs` / `node:module` stay out of the closure; calls
+  to the Node-only methods from browser code throw a clear error
+  directing the caller to construct the equivalent in-memory.
+- **`Config.isBrowser()` deprecated** (`@deprecated`). Environment
+  detection is now bundler-time via the `exports` conditions. The
+  Node build always returns `false`; the browser build never imports
+  `Config` at all. Method retained for downstream code that
+  historically branched on it; will be removed in a future minor.
+- **`package.json` `sideEffects` from `false` to an explicit allow-
+  list** (`./dist/index.js`, `./dist/acl-file.js`,
+  `./dist/middleware/tracing-otel-default.js`,
+  `./dist/sys-modules/install.js`,
+  `./dist/sys-modules/overrides-file.js`). The previous blanket
+  `false` would let aggressive tree-shakers remove the side-effect
+  installer imports, leaving Node consumers with the throw stubs.
+- **Pure helpers extracted into runtime-neutral files** — `DEFAULTS`
+  / `getDefault` from `config.ts` → `src/config-defaults.ts`;
+  `parseDependencies` / `mergeModuleMetadata` from
+  `registry/metadata.ts` → `src/registry/metadata-pure.ts`;
+  `jsonSchemaToTypeBox` / `contentHashAsync` /
+  `sortedKeysStringify` from `schema/loader.ts` →
+  `src/schema/loader-pure.ts`. Consumers continue importing from the
+  original paths (the originals re-export); browser entry imports
+  from the pure files directly.
+- **`tsconfig.build.json` `stripInternal: true`.** Symbols marked
+  `@internal` (`_setAclFileLoader`, `_setSysModulesInstaller`,
+  `_setOverridesLoader`, `_setDefaultTrace`, `_parseAclRule`,
+  `ACL._setYamlPath`) used by the side-effect installer pattern are
+  now omitted from the published `.d.ts` bundle.
+- **`utils/randomHex` no longer imports `node:crypto`.** Uses
+  `globalThis.crypto.getRandomValues` exclusively (available in Node
+  ≥ 19 and every browser / edge runtime). The `node:crypto.webcrypto`
+  fallback was dead code on every supported runtime.
+
+### Migration
+
+No source code changes required for existing Node consumers; the
+public API surface is byte-identical from the Node entry. Browser
+consumers that previously got a partial runtime via the dynamic-
+import soft-load pattern (e.g. `import { Registry } from 'apcore-js'`
+in a Next.js client component) keep working unchanged — the bundler
+now resolves to the curated browser build instead, which exposes
+every runtime symbol the soft-import pattern previously exposed
+minus the filesystem-bound classes (`Config`, `BindingLoader`,
+`SchemaLoader`, `RefResolver`, `contentHash` sync). Code that was
+already calling those in the browser was already broken at runtime;
+it now fails at import resolution with a clearer error.
+
+Cross-SDK parity unchanged. PROTOCOL_SPEC version unchanged.
+
+
 ## [0.21.0] - 2026-05-06
 
 Aligns apcore-typescript with PROTOCOL_SPEC.md v0.21.0 (apcore commit

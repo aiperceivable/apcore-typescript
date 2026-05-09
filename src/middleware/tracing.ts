@@ -10,7 +10,6 @@
  *     are silent no-ops.
  */
 
-import { createRequire } from 'node:module';
 import type { Context } from '../context.js';
 import { Middleware } from './base.js';
 
@@ -35,15 +34,17 @@ export interface OtelTracer {
   startSpan(name: string, options?: Record<string, unknown>): OtelSpan;
 }
 
-// Attempt to load @opentelemetry/api synchronously via Node.js require.
-// If the package is absent, _defaultTrace remains null and TracingMiddleware
-// silently becomes a no-op unless a tracer is explicitly injected.
-const _nodeRequire = createRequire(import.meta.url);
+// Default tracer slot. Wired up by the Node-only side-effect module
+// `./tracing-otel-default.ts` which uses `createRequire` to attempt a
+// synchronous load of `@opentelemetry/api`. The browser entry never
+// imports that side-effect file, so `_defaultTrace` stays `null` and
+// `TracingMiddleware` becomes a no-op there unless a tracer is
+// explicitly injected via constructor options.
 let _defaultTrace: { getTracer(name: string): OtelTracer } | null = null;
-try {
-  _defaultTrace = (_nodeRequire('@opentelemetry/api') as { trace: { getTracer(n: string): OtelTracer } }).trace;
-} catch {
-  _defaultTrace = null;
+
+/** @internal — used by `./tracing-otel-default.ts` to install the default tracer. */
+export function _setDefaultTrace(t: { getTracer(name: string): OtelTracer } | null): void {
+  _defaultTrace = t;
 }
 
 export interface TracingMiddlewareOptions {

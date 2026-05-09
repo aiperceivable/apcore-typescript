@@ -2,8 +2,6 @@
  * Auto-registration of sys.* modules and middleware from config.
  */
 
-import * as fs from 'node:fs';
-import * as yaml from 'js-yaml';
 import type { Registry } from '../registry/registry.js';
 import type { Executor } from '../executor.js';
 import type { Config } from '../config.js';
@@ -210,6 +208,19 @@ export interface RegisterSysModulesOptions {
 }
 
 /**
+ * Reader for an overrides YAML file. Installed by the Node-only side-effect
+ * module `./overrides-file.ts`; remains `null` in browser bundles so that
+ * `node:fs` does not enter the browser dependency graph.
+ */
+type OverridesLoader = (path: string) => Record<string, unknown> | null;
+let _overridesLoader: OverridesLoader | null = null;
+
+/** @internal — used by `./overrides-file.ts` to install the Node-side reader. */
+export function _setOverridesLoader(fn: OverridesLoader): void {
+  _overridesLoader = fn;
+}
+
+/**
  * Auto-register all sys.* modules and middleware based on config.
  */
 export function registerSysModules(
@@ -232,18 +243,25 @@ export function registerSysModules(
     return result;
   }
 
-  // Load overrides file and apply after base config
-  if (overridesPath !== null && fs.existsSync(overridesPath)) {
+  // Load overrides file and apply after base config. The actual file
+  // reader is installed by the Node-only side-effect module
+  // `./overrides-file.js` (imported by the package's Node entry). When
+  // running in a browser bundle the loader is unset and overridesPath is
+  // silently ignored.
+  if (overridesPath !== null && _overridesLoader !== null) {
+    // Loaders installed via `_setOverridesLoader` already swallow file IO
+    // errors and return null, but we still defend against a future loader
+    // that throws — preserves the v0.21.0 fail-soft semantics.
+    let parsed: Record<string, unknown> | null = null;
     try {
-      const content = fs.readFileSync(overridesPath, 'utf-8');
-      const parsed = yaml.load(content);
-      if (typeof parsed === 'object' && parsed !== null) {
-        for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
-          config.set(key, value);
-        }
-      }
+      parsed = _overridesLoader(overridesPath);
     } catch (err) {
-      console.warn('[apcore:sys-modules] Failed to load overrides file:', err);
+      console.warn('[apcore:sys-modules] Overrides loader threw:', err);
+    }
+    if (parsed && typeof parsed === 'object') {
+      for (const [key, value] of Object.entries(parsed)) {
+        config.set(key, value);
+      }
     }
   }
 

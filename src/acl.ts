@@ -2,9 +2,8 @@
  * ACL (Access Control List) types and implementation for apcore.
  */
 
-import yaml from 'js-yaml';
 import type { Context } from './context.js';
-import { ACLRuleError, ConfigNotFoundError } from './errors.js';
+import { ACLRuleError } from './errors.js';
 import { matchPattern } from './utils/pattern.js';
 import type { ACLConditionHandler } from './acl-handlers.js';
 import {
@@ -19,9 +18,23 @@ import {
   deepEqual,
 } from './acl-handlers.js';
 
-// Lazy-load Node.js built-in modules for browser compatibility
-let _nodeFs: typeof import('node:fs') | null = null;
-try { _nodeFs = await import('node:fs'); } catch { /* browser environment */ }
+/**
+ * Reader for an ACL YAML file. Installed by the Node-only side-effect
+ * module `./acl-file.ts`; remains `null` in browser bundles so that
+ * `ACL.load()` throws a clear runtime error instead of silently
+ * dragging `node:fs` into the browser closure.
+ */
+type AclFileLoader = (yamlPath: string) => ACL;
+let _aclFileLoader: AclFileLoader | null = null;
+
+/**
+ * @internal — used by `./acl-file.ts` to install the Node-side reader.
+ * Pass `null` to uninstall (used by tests that need to assert the
+ * browser-side guidance error).
+ */
+export function _setAclFileLoader(fn: AclFileLoader | null): void {
+  _aclFileLoader = fn;
+}
 
 export interface ACLRule {
   callers: string[];
@@ -51,7 +64,8 @@ export interface AuditEntry {
 
 export type AuditLogger = (entry: AuditEntry) => void;
 
-function parseAclRule(rawRule: unknown, index: number): ACLRule {
+/** @internal — exported so `./acl-file.ts` can reuse the parser. */
+export function _parseAclRule(rawRule: unknown, index: number): ACLRule {
   if (typeof rawRule !== 'object' || rawRule === null || Array.isArray(rawRule)) {
     throw new ACLRuleError(`Rule ${index} must be a mapping, got ${typeof rawRule}`);
   }
@@ -188,40 +202,19 @@ export class ACL {
   }
 
   static load(yamlPath: string): ACL {
-    const { existsSync, readFileSync } = _nodeFs!;
-    if (!existsSync(yamlPath)) {
-      throw new ConfigNotFoundError(yamlPath);
+    if (_aclFileLoader === null) {
+      throw new ACLRuleError(
+        'ACL.load(yamlPath) requires the Node entry of apcore-js. The browser ' +
+          'build does not bundle the file reader. Construct ACL programmatically ' +
+          'with `new ACL([...rules])` instead.',
+      );
     }
+    return _aclFileLoader(yamlPath);
+  }
 
-    let data: unknown;
-    try {
-      const content = readFileSync(yamlPath, 'utf-8');
-      data = yaml.load(content);
-    } catch (e) {
-      if (e instanceof ConfigNotFoundError) throw e;
-      throw new ACLRuleError(`Invalid YAML in ${yamlPath}: ${e}`);
-    }
-
-    if (typeof data !== 'object' || data === null || Array.isArray(data)) {
-      throw new ACLRuleError(`ACL config must be a mapping, got ${typeof data}`);
-    }
-
-    const dataObj = data as Record<string, unknown>;
-    if (!('rules' in dataObj)) {
-      throw new ACLRuleError("ACL config missing required 'rules' key");
-    }
-
-    const rawRules = dataObj['rules'];
-    if (!Array.isArray(rawRules)) {
-      throw new ACLRuleError(`'rules' must be a list, got ${typeof rawRules}`);
-    }
-
-    const defaultEffect = (dataObj['default_effect'] as string) ?? 'deny';
-    const rules = rawRules.map((raw, i) => parseAclRule(raw, i));
-
-    const acl = new ACL(rules, defaultEffect);
-    acl._yamlPath = yamlPath;
-    return acl;
+  /** @internal — used by `./acl-file.ts` to set `_yamlPath` after parsing. */
+  _setYamlPath(yamlPath: string): void {
+    this._yamlPath = yamlPath;
   }
 
   check(callerId: string | null, targetId: string, context?: Context | null): boolean {
