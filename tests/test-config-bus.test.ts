@@ -8,7 +8,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import { Config } from '../src/config.js';
+import { Config, RESERVED_NAMESPACES } from '../src/config.js';
 import {
   ConfigNamespaceDuplicateError,
   ConfigNamespaceReservedError,
@@ -65,6 +65,32 @@ describe('Config.registerNamespace', () => {
   it('throws ConfigNamespaceReservedError for "_config"', () => {
     expect(() => Config.registerNamespace({ name: '_config' }))
       .toThrow(ConfigNamespaceReservedError);
+  });
+
+  // PROTOCOL_SPEC §9.9.5 — Reserved namespace public query API.
+  describe('reservedNamespaces (§9.9.5)', () => {
+    it('contains "apcore" and "_config"', () => {
+      const reserved = Config.reservedNamespaces;
+      expect(reserved.has('apcore')).toBe(true);
+      expect(reserved.has('_config')).toBe(true);
+    });
+
+    it('module-level RESERVED_NAMESPACES matches the static getter', () => {
+      expect(RESERVED_NAMESPACES).toBe(Config.reservedNamespaces);
+    });
+
+    it('is callable without instantiating Config', () => {
+      // Compile-time + runtime check: static access, no `new Config()`.
+      const reserved: ReadonlySet<string> = Config.reservedNamespaces;
+      expect(reserved.size).toBeGreaterThanOrEqual(2);
+    });
+
+    it('every reserved name is rejected by registerNamespace', () => {
+      for (const name of Config.reservedNamespaces) {
+        expect(() => Config.registerNamespace({ name }))
+          .toThrow(ConfigNamespaceReservedError);
+      }
+    });
   });
 
   it('throws ConfigNamespaceDuplicateError when registering same name twice', () => {

@@ -84,7 +84,7 @@ export type {
 } from './module.js';
 
 // Config
-export { Config, discoverConfigFile } from './config.js';
+export { Config, RESERVED_NAMESPACES, discoverConfigFile } from './config.js';
 
 // Error Formatter
 export { ErrorFormatterRegistry } from './error-formatter.js';

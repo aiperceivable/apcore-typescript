@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [0.22.0] - 2026-05-18
+
+### Added
+
+- **`Config.reservedNamespaces` static getter + top-level `RESERVED_NAMESPACES` export (PROTOCOL_SPEC §9.9.5, [apcore#60](https://github.com/aiperceivable/apcore/issues/60)).** Implements the new normative requirement that all SDKs MUST expose a public, read-only query API returning the set of reserved top-level namespace names. Typed as `ReadonlySet<string>` so caller-side mutation attempts fail at compile time. Returns the existing private `_RESERVED_NAMESPACES` `Set` — single source of truth, no parallel list — so `Config.registerNamespace({ name: 'apcore' })` continues to throw `ConfigNamespaceReservedError` and the query API reports exactly the names that drive that enforcement. Static access (no `new Config()` needed). Intended for third-party consumers (custom CLIs, framework integrations) that accept user-supplied namespace names and need fail-fast pre-validation. The private constant `_RESERVED_NAMESPACES` is unchanged — internal callers keep using it.
+
+---
+
 ## [0.21.1] - 2026-05-09
 
 Patch release. Fixes the init-time deadlock observed under older Bun

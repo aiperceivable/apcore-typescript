@@ -88,6 +88,19 @@ interface NamespaceRegistration {
 
 export const _globalNsRegistry = new Map<string, NamespaceRegistration>();
 const _RESERVED_NAMESPACES = new Set(['apcore', '_config']);
+
+/**
+ * Public alias of the reserved-namespace set (PROTOCOL_SPEC §9.9.5).
+ *
+ * Top-level namespace names reserved by the apcore framework. Third-party
+ * consumers (custom CLIs, framework integrations) MUST NOT register these
+ * via `Config.registerNamespace`. Typed as `ReadonlySet<string>` to enforce
+ * caller-side immutability at the type-system level.
+ *
+ * Re-exported from `apcore` for ergonomic top-level access:
+ *   `import { RESERVED_NAMESPACES } from 'apcore';`
+ */
+export const RESERVED_NAMESPACES: ReadonlySet<string> = _RESERVED_NAMESPACES;
 export const _globalEnvMap = new Map<string, string>(); // bare env var → top-level key
 export const _envMapClaimed = new Map<string, string>(); // env var → owner (conflict detection)
 export const _envPrefixUsed = new Set<string>();
@@ -549,6 +562,24 @@ export class Config {
       envPrefix: r.envPrefix,
       hasSchema: r.schema !== null,
     }));
+  }
+
+  /**
+   * Top-level namespace names reserved by the apcore framework
+   * (PROTOCOL_SPEC §9.9.5).
+   *
+   * Returns the single source of truth referenced by
+   * {@link Config.registerNamespace} to enforce `CONFIG_NAMESPACE_RESERVED`
+   * (§9.5.1 rules 3 and 4). Static getter — callable without
+   * instantiating `Config`, so third-party consumers (custom CLIs,
+   * framework integrations) can fail-fast on user-supplied namespace
+   * names before invoking `registerNamespace`.
+   *
+   * Typed as `ReadonlySet<string>` so caller-side mutation attempts fail
+   * at compile time.
+   */
+  static get reservedNamespaces(): ReadonlySet<string> {
+    return _RESERVED_NAMESPACES;
   }
 
   // -------------------------------------------------------------------------
