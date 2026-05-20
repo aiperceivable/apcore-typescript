@@ -14,7 +14,7 @@ import { resolveDependencies } from './dependencies.js';
 import { resolveEntryPoint } from './entry-point.js';
 import { mergeModuleMetadata, parseDependencies } from './metadata-pure.js';
 import { _discoverMultiClass } from './multi-class.js';
-import { getSchema, exportSchema as exportSchemaFn } from './schema-export.js';
+import { getSchema } from './schema-export.js';
 import { toStrictSchema } from '../schema/strict.js';
 import { deepCopy } from '../utils/index.js';
 import type { DependencyInfo, ModuleDescriptor } from './types.js';
@@ -717,9 +717,8 @@ export class Registry {
     if (conflict !== null) {
       if (conflict.severity === 'error') {
         throw new InvalidInputError(conflict.message);
-      } else {
-        console.warn(`[apcore:registry] ID conflict: ${conflict.message}`);
       }
+      console.warn(`[apcore:registry] ID conflict: ${conflict.message}`);
     }
 
     // Also check _inFlight for concurrent async registrations of same ID
@@ -789,12 +788,7 @@ export class Registry {
     if (typeof modObj['onLoad'] === 'function') {
       // Call onLoad and check if it returns a Promise
       let onLoadResult: unknown;
-      try {
-        onLoadResult = (modObj['onLoad'] as () => unknown)();
-      } catch (e) {
-        // Sync onLoad threw — do not register (throws synchronously)
-        throw e;
-      }
+      onLoadResult = (modObj['onLoad'] as () => unknown)();
 
       if (onLoadResult instanceof Promise) {
         // Async onLoad: deferred-publish
@@ -863,9 +857,8 @@ export class Registry {
     if (conflict !== null) {
       if (conflict.severity === 'error') {
         throw new InvalidInputError(conflict.message);
-      } else {
-        console.warn(`[apcore:registry] ID conflict: ${conflict.message}`);
       }
+      console.warn(`[apcore:registry] ID conflict: ${conflict.message}`);
     }
 
     // Streaming annotation validation: if module declares streaming=true it must
@@ -1378,9 +1371,8 @@ export class Registry {
     if (conflict !== null) {
       if (conflict.severity === 'error') {
         throw new InvalidInputError(conflict.message);
-      } else {
-        console.warn(`[apcore:registry] ID conflict: ${conflict.message}`);
       }
+      console.warn(`[apcore:registry] ID conflict: ${conflict.message}`);
     }
 
     this._modules.set(moduleId, module);

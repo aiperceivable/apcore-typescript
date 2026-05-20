@@ -4,7 +4,7 @@
 
 import type { Context } from '../context.js';
 import { ModuleError } from '../errors.js';
-import { Middleware, RetrySignal } from './base.js';
+import { type Middleware, RetrySignal } from './base.js';
 
 export class MiddlewareChainError extends ModuleError {
   static override readonly DEFAULT_RETRYABLE: boolean | null = false;
