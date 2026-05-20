@@ -218,7 +218,7 @@ export {
   CircuitBreakerWrapper,
   CircuitState,
 } from './events/index.js';
-export type { ApCoreEvent, EventSubscriber, CircuitBreakerConfig } from './events/index.js';
+export type { ApCoreEvent, EventSubscriber, CircuitBreakerConfig, RetryConfig as EventRetryConfig } from './events/index.js';
 
 // System Modules
 export {

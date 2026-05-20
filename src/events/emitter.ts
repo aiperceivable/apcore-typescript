@@ -1,6 +1,9 @@
 /**
- * Global event bus with fan-out delivery and subscriber error isolation.
+ * Global event bus with fan-out delivery, per-subscriber retry, and DLQ.
  */
+
+import { resolveRetry, computeDelayMs } from './retry.js';
+import type { RetryConfig } from './retry.js';
 
 export interface ApCoreEvent {
   readonly eventType: string;
@@ -12,6 +15,25 @@ export interface ApCoreEvent {
 
 export interface EventSubscriber {
   onEvent(event: ApCoreEvent): void | Promise<void>;
+  /** Optional stable ID for this subscriber, used in DLQ payloads and identity tracking. */
+  readonly subscriberId?: string;
+  /**
+   * Optional glob pattern (supports * and ? wildcards). When set, the emitter
+   * only delivers events whose `eventType` matches the pattern.
+   */
+  readonly eventPattern?: string;
+  /**
+   * Optional retry configuration. When absent, delivery uses a single attempt
+   * (fire-and-forget, backward-compatible). When present, delivery is retried
+   * with exponential backoff using DEFAULT_RETRY as the base.
+   */
+  readonly retry?: RetryConfig;
+  /**
+   * Optional callback invoked after all retry attempts are exhausted.
+   * Receives the original event, the final error, and the total attempt count.
+   * Errors thrown from onFailure are logged and suppressed.
+   */
+  onFailure?(event: ApCoreEvent, error: Error, attemptCount: number): void | Promise<void>;
 }
 
 export function createEvent(
@@ -57,11 +79,33 @@ export function emitWithLegacy(
   });
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function fnmatch(text: string, pattern: string): boolean {
+  const regexStr = Array.from(pattern)
+    .map((c) => {
+      if (c === '*') return '.*';
+      if (c === '?') return '.';
+      return c.replace(/[$()*+.?[\]^{|}-]/g, '\\$&');
+    })
+    .join('');
+  return new RegExp(`^${regexStr}$`).test(text);
+}
+
 const DEFAULT_MAX_PENDING = 1000;
 
 /**
- * Global event bus with non-blocking fan-out delivery.
- * Errors in one subscriber do not affect others.
+ * Global event bus with fan-out delivery, per-subscriber retry, and DLQ.
+ *
+ * Key behaviors:
+ * - Subscribers without a `retry` config get single-attempt fire-and-forget delivery
+ *   (backward-compatible). Errors are logged via console.warn.
+ * - Subscribers with `retry` config get exponential-backoff retries up to
+ *   `maxAttempts`. After exhaustion: DLQ event + optional `onFailure` callback.
+ * - `eventPattern` (glob) filters which events a subscriber receives.
+ * - `flush()` drains all in-flight async deliveries.
  */
 export class EventEmitter {
   private _subscribers: EventSubscriber[] = [];
@@ -84,32 +128,137 @@ export class EventEmitter {
   }
 
   emit(event: ApCoreEvent): void {
-    const snapshot = [...this._subscribers];
+    const snapshot = this._getMatchingSubscribers(event.eventType);
     for (const subscriber of snapshot) {
-      try {
-        const result = subscriber.onEvent(event);
-        if (result instanceof Promise) {
-          if (this._pending.length >= this._maxPending) {
-            // Overflow: instead of silently dropping, emit a structured event
-            // so observers can track delivery loss. (sync finding A-D-504)
-            console.warn(
-              `[apcore:events] _pending cap (${this._maxPending}) reached — dropping async delivery for event ${event.eventType}`,
-            );
-            this._dispatchDroppedEvent(subscriber, event);
-          } else {
-            const tracked = result.catch((err) => {
-              console.warn(`[apcore:events] Subscriber failed handling event ${event.eventType}:`, err);
-            });
-            this._pending.push(tracked);
-            // Auto-cleanup when resolved to prevent unbounded growth
-            tracked.then(() => {
-              const idx = this._pending.indexOf(tracked);
-              if (idx !== -1) this._pending.splice(idx, 1);
-            });
-          }
+      // Single-attempt (no retry config) subscribers: preserve old fire-and-forget behavior
+      // with synchronous error isolation for sync throws and async error logging.
+      if (!subscriber.retry) {
+        this._emitSingleAttempt(subscriber, event);
+        continue;
+      }
+
+      // Retry-enabled subscribers: async delivery with backoff and DLQ.
+      const deliveryPromise = this._deliver(subscriber, event);
+      if (this._pending.length >= this._maxPending) {
+        console.warn(
+          `[apcore:events] _pending cap (${this._maxPending}) reached — dropping async delivery for event ${event.eventType}`,
+        );
+        this._dispatchDroppedEvent(subscriber, event);
+      } else {
+        const tracked = deliveryPromise.catch(() => {
+          // errors handled inside _deliver
+        });
+        this._pending.push(tracked);
+        tracked.then(() => {
+          const idx = this._pending.indexOf(tracked);
+          if (idx !== -1) this._pending.splice(idx, 1);
+        });
+      }
+    }
+  }
+
+  /**
+   * Single-attempt delivery that preserves the original fire-and-forget behavior.
+   * Sync errors are caught and logged immediately; async errors are tracked in _pending.
+   */
+  private _emitSingleAttempt(subscriber: EventSubscriber, event: ApCoreEvent): void {
+    try {
+      const result = subscriber.onEvent(event);
+      if (result instanceof Promise) {
+        if (this._pending.length >= this._maxPending) {
+          console.warn(
+            `[apcore:events] _pending cap (${this._maxPending}) reached — dropping async delivery for event ${event.eventType}`,
+          );
+          this._dispatchDroppedEvent(subscriber, event);
+        } else {
+          const tracked = result.catch((err) => {
+            console.warn(`[apcore:events] Subscriber failed handling event ${event.eventType}:`, err);
+          });
+          this._pending.push(tracked);
+          tracked.then(() => {
+            const idx = this._pending.indexOf(tracked);
+            if (idx !== -1) this._pending.splice(idx, 1);
+          });
         }
-      } catch (err) {
-        console.warn(`[apcore:events] Subscriber failed handling event ${event.eventType}:`, err);
+      }
+    } catch (err) {
+      console.warn(`[apcore:events] Subscriber failed handling event ${event.eventType}:`, err);
+    }
+  }
+
+  private _getMatchingSubscribers(eventType: string): EventSubscriber[] {
+    return this._subscribers.filter((sub) => {
+      if (!sub.eventPattern) return true;
+      return fnmatch(eventType, sub.eventPattern);
+    });
+  }
+
+  private async _deliver(subscriber: EventSubscriber, event: ApCoreEvent): Promise<void> {
+    const retry = resolveRetry(subscriber.retry);
+    let lastError: Error = new Error('Unknown error');
+
+    for (let attempt = 0; attempt < retry.maxAttempts; attempt++) {
+      try {
+        await subscriber.onEvent(event);
+        return;
+      } catch (e) {
+        lastError = e instanceof Error ? e : new Error(String(e));
+        if (attempt + 1 < retry.maxAttempts) {
+          await sleep(computeDelayMs(retry, attempt));
+        }
+      }
+    }
+
+    // All attempts exhausted — emit DLQ event and invoke onFailure callback
+    await this._emitDLQ(subscriber, event, lastError, retry.maxAttempts);
+
+    if (subscriber.onFailure) {
+      try {
+        await subscriber.onFailure(event, lastError, retry.maxAttempts);
+      } catch (cbError) {
+        console.error('[apcore:events] onFailure callback raised:', cbError);
+      }
+    }
+  }
+
+  private async _emitDLQ(
+    subscriber: EventSubscriber,
+    originalEvent: ApCoreEvent,
+    error: Error,
+    attemptCount: number,
+  ): Promise<void> {
+    const subscriberType = (subscriber as { constructor?: { name?: string } }).constructor?.name ?? 'unknown';
+    const subscriberId = subscriber.subscriberId ?? this._identifySubscriber(subscriber);
+
+    const dlqEvent = createEvent(
+      'apcore.event.delivery_failed',
+      null,
+      'error',
+      {
+        subscriber_type: subscriberType.replace('Subscriber', '').toLowerCase(),
+        subscriber_id: subscriberId,
+        original_event: {
+          name: originalEvent.eventType,
+          module_id: originalEvent.moduleId,
+          timestamp: originalEvent.timestamp,
+          payload: originalEvent.data,
+        },
+        error: { type: error.constructor?.name ?? 'Error', message: error.message },
+        attempt_count: attemptCount,
+        timestamp: new Date().toISOString(),
+      },
+    );
+
+    // Deliver DLQ event with NO retry — single attempt only; DLQ subscriber errors are logged
+    const dlqSubscribers = this._getMatchingSubscribers(dlqEvent.eventType);
+    for (const dlqSub of dlqSubscribers) {
+      try {
+        const r = dlqSub.onEvent(dlqEvent);
+        if (r instanceof Promise) {
+          await r;
+        }
+      } catch (dlqErr) {
+        console.error('[apcore:events] DLQ subscriber raised:', dlqErr);
       }
     }
   }
@@ -134,7 +283,7 @@ export class EventEmitter {
       },
     );
     for (const sub of this._subscribers) {
-      if (sub === droppedFor) continue; // avoid recursive drop on the same sink
+      if (sub === droppedFor) continue;
       try {
         const r = sub.onEvent(droppedEvent);
         // Intentionally do not track this Promise in _pending — at-cap by design.
@@ -142,19 +291,19 @@ export class EventEmitter {
         // rejections don't escape.
         if (r instanceof Promise) {
           r.catch((err) => {
-            console.warn(`[apcore:events] Subscriber failed handling delivery_dropped:`, err);
+            console.warn('[apcore:events] Subscriber failed handling delivery_dropped:', err);
           });
         }
       } catch (err) {
-        console.warn(`[apcore:events] Subscriber failed handling delivery_dropped:`, err);
+        console.warn('[apcore:events] Subscriber failed handling delivery_dropped:', err);
       }
     }
   }
 
   private _identifySubscriber(sub: EventSubscriber): string {
+    if (sub.subscriberId) return sub.subscriberId;
     const ctorName = (sub as { constructor?: { name?: string } }).constructor?.name;
     if (ctorName && ctorName !== 'Object') return ctorName;
-    // Fall back to a stable hash-ish string based on identity.
     return `subscriber@${this._subscribers.indexOf(sub)}`;
   }
 
