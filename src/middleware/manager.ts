@@ -22,8 +22,25 @@ export class MiddlewareChainError extends ModuleError {
 
 export class MiddlewareManager {
   private _middlewares: Middleware[] = [];
+  private _registrations: Map<string, { middleware: Middleware; stack: string }> = new Map();
 
-  add(middleware: Middleware): void {
+  add(middleware: Middleware, opts?: { allowDuplicate?: boolean; identityKey?: string }): void {
+    const identity = opts?.identityKey ?? middleware.constructor.name;
+
+    if (!opts?.allowDuplicate && this._registrations.has(identity)) {
+      const prior = this._registrations.get(identity)!;
+      console.warn(
+        `[apcore:middleware] Duplicate middleware registration detected for identity '${identity}' ` +
+        `(class: ${middleware.constructor.name}). ` +
+        `If intentional, pass allowDuplicate: true or use a unique identityKey. ` +
+        `Note: identity defaults to constructor.name, which may collide across packages. ` +
+        `Prior registration site:\n${prior.stack}\nCurrent registration site:\n${new Error().stack ?? '(unavailable)'}`,
+      );
+    }
+
+    const stack = new Error().stack ?? '(unavailable)';
+    this._registrations.set(identity, { middleware, stack });
+
     // Stable insertion: find the first middleware with a strictly lower priority
     // and insert before it. This keeps higher-priority middlewares first and
     // preserves registration order among equal priorities.
@@ -41,6 +58,13 @@ export class MiddlewareManager {
     for (let i = 0; i < this._middlewares.length; i++) {
       if (this._middlewares[i] === middleware) {
         this._middlewares.splice(i, 1);
+        // Remove from identity registry so the same class can be re-added cleanly
+        for (const [key, reg] of this._registrations.entries()) {
+          if (reg.middleware === middleware) {
+            this._registrations.delete(key);
+            break;
+          }
+        }
         return true;
       }
     }
