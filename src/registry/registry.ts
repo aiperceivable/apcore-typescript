@@ -6,7 +6,8 @@ import type { Config } from '../config.js';
 import { getDefault } from '../config-defaults.js';
 import type { Context } from '../context.js';
 import type { ApCoreEvent, EventEmitter } from '../events/emitter.js';
-import { InvalidInputError, ModuleNotFoundError } from '../errors.js';
+import { InvalidInputError, ModuleNotFoundError, StreamingInterfaceError } from '../errors.js';
+import { isStreamingModule } from '../streaming.js';
 import type { ModuleAnnotations, ModuleExample } from '../module.js';
 import { detectIdConflicts } from './conflicts.js';
 import { resolveDependencies } from './dependencies.js';
@@ -733,6 +734,21 @@ export class Registry {
         throw new InvalidInputError(conflict.message);
       } else {
         console.warn(`[apcore:registry] ID conflict: ${conflict.message}`);
+      }
+    }
+
+    // Streaming annotation validation: if module declares streaming=true it must
+    // implement the StreamingModule interface (has stream() + STREAMING_MARKER).
+    const modForStreaming = module as Record<string, unknown>;
+    const annForStreaming = modForStreaming['annotations'];
+    if (annForStreaming != null && typeof annForStreaming === 'object') {
+      const streamingFlag = (annForStreaming as Record<string, unknown>)['streaming'];
+      if (streamingFlag === true) {
+        const hasStreamMethod = typeof modForStreaming['stream'] === 'function';
+        const hasMarker = (modForStreaming as unknown as Record<symbol, unknown>)[Symbol.for('apcore.streaming')] === true;
+        if (!isStreamingModule(module as unknown as import('../module.js').Module)) {
+          throw new StreamingInterfaceError(moduleId, true, hasStreamMethod, hasMarker);
+        }
       }
     }
 

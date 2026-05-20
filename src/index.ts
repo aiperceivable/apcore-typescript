@@ -155,9 +155,14 @@ export {
   CircuitBreakerOpenError,
   ModuleReloadConflictError,
   SysModuleRegistrationError,
+  StreamingInterfaceError,
   ErrorCodes,
 } from './errors.js';
 export type { ErrorCode, ErrorOptions } from './errors.js';
+
+// Streaming
+export { STREAMING_MARKER, isStreamingModule } from './streaming.js';
+export type { StreamingModule } from './streaming.js';
 
 // ACL
 export { ACL } from './acl.js';

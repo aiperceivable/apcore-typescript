@@ -1222,6 +1222,40 @@ export class SysModuleRegistrationError extends ModuleError {
   }
 }
 
+export class StreamingInterfaceError extends ModuleError {
+  static override readonly DEFAULT_RETRYABLE: boolean | null = false;
+
+  readonly moduleId: string;
+  readonly annotationValue: boolean;
+  readonly hasStreamMethod: boolean;
+  readonly hasMarker: boolean;
+
+  constructor(
+    moduleId: string,
+    annotationValue: boolean,
+    hasStreamMethod: boolean,
+    hasMarker: boolean,
+    options?: ErrorOptions,
+  ) {
+    super(
+      'STREAMING_INTERFACE_MISMATCH',
+      `Module '${moduleId}' declares annotations.streaming=true but does not implement the StreamingModule interface (hasStreamMethod=${hasStreamMethod}, hasMarker=${hasMarker})`,
+      { moduleId, annotationValue, hasStreamMethod, hasMarker },
+      options?.cause,
+      options?.traceId,
+      options?.retryable,
+      options?.aiGuidance,
+      options?.userFixable,
+      options?.suggestion,
+    );
+    this.name = 'StreamingInterfaceError';
+    this.moduleId = moduleId;
+    this.annotationValue = annotationValue;
+    this.hasStreamMethod = hasStreamMethod;
+    this.hasMarker = hasMarker;
+  }
+}
+
 /**
  * All framework error codes as constants.
  * Use these instead of hardcoding error code strings.
