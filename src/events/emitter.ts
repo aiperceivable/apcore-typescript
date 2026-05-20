@@ -2,7 +2,7 @@
  * Global event bus with fan-out delivery, per-subscriber retry, and DLQ.
  */
 
-import { resolveRetry, computeDelayMs } from './retry.js';
+import { resolveRetry, computeDelayMs, fnmatch } from './retry.js';
 import type { RetryConfig } from './retry.js';
 
 export interface ApCoreEvent {
@@ -81,17 +81,6 @@ export function emitWithLegacy(
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function fnmatch(text: string, pattern: string): boolean {
-  const regexStr = Array.from(pattern)
-    .map((c) => {
-      if (c === '*') return '.*';
-      if (c === '?') return '.';
-      return c.replace(/[$()*+.?[\]^{|}-]/g, '\\$&');
-    })
-    .join('');
-  return new RegExp(`^${regexStr}$`).test(text);
 }
 
 const DEFAULT_MAX_PENDING = 1000;

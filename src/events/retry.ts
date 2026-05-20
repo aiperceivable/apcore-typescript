@@ -37,10 +37,29 @@ export function resolveRetry(config?: RetryConfig): ResolvedRetryConfig {
   return { ...DEFAULT_RETRY, ...config };
 }
 
-/** Exponential-backoff delay for attempt `attempt` (0-based). */
+const _patternCache = new Map<string, RegExp>();
+
+/** Glob pattern matching supporting * (any chars) and ? (single char). Cached per pattern. */
+export function fnmatch(text: string, pattern: string): boolean {
+  let regex = _patternCache.get(pattern);
+  if (regex === undefined) {
+    const regexStr = Array.from(pattern)
+      .map((c) => {
+        if (c === '*') return '.*';
+        if (c === '?') return '.';
+        return c.replace(/[$()*+.?[\]^{|}-]/g, '\\$&');
+      })
+      .join('');
+    regex = new RegExp(`^${regexStr}$`);
+    _patternCache.set(pattern, regex);
+  }
+  return regex.test(text);
+}
+
+/** Exponential-backoff delay for attempt `attempt` (0-based, clamped to ≥ 0). */
 export function computeDelayMs(cfg: ResolvedRetryConfig, attempt: number): number {
   return Math.min(
     cfg.maxBackoffMs,
-    Math.floor(cfg.initialBackoffMs * Math.pow(cfg.backoffMultiplier, attempt)),
+    Math.floor(cfg.initialBackoffMs * Math.pow(cfg.backoffMultiplier, Math.max(0, attempt))),
   );
 }

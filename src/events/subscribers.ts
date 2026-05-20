@@ -4,10 +4,9 @@
 
 import * as fs from 'node:fs';
 import type { ApCoreEvent, EventSubscriber } from './emitter.js';
+import { fnmatch } from './retry.js';
 
 const SEVERITY_ORDER: Record<string, number> = { info: 0, warn: 1, error: 2, fatal: 3 };
-
-const _patternCache = new Map<string, RegExp>();
 
 // Per-type monotonic counters for auto-generated subscriber IDs.
 // Pattern: `^{type}-[0-9]+$` per spec event_delivery_semantics fixture.
@@ -16,22 +15,6 @@ function _nextSubscriberId(typeName: string): string {
   const next = (_subscriberCounters.get(typeName) ?? 0);
   _subscriberCounters.set(typeName, next + 1);
   return `${typeName}-${next}`;
-}
-
-function fnmatch(text: string, pattern: string): boolean {
-  let regex = _patternCache.get(pattern);
-  if (regex === undefined) {
-    const regexStr = Array.from(pattern)
-      .map((c) => {
-        if (c === '*') return '.*';
-        if (c === '?') return '.';
-        return c.replace(/[$()*+.?[\]^{|}-]/g, '\\$&');
-      })
-      .join('');
-    regex = new RegExp(`^${regexStr}$`);
-    _patternCache.set(pattern, regex);
-  }
-  return regex.test(text);
 }
 
 /**

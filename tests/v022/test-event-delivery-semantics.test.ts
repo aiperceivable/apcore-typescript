@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { EventEmitter, createEvent } from '../../src/events/emitter.js';
 import type { ApCoreEvent, EventSubscriber } from '../../src/events/emitter.js';
 import { StdoutSubscriber } from '../../src/events/subscribers.js';
@@ -138,6 +138,46 @@ describe('Event delivery semantics (#61)', () => {
       emitter.emit(createEvent('test', null, 'info', {}));
       await emitter.flush();
       expect(secondCalled).toBe(true);
+    });
+  });
+
+  describe('DLQ not retried (spec fixture: dlq_event_subscriber_failure_is_not_retried)', () => {
+    it('DLQ subscriber error is logged once and not retried even with retry config', async () => {
+      const emitter = new EventEmitter();
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      // Primary subscriber always fails — triggers DLQ after 2 attempts
+      emitter.subscribe({
+        subscriberId: 'broken-primary',
+        retry: { maxAttempts: 2, initialBackoffMs: 1, maxBackoffMs: 10, backoffMultiplier: 1 },
+        async onEvent() { throw new Error('primary fail'); },
+      });
+
+      // DLQ subscriber: has retry config with max_attempts=5, but should only be called once
+      let dlqAttempts = 0;
+      emitter.subscribe({
+        eventPattern: 'apcore.event.delivery_failed',
+        subscriberId: 'broken-dlq',
+        retry: { maxAttempts: 5, initialBackoffMs: 1 },
+        async onEvent() { dlqAttempts++; throw new Error('dlq fail'); },
+      });
+
+      emitter.emit(createEvent('apcore.test.broken', null, 'info', {}));
+      await emitter.flush();
+
+      // DLQ subscriber was called exactly once — no retry on DLQ delivery
+      expect(dlqAttempts).toBe(1);
+      // Error was logged
+      expect(errorSpy).toHaveBeenCalledWith(
+        expect.stringContaining('[apcore:events] DLQ subscriber raised:'),
+        expect.any(Error),
+      );
+      // No second-order DLQ event (would cause infinite loop)
+      const allEvents: string[] = [];
+      emitter.subscribe({ onEvent: (e) => { allEvents.push(e.eventType); } });
+      expect(allEvents.filter((t) => t === 'apcore.event.delivery_failed')).toHaveLength(0);
+
+      errorSpy.mockRestore();
     });
   });
 
