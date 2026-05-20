@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { EventEmitter, createEvent } from '../../src/events/emitter.js';
 import type { ApCoreEvent, EventSubscriber } from '../../src/events/emitter.js';
 

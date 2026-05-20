@@ -237,6 +237,14 @@ export class Registry {
   private _drainResolvers: Map<string, Array<() => void>> = new Map();
 
   /**
+   * In-flight async registrations: modules whose async onLoad has not yet
+   * resolved. Keys in this map are NOT visible via get()/has() until the
+   * promise resolves and the module is committed to _modules.
+   * This enforces deferred-publish for async onLoad (issue #65).
+   */
+  private _inFlight: Map<string, Promise<void>> = new Map();
+
+  /**
    * Optional EventEmitter for the ephemeral.* registry-side audit emits
    * (RFC `apcore/docs/spec/rfc-ephemeral-modules.md` "Audit-event single-emit
    * rule"). Set via {@link setEventEmitter}; when null, ephemeral audit
@@ -669,6 +677,15 @@ export class Registry {
    * coexistence is not yet implemented in this SDK — when supplied, both
    * fields are merged into the module's metadata so callers can read them
    * back via `getDefinition()` and `list({tags})`. See PROTOCOL_SPEC §5.4.
+   *
+   * Returns a Promise that resolves once `onLoad` (if any) completes and the
+   * module is fully visible. For modules without `onLoad` or with a sync
+   * `onLoad`, the module is visible immediately (before the promise resolves)
+   * so existing sync callers that do not `await` continue to work.
+   *
+   * All sync validation errors (invalid ID, duplicate, streaming mismatch,
+   * sync onLoad failure) are thrown synchronously for backward compatibility
+   * with callers that use `expect(() => register(...)).toThrow(...)` patterns.
    */
   register(
     moduleId: string,
@@ -676,7 +693,8 @@ export class Registry {
     version?: string | null,
     metadata?: Record<string, unknown> | null,
     options?: { context?: Context | null },
-  ): void {
+  ): Promise<void> {
+    // 1. ID validation (always sync — throws synchronously for backward compat)
     validateModuleId(moduleId, false);
 
     // ephemeral.* registrations only land via this programmatic path —
@@ -689,34 +707,147 @@ export class Registry {
       this._warnIfMissingApproval(moduleId, module);
     }
 
+    // 2. Duplicate detection (sync — preserves backward compat with `.toThrow()` tests)
+    const conflict = detectIdConflicts(
+      moduleId,
+      new Set([...this._modules.keys(), ...this._inFlight.keys()]),
+      RESERVED_WORDS,
+      this._lowercaseMap,
+    );
+    if (conflict !== null) {
+      if (conflict.severity === 'error') {
+        throw new InvalidInputError(conflict.message);
+      } else {
+        console.warn(`[apcore:registry] ID conflict: ${conflict.message}`);
+      }
+    }
+
+    // Also check _inFlight for concurrent async registrations of same ID
+    if (this._inFlight.has(moduleId)) {
+      throw new InvalidInputError(
+        `Module ID '${moduleId}' is already being registered (in-flight async onLoad)`,
+      );
+    }
+
+    // 3. Streaming annotation validation (sync — preserves .toThrow() compat)
+    const modForStreaming = module as Record<string, unknown>;
+    const annForStreaming = modForStreaming['annotations'];
+    if (annForStreaming != null && typeof annForStreaming === 'object') {
+      const streamingFlag = (annForStreaming as Record<string, unknown>)['streaming'];
+      if (streamingFlag === true) {
+        const hasStreamMethod = typeof modForStreaming['stream'] === 'function';
+        const hasMarker = (modForStreaming as unknown as Record<symbol, unknown>)[Symbol.for('apcore.streaming')] === true;
+        if (!isStreamingModule(module as unknown as import('../module.js').Module)) {
+          throw new StreamingInterfaceError(moduleId, true, hasStreamMethod, hasMarker);
+        }
+      }
+    }
+
+    // 4. Custom validator (may be async)
     if (this._customValidator !== null) {
       const result = this._customValidator.validate(module);
       if (result instanceof Promise) {
-        throw new InvalidInputError(
-          `Custom validator for '${moduleId}' is async — use discover() which awaits the validator, or register after awaiting validation manually.`,
-        );
+        return result.then((errors) => {
+          if (errors.length > 0) {
+            throw new InvalidInputError(`Custom validator rejected module '${moduleId}': ${errors.join('; ')}`);
+          }
+          return this._registerWithOnLoad(moduleId, module, version, metadata, options, ephemeral);
+        });
       }
       if (result.length > 0) {
         throw new InvalidInputError(`Custom validator rejected module '${moduleId}': ${result.join('; ')}`);
       }
     }
 
+    return this._registerWithOnLoad(moduleId, module, version, metadata, options, ephemeral);
+  }
+
+  /**
+   * Core registration logic after all sync validation has passed.
+   * Handles both sync and async onLoad with deferred-publish for async.
+   *
+   * For sync or absent onLoad: module becomes visible immediately, returns
+   * a resolved Promise (backward-compatible sync usage continues to work).
+   * For async onLoad: module is tracked in _inFlight and hidden from get()/has()
+   * until onLoad resolves; then committed to _modules and made visible.
+   */
+  private _registerWithOnLoad(
+    moduleId: string,
+    module: unknown,
+    version?: string | null,
+    metadata?: Record<string, unknown> | null,
+    options?: { context?: Context | null },
+    ephemeral?: boolean,
+  ): Promise<void> {
     const overrides: Record<string, unknown> = { ...(metadata ?? {}) };
     if (version !== undefined && version !== null) {
       overrides['version'] = version;
     }
-    this._registerImpl(moduleId, module, overrides);
+
+    // Detect async onLoad
+    const modObj = module as Record<string, unknown>;
+    if (typeof modObj['onLoad'] === 'function') {
+      // Call onLoad and check if it returns a Promise
+      let onLoadResult: unknown;
+      try {
+        onLoadResult = (modObj['onLoad'] as () => unknown)();
+      } catch (e) {
+        // Sync onLoad threw — do not register (throws synchronously)
+        throw e;
+      }
+
+      if (onLoadResult instanceof Promise) {
+        // Async onLoad: deferred-publish
+        // Register metadata and lowercase index (but NOT _modules) so conflict
+        // detection works for concurrent registrations of the same ID.
+        const modObjFull = module as Record<string, unknown>;
+        this._moduleMeta.set(moduleId, mergeModuleMetadata(modObjFull, overrides));
+        this._lowercaseMap.set(moduleId.toLowerCase(), moduleId);
+
+        const loadPromise = onLoadResult.then(
+          () => {
+            // Commit module to visible state
+            this._modules.set(moduleId, module);
+            this._inFlight.delete(moduleId);
+            this._triggerEvent(REGISTRY_EVENTS.REGISTER, moduleId, module);
+            if (ephemeral) {
+              this._emitEphemeralAudit('apcore.registry.module_registered', moduleId, options?.context ?? null);
+            }
+          },
+          (err: unknown) => {
+            // onLoad failed: rollback all state
+            this._inFlight.delete(moduleId);
+            this._moduleMeta.delete(moduleId);
+            this._lowercaseMap.delete(moduleId.toLowerCase());
+            throw err;
+          },
+        );
+        this._inFlight.set(moduleId, loadPromise);
+        return loadPromise;
+      }
+      // Sync onLoad returned (possibly undefined) — fall through to normal registration
+    }
+
+    // Sync path: no onLoad, or sync onLoad already called above
+    this._modules.set(moduleId, module);
+    this._lowercaseMap.set(moduleId.toLowerCase(), moduleId);
+
+    const modObjFull = module as Record<string, unknown>;
+    this._moduleMeta.set(moduleId, mergeModuleMetadata(modObjFull, overrides));
+
+    this._triggerEvent(REGISTRY_EVENTS.REGISTER, moduleId, module);
 
     if (ephemeral) {
-      this._emitEphemeralAudit(
-        'apcore.registry.module_registered',
-        moduleId,
-        options?.context ?? null,
-      );
+      this._emitEphemeralAudit('apcore.registry.module_registered', moduleId, options?.context ?? null);
     }
+
+    return Promise.resolve();
   }
 
-  /** Inner registration — no validator, no ID validation. Used by discover() paths that run their own checks. */
+  /**
+   * Inner registration — no validator, no ID validation. Used by discover() paths that run
+   * their own checks. Validates streaming annotation, runs sync onLoad, commits to _modules.
+   */
   private _registerImpl(
     moduleId: string,
     module: unknown,
@@ -725,7 +856,7 @@ export class Registry {
     // Algorithm A03: detect ID conflicts (exact duplicate, reserved word, case collision)
     const conflict = detectIdConflicts(
       moduleId,
-      new Set(this._modules.keys()),
+      new Set([...this._modules.keys(), ...this._inFlight.keys()]),
       RESERVED_WORDS,
       this._lowercaseMap,
     );
@@ -760,7 +891,8 @@ export class Registry {
     const modObj = module as Record<string, unknown>;
     this._moduleMeta.set(moduleId, mergeModuleMetadata(modObj, metadataOverrides));
 
-    // Call onLoad if available
+    // Call onLoad if available (sync only; async onLoad in this path is awaited synchronously
+    // via discover() pipelines, which do not use deferred-publish)
     if (typeof modObj['onLoad'] === 'function') {
       try {
         (modObj['onLoad'] as () => void)();
