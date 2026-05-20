@@ -155,9 +155,15 @@ export {
   CircuitBreakerOpenError,
   ModuleReloadConflictError,
   SysModuleRegistrationError,
+  StreamingInterfaceError,
+  DuplicateModuleIdError,
   ErrorCodes,
 } from './errors.js';
 export type { ErrorCode, ErrorOptions } from './errors.js';
+
+// Streaming
+export { STREAMING_MARKER, isStreamingModule } from './streaming.js';
+export type { StreamingModule } from './streaming.js';
 
 // ACL
 export { ACL } from './acl.js';
@@ -213,7 +219,7 @@ export {
   CircuitBreakerWrapper,
   CircuitState,
 } from './events/index.js';
-export type { ApCoreEvent, EventSubscriber, CircuitBreakerConfig } from './events/index.js';
+export type { ApCoreEvent, EventSubscriber, CircuitBreakerConfig, RetryConfig as EventRetryConfig } from './events/index.js';
 
 // System Modules
 export {

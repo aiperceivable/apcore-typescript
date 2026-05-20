@@ -1222,6 +1222,59 @@ export class SysModuleRegistrationError extends ModuleError {
   }
 }
 
+export class DuplicateModuleIdError extends ModuleError {
+  static override readonly DEFAULT_RETRYABLE: boolean | null = false;
+
+  constructor(moduleId: string, options?: ErrorOptions) {
+    super(
+      'DUPLICATE_MODULE_ID',
+      `Module ID '${moduleId}' is already registered`,
+      { moduleId },
+      options?.cause,
+      options?.traceId,
+      options?.retryable,
+      options?.aiGuidance,
+      options?.userFixable,
+      options?.suggestion,
+    );
+    this.name = 'DuplicateModuleIdError';
+  }
+}
+
+export class StreamingInterfaceError extends ModuleError {
+  static override readonly DEFAULT_RETRYABLE: boolean | null = false;
+
+  readonly moduleId: string;
+  readonly annotationValue: boolean;
+  readonly hasStreamMethod: boolean;
+  readonly hasMarker: boolean;
+
+  constructor(
+    moduleId: string,
+    annotationValue: boolean,
+    hasStreamMethod: boolean,
+    hasMarker: boolean,
+    options?: ErrorOptions,
+  ) {
+    super(
+      'STREAMING_INTERFACE_MISMATCH',
+      `Module '${moduleId}' declares annotations.streaming=true but does not implement the StreamingModule interface (hasStreamMethod=${hasStreamMethod}, hasMarker=${hasMarker})`,
+      { moduleId, annotationValue, hasStreamMethod, hasMarker },
+      options?.cause,
+      options?.traceId,
+      options?.retryable,
+      options?.aiGuidance,
+      options?.userFixable,
+      options?.suggestion,
+    );
+    this.name = 'StreamingInterfaceError';
+    this.moduleId = moduleId;
+    this.annotationValue = annotationValue;
+    this.hasStreamMethod = hasStreamMethod;
+    this.hasMarker = hasMarker;
+  }
+}
+
 /**
  * All framework error codes as constants.
  * Use these instead of hardcoding error code strings.
@@ -1283,6 +1336,8 @@ export const ErrorCodes = Object.freeze({
   CIRCUIT_BREAKER_OPEN: 'CIRCUIT_BREAKER_OPEN',
   MODULE_RELOAD_CONFLICT: 'MODULE_RELOAD_CONFLICT',
   SYS_MODULE_REGISTRATION_FAILED: 'SYS_MODULE_REGISTRATION_FAILED',
+  DUPLICATE_MODULE_ID: 'DUPLICATE_MODULE_ID',
+  STREAMING_INTERFACE_MISMATCH: 'STREAMING_INTERFACE_MISMATCH',
 } as const);
 
 export type ErrorCode = (typeof ErrorCodes)[keyof typeof ErrorCodes];

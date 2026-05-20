@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { Type } from '@sinclair/typebox';
 import { Registry, MAX_MODULE_ID_LENGTH } from '../../src/registry/registry.js';
 import { FunctionModule } from '../../src/decorator.js';
-import { InvalidInputError, ModuleNotFoundError } from '../../src/errors.js';
+import { DuplicateModuleIdError, InvalidInputError, ModuleNotFoundError } from '../../src/errors.js';
 import { Config } from '../../src/config.js';
 import { createAnnotations } from '../../src/module.js';
 
@@ -53,7 +53,7 @@ describe('Registry', () => {
   it('register throws for duplicate moduleId', () => {
     const registry = new Registry();
     registry.register('test.a', createMod('test.a'));
-    expect(() => registry.register('test.a', createMod('test.a'))).toThrow(InvalidInputError);
+    expect(() => registry.register('test.a', createMod('test.a'))).toThrow(DuplicateModuleIdError);
   });
 
   // Regression: sync finding A-001 — register accepts optional `version` and
