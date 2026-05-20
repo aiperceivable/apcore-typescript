@@ -6,7 +6,7 @@ import type { Config } from '../config.js';
 import { getDefault } from '../config-defaults.js';
 import type { Context } from '../context.js';
 import type { ApCoreEvent, EventEmitter } from '../events/emitter.js';
-import { InvalidInputError, ModuleNotFoundError, StreamingInterfaceError } from '../errors.js';
+import { DuplicateModuleIdError, InvalidInputError, ModuleNotFoundError, StreamingInterfaceError } from '../errors.js';
 import { isStreamingModule } from '../streaming.js';
 import type { ModuleAnnotations, ModuleExample } from '../module.js';
 import { detectIdConflicts } from './conflicts.js';
@@ -716,16 +716,12 @@ export class Registry {
     );
     if (conflict !== null) {
       if (conflict.severity === 'error') {
+        if (conflict.type === 'duplicate_id') {
+          throw new DuplicateModuleIdError(moduleId);
+        }
         throw new InvalidInputError(conflict.message);
       }
       console.warn(`[apcore:registry] ID conflict: ${conflict.message}`);
-    }
-
-    // Also check _inFlight for concurrent async registrations of same ID
-    if (this._inFlight.has(moduleId)) {
-      throw new InvalidInputError(
-        `Module ID '${moduleId}' is already being registered (in-flight async onLoad)`,
-      );
     }
 
     // 3. Streaming annotation validation (sync — preserves .toThrow() compat)
@@ -813,9 +809,13 @@ export class Registry {
             this._inFlight.delete(moduleId);
             this._moduleMeta.delete(moduleId);
             this._lowercaseMap.delete(moduleId.toLowerCase());
+            // Emit module_load_failed event (spec #65)
+            this._emitModuleLoadFailed(moduleId, err);
             throw err;
           },
         );
+        // Guard against unhandled rejection if caller fire-and-forgets (no await)
+        loadPromise.catch(() => {});
         this._inFlight.set(moduleId, loadPromise);
         return loadPromise;
       }
@@ -884,16 +884,30 @@ export class Registry {
     const modObj = module as Record<string, unknown>;
     this._moduleMeta.set(moduleId, mergeModuleMetadata(modObj, metadataOverrides));
 
-    // Call onLoad if available (sync only; async onLoad in this path is awaited synchronously
-    // via discover() pipelines, which do not use deferred-publish)
+    // Call onLoad if available (sync only in this discover() path)
     if (typeof modObj['onLoad'] === 'function') {
+      let onLoadResult: unknown;
       try {
-        (modObj['onLoad'] as () => void)();
+        onLoadResult = (modObj['onLoad'] as () => unknown)();
       } catch (e) {
         this._modules.delete(moduleId);
         this._moduleMeta.delete(moduleId);
         this._lowercaseMap.delete(moduleId.toLowerCase());
+        this._emitModuleLoadFailed(moduleId, e);
         throw e;
+      }
+      if (onLoadResult instanceof Promise) {
+        // Async onLoad in discover() path: warn and skip — deferred-publish is
+        // only available via the public register() API.
+        console.warn(
+          `[apcore:registry] Module '${moduleId}' has async onLoad in discover() path ` +
+          `— async onLoad is not supported here; use Registry.register() instead. Module skipped.`,
+        );
+        this._modules.delete(moduleId);
+        this._moduleMeta.delete(moduleId);
+        this._lowercaseMap.delete(moduleId.toLowerCase());
+        onLoadResult.catch(() => {}); // prevent unhandled rejection
+        return;
       }
     }
 
@@ -946,10 +960,17 @@ export class Registry {
     if (moduleId === '') {
       throw new ModuleNotFoundError('');
     }
+    // In-flight modules are not yet visible — spec #65: module MUST NOT be
+    // observable via get() until onLoad completes.
+    if (this._inFlight.has(moduleId)) {
+      throw new ModuleNotFoundError(moduleId);
+    }
     return this._modules.get(moduleId) ?? null;
   }
 
   has(moduleId: string): boolean {
+    // In-flight modules are not visible (same invariant as get())
+    if (this._inFlight.has(moduleId)) return false;
     return this._modules.has(moduleId);
   }
 
@@ -1670,6 +1691,43 @@ export class Registry {
       snapshot['display_name'] = displayName;
     }
     return { caller_id: callerId, identity: snapshot, namespace_class: 'ephemeral' };
+  }
+
+  /**
+   * Emit `apcore.registry.module_load_failed` when onLoad raises (spec #65).
+   * Delivered synchronously if the emitter is wired; logged as warn otherwise.
+   */
+  private _emitModuleLoadFailed(moduleId: string, err: unknown): void {
+    const error = err instanceof Error ? err : new Error(String(err));
+    const payload: Record<string, unknown> = {
+      module_id: moduleId,
+      callback_name: 'module.onLoad',
+      error_type: error.constructor?.name ?? 'Error',
+      error_message: error.message,
+      timestamp: new Date().toISOString(),
+    };
+
+    const emitter = this._eventEmitter;
+    if (emitter === null) {
+      console.warn(
+        `[apcore:registry] module_load_failed module_id=${moduleId} ` +
+        `error_type=${payload['error_type']} message=${error.message}`,
+      );
+      return;
+    }
+
+    const event: ApCoreEvent = {
+      eventType: 'apcore.registry.module_load_failed',
+      moduleId,
+      timestamp: new Date().toISOString(),
+      severity: 'error',
+      data: payload,
+    };
+    try {
+      emitter.emit(event);
+    } catch (emitErr) {
+      console.error('[apcore:registry] Failed to emit module_load_failed:', emitErr);
+    }
   }
 
   /**

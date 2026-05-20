@@ -156,6 +156,7 @@ export {
   ModuleReloadConflictError,
   SysModuleRegistrationError,
   StreamingInterfaceError,
+  DuplicateModuleIdError,
   ErrorCodes,
 } from './errors.js';
 export type { ErrorCode, ErrorOptions } from './errors.js';

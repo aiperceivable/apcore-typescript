@@ -9,6 +9,15 @@ const SEVERITY_ORDER: Record<string, number> = { info: 0, warn: 1, error: 2, fat
 
 const _patternCache = new Map<string, RegExp>();
 
+// Per-type monotonic counters for auto-generated subscriber IDs.
+// Pattern: `^{type}-[0-9]+$` per spec event_delivery_semantics fixture.
+const _subscriberCounters = new Map<string, number>();
+function _nextSubscriberId(typeName: string): string {
+  const next = (_subscriberCounters.get(typeName) ?? 0);
+  _subscriberCounters.set(typeName, next + 1);
+  return `${typeName}-${next}`;
+}
+
 function fnmatch(text: string, pattern: string): boolean {
   let regex = _patternCache.get(pattern);
   if (regex === undefined) {
@@ -32,6 +41,7 @@ function fnmatch(text: string, pattern: string): boolean {
  * Does not retry on 4xx responses. Enforces `timeoutMs`.
  */
 export class WebhookSubscriber implements EventSubscriber {
+  readonly subscriberId: string;
   private readonly _url: string;
   private readonly _headers: Record<string, string>;
   private readonly _retryCount: number;
@@ -42,7 +52,9 @@ export class WebhookSubscriber implements EventSubscriber {
     headers?: Record<string, string>,
     retryCount: number = 3,
     timeoutMs: number = 5000,
+    id?: string,
   ) {
+    this.subscriberId = id ?? _nextSubscriberId('webhook');
     this._url = url;
     this._headers = headers ?? {};
     this._retryCount = retryCount;
@@ -121,23 +133,29 @@ export class WebhookSubscriber implements EventSubscriber {
  * serialized event in the payload. Failures are logged, not raised.
  */
 export class A2ASubscriber implements EventSubscriber {
+  readonly subscriberId: string;
   private readonly _platformUrl: string;
   private readonly _auth: string | Record<string, string> | undefined;
   private readonly _timeoutMs: number;
+  private readonly _skillId: string;
 
   constructor(
     platformUrl: string,
     auth?: string | Record<string, string | unknown>,
     timeoutMs: number = 5000,
+    id?: string,
+    skillId: string = 'apevo.event_receiver',
   ) {
+    this.subscriberId = id ?? _nextSubscriberId('a2a');
     this._platformUrl = platformUrl;
     this._auth = auth as string | Record<string, string> | undefined;
     this._timeoutMs = timeoutMs;
+    this._skillId = skillId;
   }
 
   async onEvent(event: ApCoreEvent): Promise<void> {
     const payload: Record<string, unknown> = {
-      skillId: 'apevo.event_receiver',
+      skillId: this._skillId,
       event: {
         eventType: event.eventType,
         moduleId: event.moduleId,
@@ -195,12 +213,14 @@ export class A2ASubscriber implements EventSubscriber {
 
 /** Writes events to a local file (built-in type: 'file'). */
 export class FileSubscriber implements EventSubscriber {
+  readonly subscriberId: string;
   private readonly _path: string;
   private readonly _append: boolean;
   private readonly _format: string;
   private readonly _rotateBytes: number | null;
 
-  constructor(path: string, append: boolean = true, format: string = 'json', rotateBytes?: number) {
+  constructor(path: string, append: boolean = true, format: string = 'json', rotateBytes?: number, id?: string) {
+    this.subscriberId = id ?? _nextSubscriberId('file');
     this._path = path;
     this._append = append;
     this._format = format;
@@ -244,10 +264,12 @@ export class FileSubscriber implements EventSubscriber {
 
 /** Writes events to stdout (built-in type: 'stdout'). */
 export class StdoutSubscriber implements EventSubscriber {
+  readonly subscriberId: string;
   private readonly _format: string;
   private readonly _levelFilter: string | null;
 
-  constructor(format: string = 'text', levelFilter?: string) {
+  constructor(format: string = 'text', levelFilter?: string, id?: string) {
+    this.subscriberId = id ?? _nextSubscriberId('stdout');
     this._format = format;
     if (levelFilter !== undefined && !(levelFilter in SEVERITY_ORDER)) {
       console.warn(

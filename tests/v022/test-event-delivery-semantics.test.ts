@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { EventEmitter, createEvent } from '../../src/events/emitter.js';
 import type { ApCoreEvent, EventSubscriber } from '../../src/events/emitter.js';
+import { StdoutSubscriber } from '../../src/events/subscribers.js';
 
 describe('Event delivery semantics (#61)', () => {
   describe('eventPattern filtering', () => {
@@ -137,6 +138,51 @@ describe('Event delivery semantics (#61)', () => {
       emitter.emit(createEvent('test', null, 'info', {}));
       await emitter.flush();
       expect(secondCalled).toBe(true);
+    });
+  });
+
+  describe('auto-generated subscriber IDs (spec fixture: subscriber_id_sdk_generated_when_omitted)', () => {
+    it('StdoutSubscriber generates IDs matching ^stdout-[0-9]+$', () => {
+      const s1 = new StdoutSubscriber();
+      const s2 = new StdoutSubscriber();
+      expect(s1.subscriberId).toMatch(/^stdout-\d+$/);
+      expect(s2.subscriberId).toMatch(/^stdout-\d+$/);
+      expect(s1.subscriberId).not.toBe(s2.subscriberId);
+    });
+
+    it('DLQ events from two unnamed subscribers carry distinct subscriber_ids', async () => {
+      const emitter = new EventEmitter();
+      const dlqIds: string[] = [];
+
+      const dlqSub: EventSubscriber = {
+        eventPattern: 'apcore.event.delivery_failed',
+        onEvent: (e) => { dlqIds.push(e.data['subscriber_id'] as string); },
+      };
+      emitter.subscribe(dlqSub);
+
+      // Use the auto-generated IDs from two StdoutSubscribers in plain subscriber wrappers
+      const s1 = new StdoutSubscriber();
+      const s2 = new StdoutSubscriber();
+      const sub1: EventSubscriber = {
+        subscriberId: s1.subscriberId,
+        retry: { maxAttempts: 1 },
+        async onEvent() { throw new Error('fail1'); },
+      };
+      const sub2: EventSubscriber = {
+        subscriberId: s2.subscriberId,
+        retry: { maxAttempts: 1 },
+        async onEvent() { throw new Error('fail2'); },
+      };
+      emitter.subscribe(sub1);
+      emitter.subscribe(sub2);
+
+      emitter.emit(createEvent('apcore.test.unidentified', null, 'info', {}));
+      await emitter.flush();
+
+      expect(dlqIds).toHaveLength(2);
+      expect(dlqIds[0]).toMatch(/^stdout-\d+$/);
+      expect(dlqIds[1]).toMatch(/^stdout-\d+$/);
+      expect(dlqIds[0]).not.toBe(dlqIds[1]);
     });
   });
 });

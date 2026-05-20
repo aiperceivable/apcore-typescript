@@ -1222,6 +1222,25 @@ export class SysModuleRegistrationError extends ModuleError {
   }
 }
 
+export class DuplicateModuleIdError extends ModuleError {
+  static override readonly DEFAULT_RETRYABLE: boolean | null = false;
+
+  constructor(moduleId: string, options?: ErrorOptions) {
+    super(
+      'DUPLICATE_MODULE_ID',
+      `Module ID '${moduleId}' is already registered`,
+      { moduleId },
+      options?.cause,
+      options?.traceId,
+      options?.retryable,
+      options?.aiGuidance,
+      options?.userFixable,
+      options?.suggestion,
+    );
+    this.name = 'DuplicateModuleIdError';
+  }
+}
+
 export class StreamingInterfaceError extends ModuleError {
   static override readonly DEFAULT_RETRYABLE: boolean | null = false;
 
@@ -1317,6 +1336,8 @@ export const ErrorCodes = Object.freeze({
   CIRCUIT_BREAKER_OPEN: 'CIRCUIT_BREAKER_OPEN',
   MODULE_RELOAD_CONFLICT: 'MODULE_RELOAD_CONFLICT',
   SYS_MODULE_REGISTRATION_FAILED: 'SYS_MODULE_REGISTRATION_FAILED',
+  DUPLICATE_MODULE_ID: 'DUPLICATE_MODULE_ID',
+  STREAMING_INTERFACE_MISMATCH: 'STREAMING_INTERFACE_MISMATCH',
 } as const);
 
 export type ErrorCode = (typeof ErrorCodes)[keyof typeof ErrorCodes];
