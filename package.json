@@ -15,6 +15,10 @@
       "browser": "./dist/browser/index.js",
       "node": "./dist/index.js",
       "default": "./dist/index.js"
+    },
+    "./context-keys": {
+      "types": "./dist/context-keys.d.ts",
+      "default": "./dist/context-keys.js"
     }
   },
   "sideEffects": [
