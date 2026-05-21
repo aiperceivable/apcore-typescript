@@ -13,7 +13,7 @@ import { ErrorHistory } from '../observability/error-history.js';
 import { ErrorHistoryMiddleware } from '../middleware/error-history.js';
 import { UsageCollector, UsageMiddleware } from '../observability/usage.js';
 import type { EventSubscriber } from '../events/emitter.js';
-import { EventEmitter, emitWithLegacy } from '../events/emitter.js';
+import { createEvent, EventEmitter } from '../events/emitter.js';
 import { WebhookSubscriber, A2ASubscriber, FileSubscriber, StdoutSubscriber, FilterSubscriber } from '../events/subscribers.js';
 import { PlatformNotifyMiddleware } from '../middleware/platform-notify.js';
 import { HealthSummaryModule, HealthModule } from './health.js';
@@ -364,9 +364,8 @@ export function registerSysModules(
     registry.setEventEmitter(eventEmitter);
 
     // Bridge registry events.
-    // §Issue #36: emit canonical apcore.registry.* names and legacy aliases
-    // (with deprecated: true) during the deprecation window. Once the legacy
-    // names are removed, drop the emitWithLegacy() wrapper for direct emit().
+    // §Issue #36: legacy aliases removed in v0.22.0 — emit only the canonical
+    // apcore.registry.* names.
     //
     // Single-emit rule for ephemeral.* registrations: the registry-side
     // direct emit (`Registry._emitEphemeralAudit`) already fires the
@@ -378,25 +377,21 @@ export function registerSysModules(
     // rule".
     registry.on('register', (moduleId: string) => {
       if (moduleId.startsWith('ephemeral.')) return;
-      emitWithLegacy(
-        eventEmitter,
+      eventEmitter.emit(createEvent(
         'apcore.registry.module_registered',
-        'module_registered',
         moduleId,
         'info',
         {},
-      );
+      ));
     });
     registry.on('unregister', (moduleId: string) => {
       if (moduleId.startsWith('ephemeral.')) return;
-      emitWithLegacy(
-        eventEmitter,
+      eventEmitter.emit(createEvent(
         'apcore.registry.module_unregistered',
-        'module_unregistered',
         moduleId,
         'info',
         {},
-      );
+      ));
     });
   }
 

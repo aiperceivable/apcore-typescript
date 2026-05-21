@@ -3,9 +3,9 @@
  * (contextual auditing — auto-extract caller_id / identity).
  *
  * Issue #36: 4 events that previously lacked the canonical
- *   `apcore.<subsystem>.<event>` prefix must now be emitted under their
- *   canonical names AND continue to be emitted under their legacy names
- *   (with `deprecated: true` in the payload) during the deprecation window.
+ *   `apcore.<subsystem>.<event>` prefix are now emitted only under their
+ *   canonical names. v0.22.0 removed the legacy aliases and the
+ *   `emitWithLegacy()` helper.
  *
  * Issue #45.2: control modules must extract `caller_id` (default
  *   `"@external"`) and `identity` from the execution Context and include
@@ -13,7 +13,7 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { EventEmitter, emitWithLegacy } from '../src/events/emitter.js';
+import { EventEmitter } from '../src/events/emitter.js';
 import type { ApCoreEvent } from '../src/events/emitter.js';
 import { FilterSubscriber } from '../src/events/subscribers.js';
 import { PlatformNotifyMiddleware } from '../src/middleware/platform-notify.js';
@@ -30,43 +30,9 @@ import { registerSysModules } from '../src/sys-modules/registration.js';
 // Issue #36 — canonical + legacy event names
 // ---------------------------------------------------------------------------
 
-describe('Issue #36 — canonical event prefixes (with legacy aliases)', () => {
-  describe('emitWithLegacy() helper', () => {
-    it('emits the canonical event followed by the legacy alias', () => {
-      const emitter = new EventEmitter();
-      const events: ApCoreEvent[] = [];
-      emitter.subscribe({ onEvent: (e) => { events.push(e); } });
-
-      emitWithLegacy(
-        emitter,
-        'apcore.foo.thing_happened',
-        'thing_happened',
-        'mod.x',
-        'info',
-        { hello: 'world' },
-      );
-
-      expect(events).toHaveLength(2);
-      expect(events[0].eventType).toBe('apcore.foo.thing_happened');
-      expect(events[0].data).toEqual({ hello: 'world' });
-      expect(events[1].eventType).toBe('thing_happened');
-      expect(events[1].data['hello']).toBe('world');
-      expect(events[1].data['deprecated']).toBe(true);
-      expect(events[1].data['canonical_event']).toBe('apcore.foo.thing_happened');
-    });
-
-    it('emits both events with the same timestamp', () => {
-      const emitter = new EventEmitter();
-      const events: ApCoreEvent[] = [];
-      emitter.subscribe({ onEvent: (e) => { events.push(e); } });
-
-      emitWithLegacy(emitter, 'apcore.x.canonical', 'legacy', 'm', 'info', {});
-      expect(events[0].timestamp).toBe(events[1].timestamp);
-    });
-  });
-
-  describe('PlatformNotifyMiddleware emits canonical + legacy events', () => {
-    it('emits apcore.health.error_threshold_exceeded and legacy alias', () => {
+describe('Issue #36 — canonical event prefixes (legacy aliases removed in v0.22.0)', () => {
+  describe('PlatformNotifyMiddleware emits canonical events only', () => {
+    it('emits apcore.health.error_threshold_exceeded (no legacy alias)', () => {
       const emitter = new EventEmitter();
       const events: ApCoreEvent[] = [];
       emitter.subscribe({ onEvent: (e) => { events.push(e); } });
@@ -81,15 +47,13 @@ describe('Issue #36 — canonical event prefixes (with legacy aliases)', () => {
       const canonical = events.find(e => e.eventType === 'apcore.health.error_threshold_exceeded');
       const legacy = events.find(e => e.eventType === 'error_threshold_exceeded');
       expect(canonical).toBeDefined();
-      expect(legacy).toBeDefined();
       expect(canonical!.severity).toBe('error');
       expect(canonical!.data['error_rate']).toBe(0.2);
       expect(canonical!.data['threshold']).toBe(0.1);
-      expect(legacy!.data['deprecated']).toBe(true);
-      expect(legacy!.data['canonical_event']).toBe('apcore.health.error_threshold_exceeded');
+      expect(legacy).toBeUndefined();
     });
 
-    it('emits apcore.health.latency_threshold_exceeded and legacy alias', () => {
+    it('emits apcore.health.latency_threshold_exceeded (no legacy alias)', () => {
       const emitter = new EventEmitter();
       const events: ApCoreEvent[] = [];
       emitter.subscribe({ onEvent: (e) => { events.push(e); } });
@@ -103,15 +67,13 @@ describe('Issue #36 — canonical event prefixes (with legacy aliases)', () => {
       const canonical = events.find(e => e.eventType === 'apcore.health.latency_threshold_exceeded');
       const legacy = events.find(e => e.eventType === 'latency_threshold_exceeded');
       expect(canonical).toBeDefined();
-      expect(legacy).toBeDefined();
       expect(canonical!.severity).toBe('warn');
       expect(canonical!.data['threshold']).toBe(5000);
-      expect(legacy!.data['deprecated']).toBe(true);
-      expect(legacy!.data['canonical_event']).toBe('apcore.health.latency_threshold_exceeded');
+      expect(legacy).toBeUndefined();
     });
   });
 
-  describe('Registry register/unregister bridge emits canonical + legacy', () => {
+  describe('Registry register/unregister bridge emits canonical events only', () => {
     function buildClient(): { registry: Registry; emitter: EventEmitter; events: ApCoreEvent[] } {
       const config = new Config({ sys_modules: { enabled: true, events: { enabled: true } } });
       const registry = new Registry();
@@ -123,7 +85,7 @@ describe('Issue #36 — canonical event prefixes (with legacy aliases)', () => {
       return { registry, emitter, events };
     }
 
-    it('emits apcore.registry.module_registered and legacy module_registered', () => {
+    it('emits apcore.registry.module_registered (no legacy alias)', () => {
       const { registry, events } = buildClient();
       registry.registerInternal('mod.test', { description: 'x', execute: () => ({}) });
 
@@ -131,12 +93,10 @@ describe('Issue #36 — canonical event prefixes (with legacy aliases)', () => {
       const legacy = events.find(e => e.eventType === 'module_registered');
       expect(canonical).toBeDefined();
       expect(canonical!.moduleId).toBe('mod.test');
-      expect(legacy).toBeDefined();
-      expect(legacy!.data['deprecated']).toBe(true);
-      expect(legacy!.data['canonical_event']).toBe('apcore.registry.module_registered');
+      expect(legacy).toBeUndefined();
     });
 
-    it('emits apcore.registry.module_unregistered and legacy module_unregistered', async () => {
+    it('emits apcore.registry.module_unregistered (no legacy alias)', async () => {
       const { registry, events } = buildClient();
       registry.registerInternal('mod.test', { description: 'x', execute: () => ({}) });
       // clear prior events
@@ -147,11 +107,10 @@ describe('Issue #36 — canonical event prefixes (with legacy aliases)', () => {
       const legacy = events.find(e => e.eventType === 'module_unregistered');
       expect(canonical).toBeDefined();
       expect(canonical!.moduleId).toBe('mod.test');
-      expect(legacy).toBeDefined();
-      expect(legacy!.data['deprecated']).toBe(true);
+      expect(legacy).toBeUndefined();
     });
 
-    it('FilterSubscriber with apcore.registry.* glob matches both registry events', () => {
+    it('FilterSubscriber with apcore.registry.* glob matches the canonical event', () => {
       const { registry, emitter } = buildClient();
       const matched: ApCoreEvent[] = [];
       const filter = new FilterSubscriber(
@@ -162,7 +121,6 @@ describe('Issue #36 — canonical event prefixes (with legacy aliases)', () => {
 
       registry.registerInternal('mod.glob', { description: 'x', execute: () => ({}) });
 
-      // Only canonical names match the glob — legacy `module_registered` is filtered out.
       expect(matched.some(e => e.eventType === 'apcore.registry.module_registered')).toBe(true);
       expect(matched.every(e => e.eventType.startsWith('apcore.registry.'))).toBe(true);
     });

@@ -473,7 +473,7 @@ describe('APCore.on() / off()', () => {
     registerAdd(client);
 
     const received: string[] = [];
-    client.on('module_registered', (event) => {
+    client.on('apcore.registry.module_registered', (event) => {
       received.push(event.moduleId!);
     });
 
@@ -495,7 +495,7 @@ describe('APCore.on() / off()', () => {
     const client = new APCore({ config });
 
     let count = 0;
-    const sub = client.on('module_registered', () => { count++; });
+    const sub = client.on('apcore.registry.module_registered', () => { count++; });
     client.off(sub);
 
     // Register a module - subscriber should not be called

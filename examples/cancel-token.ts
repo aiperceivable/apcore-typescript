@@ -3,7 +3,6 @@
  */
 import { Type } from '@sinclair/typebox';
 import { APCore, CancelToken, Context, ExecutionCancelledError } from 'apcore-js';
-import { v4 as uuidv4 } from 'uuid';
 
 const client = new APCore();
 
@@ -34,16 +33,19 @@ console.log('Completed:', result);
 // Run 2: Cancel mid-flight
 console.log('\n--- Run 2: Cancel after 80ms ---');
 const token = new CancelToken();
-// Build a Context that carries the cancel token using the full constructor
+// Build a Context that carries the cancel token.
+// `Context.create()` is the canonical static factory but does not expose
+// cancelToken, so we derive a traceId from it and pass the token positionally.
+const base = Context.create();
 const ctx = new Context(
-  uuidv4().replace(/-/g, ''), // traceId
-  null,                        // callerId
-  [],                          // callChain
-  null,                        // executor
-  null,                        // identity
-  null,                        // redactedInputs
-  {},                          // data
-  token,                       // cancelToken
+  base.traceId,
+  null,    // callerId
+  [],      // callChain
+  null,    // executor
+  null,    // identity
+  null,    // redactedInputs
+  {},      // data
+  token,   // cancelToken
 );
 
 // Cancel after 80ms

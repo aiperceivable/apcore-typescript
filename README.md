@@ -33,6 +33,17 @@ apcore is an AI-Perceivable module standard that makes every interface naturally
 - **Caching & pagination annotations** — `cacheable`, `cacheTtl`, `cacheKeyFields` for result caching; `paginated`, `paginationStyle` for paginated modules
 - **Config Bus** — Namespace-based configuration registry with typed access, env prefix dispatch, hot-reload, and external config mounting (`Config.registerNamespace()`, `config.namespace()`, `config.bind<T>()`, `config.mount()`)
 
+## What's New in v0.22.0
+
+- **`ContextKey<T>` typed context state** (#63) — Type-safe accessor for `Context.data` slots with `get`/`set`/`delete`/`exists`/`scoped`; also available via the `apcore-js/context-keys` subpath import for tree-shakeable consumers.
+- **`StreamingModule` interface** (#62) — Formal streaming contract via `STREAMING_MARKER` symbol; `isStreamingModule()` detects implementations and emits `StreamingInterfaceError` when contract is violated.
+- **Middleware duplicate detection** (#64) — `MiddlewareManager.add(mw, { allowDuplicate, identityKey })` rejects accidental double-registration; opt-out and custom identity keys supported for explicit duplicates.
+- **Event retry + DLQ** (#61) — `EventSubscriber` now exposes a `retry` config field (max attempts + exponential backoff) and an optional `onFailure(event, error, attemptCount)` hook acting as a per-subscriber dead-letter queue.
+- **Registry async deferred-publish** (#65) — `Registry.register()` returns a `Promise<void>`; modules with an async `onLoad()` stay hidden from `get()`/`has()` until load completes, and `apcore.registry.module_load_failed` is emitted on rejection.
+- **Reserved-namespace query API** (#60) — `Config.reservedNamespaces` static getter and top-level `RESERVED_NAMESPACES` export let callers pre-validate namespace names before calling `Config.registerNamespace()`.
+
+See [`tests/v022/`](./tests/v022) for working examples of each surface.
+
 ## Documentation
 
 For full documentation, including Quick Start guides and API reference, visit:
@@ -50,6 +61,25 @@ npm install apcore-js
 ```
 
 > **Note:** The npm package is published as `apcore-js` (the `apcore` name is reserved on npm). Python uses `apcore`, Rust uses the `apcore` crate.
+
+## Browser support
+
+`apcore-js` ships dual entry points via `package.json` conditional exports:
+
+- **Node (default):** `./dist/index.js` — the full surface.
+- **Browser:** `./dist/browser/index.js` — auto-selected by tree-shaking bundlers (Vite, Webpack, esbuild, Rollup) through the `"browser"` exports condition.
+
+The browser bundle **excludes** Node-only surfaces:
+
+- `Config` class, `BindingLoader`, `SchemaLoader` (filesystem-bound)
+- All `system.*` sys-modules (control, manifest, health, usage, audit)
+- Events runtime: `EventEmitter`, all built-in subscribers, `AsyncTaskManager`, `TaskStatus`
+- Observability runtime: `TracingMiddleware`, `MetricsCollector`, exporters, `PrometheusExporter`
+- `RESERVED_NAMESPACES`, `StreamingInterfaceError`, `DuplicateModuleIdError`
+
+`ACL.load(yamlPath)` throws `ACLRuleError` in the browser because the filesystem is unavailable; ACL programmatic construction still works.
+
+**Available in the browser:** `Registry` programmatic `register`/`get`/`list`/`iter`/`unregister`, `Executor`, `ACL` programmatic, `Context`, middleware pipeline, schema validation, all error classes, and the utility helpers.
 
 ## Quick Start
 
@@ -241,7 +271,7 @@ Configuration files support two modes. **Legacy mode** (no `apcore:` key) is ful
 ```yaml
 # Namespace mode
 apcore:
-  version: "0.20.0"
+  version: "0.22.0"
 
 _config:
   strict: true

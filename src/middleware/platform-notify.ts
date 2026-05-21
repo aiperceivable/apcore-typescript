@@ -7,14 +7,13 @@
  * when p99 latency exceeds the limit, and apcore.health.recovered when a
  * previously alerted module recovers below threshold * 0.5.
  *
- * During the deprecation window legacy aliases (`error_threshold_exceeded`,
- * `latency_threshold_exceeded`) are emitted alongside the canonical names
- * with `deprecated: true` in the payload (Issue #36).
+ * Issue #36 removed legacy aliases in v0.22.0 — only the canonical
+ * `apcore.health.*` event names are emitted.
  */
 
 import type { Context } from '../context.js';
 import type { EventEmitter } from '../events/emitter.js';
-import { createEvent, emitWithLegacy } from '../events/emitter.js';
+import { createEvent } from '../events/emitter.js';
 import type { MetricsCollector } from '../observability/metrics.js';
 import { computeModuleErrorRate, estimateP99FromHistogram } from '../observability/metrics-utils.js';
 import { Middleware } from './base.js';
@@ -82,14 +81,12 @@ export class PlatformNotifyMiddleware extends Middleware {
     const errorRate = this._computeErrorRate(moduleId);
     const alerted = this._getAlerted(moduleId);
     if (errorRate >= this._errorRateThreshold && !alerted.has('error_rate')) {
-      emitWithLegacy(
-        this._emitter,
+      this._emitter.emit(createEvent(
         'apcore.health.error_threshold_exceeded',
-        'error_threshold_exceeded',
         moduleId,
         'error',
         { error_rate: errorRate, threshold: this._errorRateThreshold },
-      );
+      ));
       alerted.add('error_rate');
     }
   }
@@ -101,14 +98,12 @@ export class PlatformNotifyMiddleware extends Middleware {
 
     const p99Ms = this._estimateP99Ms(moduleId);
     if (p99Ms >= this._latencyP99ThresholdMs) {
-      emitWithLegacy(
-        this._emitter,
+      this._emitter.emit(createEvent(
         'apcore.health.latency_threshold_exceeded',
-        'latency_threshold_exceeded',
         moduleId,
         'warn',
         { p99_latency_ms: p99Ms, threshold: this._latencyP99ThresholdMs },
-      );
+      ));
       alerted.add('latency');
     }
   }
