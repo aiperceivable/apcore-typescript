@@ -128,6 +128,40 @@ describe('Registry on_load ordering (#65)', () => {
     expect(typeof payload['timestamp']).toBe('string');
   });
 
+  it('sync onLoad failure emits apcore.registry.module_load_failed (A-D-REG-001)', async () => {
+    // Regression for A-D-REG-001: prior to v0.22.0 the sync-onLoad branch of
+    // _registerWithOnLoad propagated the throw without emitting the
+    // module_load_failed event, violating Issue #65's strong-guarantee
+    // invariant that observers always see either a fully-published module
+    // or the failure event.
+    const emitter = new EventEmitter();
+    const registry = new Registry();
+    registry.setEventEmitter(emitter);
+
+    const captured: Array<{ eventType: string; data: Record<string, unknown> }> = [];
+    emitter.subscribe({ onEvent: (ev) => { captured.push({ eventType: ev.eventType, data: ev.data }); } });
+
+    const mod = {
+      id: 'test.syncfail',
+      description: 'test',
+      inputSchema: {},
+      outputSchema: {},
+      onLoad() { throw new Error('sync init failed'); },
+      async execute() { return {}; },
+    };
+
+    await expect(registry.register('test.syncfail', mod)).rejects.toThrow('sync init failed');
+
+    const dlqEvents = captured.filter((e) => e.eventType === 'apcore.registry.module_load_failed');
+    expect(dlqEvents).toHaveLength(1);
+    expect(dlqEvents[0].data['module_id']).toBe('test.syncfail');
+    expect(dlqEvents[0].data['error_message']).toBe('sync init failed');
+
+    // Module must not be visible after rollback
+    expect(registry.get('test.syncfail')).toBeNull();
+    expect(registry.has('test.syncfail')).toBe(false);
+  });
+
   it('register() without async onLoad works synchronously when not awaited', () => {
     // Existing sync callers: no await, no async onLoad — should still work
     const registry = new Registry();

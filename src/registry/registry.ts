@@ -782,9 +782,24 @@ export class Registry {
     // Detect async onLoad
     const modObj = module as Record<string, unknown>;
     if (typeof modObj['onLoad'] === 'function') {
-      // Call onLoad and check if it returns a Promise
+      // Call onLoad and check if it returns a Promise.
+      // Sync onLoad must emit module_load_failed on throw (Issue #65 gap;
+      // mirror the async-Promise rejection branch below). The strong-guarantee
+      // invariant — caller observes either fully-published or
+      // module_load_failed — applies to every registration path including
+      // this entry point.
       let onLoadResult: unknown;
-      onLoadResult = (modObj['onLoad'] as () => unknown)();
+      try {
+        onLoadResult = (modObj['onLoad'] as () => unknown)();
+      } catch (e) {
+        // Surface sync onLoad failures as a rejected Promise so the
+        // strong-guarantee invariant — `register()` always returns a Promise
+        // — holds for sync and async onLoad alike. Without this, callers
+        // doing `await registry.register(...)` would see sync throws and the
+        // module_load_failed event would arrive before the await target.
+        this._emitModuleLoadFailed(moduleId, e);
+        return Promise.reject(e);
+      }
 
       if (onLoadResult instanceof Promise) {
         // Async onLoad: deferred-publish
