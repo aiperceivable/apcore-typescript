@@ -40,7 +40,7 @@ describe('WebhookSubscriber', () => {
     const fetchMock = vi.fn().mockResolvedValue({ status: 200 });
     vi.stubGlobal('fetch', fetchMock);
 
-    const sub = new WebhookSubscriber('https://example.test/hook', { 'X-Token': 'abc' }, 0, 5000);
+    const sub = new WebhookSubscriber('https://example.test/hook', { 'X-Token': 'abc' }, 5000);
     await sub.onEvent(makeEvent());
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -53,31 +53,33 @@ describe('WebhookSubscriber', () => {
     expect(body.eventType).toBe('apcore.test');
   });
 
-  it('warns but does not retry on 4xx', async () => {
+  it('warns but does not throw on 4xx (non-retryable client error)', async () => {
     const fetchMock = vi.fn().mockResolvedValue({ status: 404 });
     vi.stubGlobal('fetch', fetchMock);
 
-    const sub = new WebhookSubscriber('https://x/y', undefined, 3, 5000);
+    const sub = new WebhookSubscriber('https://x/y', undefined, 5000);
+    // v0.22.0 A-D-EVT-001: subscriber-internal retry removed. 4xx returns
+    // normally; the unified EventEmitter retry policy handles 5xx via rethrow.
     await sub.onEvent(makeEvent());
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it('retries on 5xx up to retryCount + 1 attempts then logs failure', async () => {
+  it('rethrows on 5xx so EventEmitter retry policy applies', async () => {
     const fetchMock = vi.fn().mockResolvedValue({ status: 503 });
     vi.stubGlobal('fetch', fetchMock);
 
-    const sub = new WebhookSubscriber('https://x/y', undefined, 2, 5000);
-    await sub.onEvent(makeEvent());
-    expect(fetchMock).toHaveBeenCalledTimes(3);
+    const sub = new WebhookSubscriber('https://x/y', undefined, 5000);
+    await expect(sub.onEvent(makeEvent())).rejects.toThrow(/503/);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it('retries on fetch rejection (network error)', async () => {
+  it('rethrows on fetch rejection (network error) so EventEmitter retry policy applies', async () => {
     const fetchMock = vi.fn().mockRejectedValue(new Error('ECONNREFUSED'));
     vi.stubGlobal('fetch', fetchMock);
 
-    const sub = new WebhookSubscriber('https://x/y', undefined, 1, 5000);
-    await sub.onEvent(makeEvent());
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const sub = new WebhookSubscriber('https://x/y', undefined, 5000);
+    await expect(sub.onEvent(makeEvent())).rejects.toThrow('ECONNREFUSED');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it('uses an empty headers map when none are provided', async () => {
@@ -88,6 +90,24 @@ describe('WebhookSubscriber', () => {
     await sub.onEvent(makeEvent());
     const headers = (fetchMock.mock.calls[0][1] as { headers: Record<string, string> }).headers;
     expect(headers['Content-Type']).toBe('application/json');
+  });
+
+  it('exposes the spec-default retry config (3 attempts, 100ms initial)', () => {
+    const sub = new WebhookSubscriber('https://x/y');
+    expect(sub.retry.maxAttempts).toBe(3);
+    expect(sub.retry.initialBackoffMs).toBe(100);
+    expect(sub.retry.backoffMultiplier).toBe(2);
+    expect(sub.retry.maxBackoffMs).toBe(30_000);
+  });
+
+  it('accepts a custom retry config via the opts argument', () => {
+    const sub = new WebhookSubscriber(
+      'https://x/y',
+      undefined,
+      { retry: { maxAttempts: 5, initialBackoffMs: 250 } },
+    );
+    expect(sub.retry.maxAttempts).toBe(5);
+    expect(sub.retry.initialBackoffMs).toBe(250);
   });
 });
 
@@ -132,24 +152,35 @@ describe('A2ASubscriber', () => {
     expect(headers['Authorization']).toBeUndefined();
   });
 
-  it('warns on >=400 responses without throwing', async () => {
-    const warn = vi.spyOn(console, 'warn');
+  it('rethrows on >=400 responses so EventEmitter retry+DLQ policy applies', async () => {
     const fetchMock = vi.fn().mockResolvedValue({ status: 500 });
     vi.stubGlobal('fetch', fetchMock);
 
     const sub = new A2ASubscriber('https://platform/x');
-    await expect(sub.onEvent(makeEvent())).resolves.toBeUndefined();
-    expect(warn).toHaveBeenCalled();
+    await expect(sub.onEvent(makeEvent())).rejects.toThrow(/status 500/);
   });
 
-  it('logs and swallows fetch rejections', async () => {
-    const warn = vi.spyOn(console, 'warn');
+  it('rethrows on fetch rejection so EventEmitter retry+DLQ policy applies', async () => {
     const fetchMock = vi.fn().mockRejectedValue(new Error('boom'));
     vi.stubGlobal('fetch', fetchMock);
 
     const sub = new A2ASubscriber('https://platform/x');
-    await expect(sub.onEvent(makeEvent())).resolves.toBeUndefined();
-    expect(warn).toHaveBeenCalled();
+    await expect(sub.onEvent(makeEvent())).rejects.toThrow('boom');
+  });
+
+  it('exposes the spec-default retry config (3 attempts, 100ms initial)', () => {
+    const sub = new A2ASubscriber('https://platform/x');
+    expect(sub.retry.maxAttempts).toBe(3);
+    expect(sub.retry.initialBackoffMs).toBe(100);
+    expect(sub.retry.backoffMultiplier).toBe(2);
+    expect(sub.retry.maxBackoffMs).toBe(30_000);
+  });
+
+  it('accepts a custom retry config via the opts argument', () => {
+    const sub = new A2ASubscriber('https://platform/x', undefined, {
+      retry: { maxAttempts: 5 },
+    });
+    expect(sub.retry.maxAttempts).toBe(5);
   });
 });
 
