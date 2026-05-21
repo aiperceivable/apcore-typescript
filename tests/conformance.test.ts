@@ -2204,10 +2204,12 @@ describe('apcore Conformance Suite (TypeScript)', () => {
       return new Executor({ registry });
     }
 
-    // Helper: seed a store with raw fixture task records
-    function seedStore(store: TaskStore, tasks: any[]): void {
+    // Helper: seed a store with raw fixture task records. D-17 made TaskStore
+    // async; this helper awaits the saves in sequence so caller setup remains
+    // deterministic.
+    async function seedStore(store: TaskStore, tasks: any[]): Promise<void> {
       for (const t of tasks) {
-        store.save({
+        await store.save({
           taskId: t.task_id,
           moduleId: t.module_id,
           status: t.status as TaskStatus,
@@ -2250,14 +2252,14 @@ describe('apcore Conformance Suite (TypeScript)', () => {
     });
 
     // --- 3. task_store_save_and_get ---
-    it('task_store_save_and_get', () => {
+    it('task_store_save_and_get', async () => {
       const tc = asyncTaskEvolutionFixture.test_cases.find((t: any) => t.id === 'task_store_save_and_get');
       expect(tc).toBeDefined();
 
       const store = new InMemoryTaskStore();
-      seedStore(store, [tc.task_info]);
+      await seedStore(store, [tc.task_info]);
 
-      const found = store.get(tc.lookup_id);
+      const found = await store.get(tc.lookup_id);
       expect(found).not.toBeNull();
       expect(found!.taskId).toBe(tc.expected.task_id);
       expect(found!.status).toBe(tc.expected.status);
@@ -2266,14 +2268,14 @@ describe('apcore Conformance Suite (TypeScript)', () => {
     });
 
     // --- 4. task_store_list_by_status ---
-    it('task_store_list_by_status', () => {
+    it('task_store_list_by_status', async () => {
       const tc = asyncTaskEvolutionFixture.test_cases.find((t: any) => t.id === 'task_store_list_by_status');
       expect(tc).toBeDefined();
 
       const store = new InMemoryTaskStore();
-      seedStore(store, tc.stored_tasks);
+      await seedStore(store, tc.stored_tasks);
 
-      const results = store.list(tc.status_filter as TaskStatus);
+      const results = await store.list(tc.status_filter as TaskStatus);
       expect(results.length).toBe(tc.expected.count);
       const ids = results.map(t => t.taskId);
       for (const expectedId of tc.expected.task_ids) {
@@ -2308,11 +2310,11 @@ describe('apcore Conformance Suite (TypeScript)', () => {
       while (ticks < 50) {
         await Promise.resolve();
         ticks++;
-        const info = store.get(taskId);
+        const info = await store.get(taskId);
         if (info && info.status === TaskStatus.PENDING && info.retryCount === 1) break;
       }
 
-      const info = store.get(taskId)!;
+      const info = (await store.get(taskId))!;
       expect(info.status).toBe(tc.expected.status_after_first_failure as TaskStatus);
       expect(info.retryCount).toBe(tc.expected.retry_count_after_first_failure);
 
@@ -2367,10 +2369,10 @@ describe('apcore Conformance Suite (TypeScript)', () => {
       const deadline = Date.now() + 2000;
       while (Date.now() < deadline) {
         await new Promise<void>((resolve) => setTimeout(resolve, 10));
-        if (store.get(taskId)?.status === TaskStatus.FAILED) break;
+        if ((await store.get(taskId))?.status === TaskStatus.FAILED) break;
       }
 
-      const info = store.get(taskId)!;
+      const info = (await store.get(taskId))!;
       expect(info.status).toBe(tc.expected.final_status as TaskStatus);
       expect(info.retryCount).toBe(tc.expected.retry_count);
       expect(info.error).not.toBeNull();
@@ -2378,19 +2380,19 @@ describe('apcore Conformance Suite (TypeScript)', () => {
     });
 
     // --- 8. reaper_disabled_by_default ---
-    it('reaper_disabled_by_default', () => {
+    it('reaper_disabled_by_default', async () => {
       const tc = asyncTaskEvolutionFixture.test_cases.find((t: any) => t.id === 'reaper_disabled_by_default');
       expect(tc).toBeDefined();
 
       const store = new InMemoryTaskStore();
-      seedStore(store, tc.stored_expired_tasks);
+      await seedStore(store, tc.stored_expired_tasks);
 
       const executor = makeEvolutionExecutor();
       // Construct without any reaper config — reaper is NOT started
       const manager = new AsyncTaskManager({ executor, store });
 
       // Without calling startReaper(), the expired task must still be in the store
-      const found = store.get(tc.stored_expired_tasks[0].task_id);
+      const found = await store.get(tc.stored_expired_tasks[0].task_id);
       expect(found).not.toBeNull();
       expect(tc.expected.reaper_running).toBe(false);
       expect(tc.expected.expired_task_still_present).toBe(true);
@@ -2404,7 +2406,7 @@ describe('apcore Conformance Suite (TypeScript)', () => {
       vi.useFakeTimers();
 
       const store = new InMemoryTaskStore();
-      seedStore(store, tc.stored_tasks);
+      await seedStore(store, tc.stored_tasks);
 
       const executor = makeEvolutionExecutor();
       const manager = new AsyncTaskManager({ executor, store });
@@ -2426,12 +2428,13 @@ describe('apcore Conformance Suite (TypeScript)', () => {
       vi.advanceTimersByTime(reaperConfig.sweep_interval_ms + 1);
       await Promise.resolve();
       await Promise.resolve();
+      await Promise.resolve();
 
       for (const deletedId of tc.expected.deleted_task_ids) {
-        expect(store.get(deletedId)).toBeNull();
+        expect(await store.get(deletedId)).toBeNull();
       }
       for (const remainingId of tc.expected.remaining_task_ids) {
-        expect(store.get(remainingId)).not.toBeNull();
+        expect(await store.get(remainingId)).not.toBeNull();
       }
 
       await handle.stop();
@@ -2446,7 +2449,7 @@ describe('apcore Conformance Suite (TypeScript)', () => {
       vi.useFakeTimers();
 
       const store = new InMemoryTaskStore();
-      seedStore(store, tc.stored_tasks);
+      await seedStore(store, tc.stored_tasks);
 
       const executor = makeEvolutionExecutor();
       const manager = new AsyncTaskManager({ executor, store });
@@ -2462,11 +2465,12 @@ describe('apcore Conformance Suite (TypeScript)', () => {
       vi.advanceTimersByTime(reaperConfig.sweep_interval_ms + 1);
       await Promise.resolve();
       await Promise.resolve();
+      await Promise.resolve();
 
       // Reaper must not have deleted any tasks
       expect(tc.expected.deleted_task_ids).toHaveLength(0);
       for (const remainingId of tc.expected.remaining_task_ids) {
-        expect(store.get(remainingId)).not.toBeNull();
+        expect(await store.get(remainingId)).not.toBeNull();
       }
 
       await handle.stop();

@@ -13,6 +13,8 @@ import type { ApprovalHandler, ApprovalResult } from './approval.js';
 import { createApprovalRequest } from './approval.js';
 import type { Config } from './config.js';
 import { getDefault } from './config-defaults.js';
+import type { CancelToken } from './cancel.js';
+import { ExecutionCancelledError } from './cancel.js';
 import { Context } from './context.js';
 import {
   ACLDeniedError,
@@ -566,7 +568,18 @@ export class BuiltinExecute implements Step {
     );
 
     if (timeoutMs === 0) {
-      ctx.output = await executionPromise;
+      // No timeout: still race against the cancel signal so callers see a
+      // typed ExecutionCancelledError instead of waiting for the module to
+      // discover the cancel cooperatively (D-18, D-21).
+      const cancelToken = ctx.context.cancelToken;
+      if (cancelToken !== null) {
+        ctx.output = await Promise.race([
+          executionPromise,
+          this._raceAgainstCancel(cancelToken),
+        ]);
+      } else {
+        ctx.output = await executionPromise;
+      }
     } else {
       let timer: ReturnType<typeof setTimeout>;
       const timeoutPromise = new Promise<never>((_, reject) => {
@@ -574,12 +587,40 @@ export class BuiltinExecute implements Step {
           reject(new ModuleTimeoutError(ctx.moduleId, timeoutMs));
         }, timeoutMs);
       });
-      ctx.output = await Promise.race([executionPromise, timeoutPromise]).finally(() => {
+      // D-18 / D-21: race execution against both the timeout AND the caller's
+      // cancel token so cancellation surfaces as a typed
+      // ExecutionCancelledError mid-pipeline even if the module is sitting
+      // on an await point that isn't a Web API.
+      const cancelToken = ctx.context.cancelToken;
+      const racers: Promise<unknown>[] = [executionPromise, timeoutPromise];
+      if (cancelToken !== null) {
+        racers.push(this._raceAgainstCancel(cancelToken));
+      }
+      ctx.output = (await Promise.race(racers).finally(() => {
         clearTimeout(timer!);
-      });
+      })) as Record<string, unknown>;
     }
 
     return { action: 'continue' };
+  }
+
+  /**
+   * Build a Promise that rejects with ExecutionCancelledError as soon as the
+   * given CancelToken's underlying AbortSignal fires. Used to race against
+   * the module's executionPromise so cancellation interrupts even if the
+   * module isn't awaiting a Web API directly. (D-18, D-21)
+   */
+  private _raceAgainstCancel(cancelToken: CancelToken): Promise<never> {
+    if (cancelToken.signal.aborted) {
+      return Promise.reject(new ExecutionCancelledError());
+    }
+    return new Promise<never>((_, reject) => {
+      const onAbort = (): void => {
+        cancelToken.signal.removeEventListener('abort', onAbort);
+        reject(new ExecutionCancelledError());
+      };
+      cancelToken.signal.addEventListener('abort', onAbort, { once: true });
+    });
   }
 }
 

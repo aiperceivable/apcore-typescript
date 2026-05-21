@@ -42,6 +42,15 @@ export class Context<T = null> {
   readonly globalDeadline: number | null;
   private _logger: ContextLogger | null = null;
 
+  /**
+   * Never-aborted fallback signal returned when no `cancelToken` is bound.
+   * Modules can safely attach this signal to Web APIs (`fetch`, etc.) and
+   * rely on it never firing in the no-cancel case. Lazy-created on first
+   * read so contexts without cancel support pay no AbortController cost.
+   * (D-18, apcore v0.22.0)
+   */
+  private static _NEVER_SIGNAL: AbortSignal | null = null;
+
   constructor(
     traceId: string,
     callerId: string | null = null,
@@ -233,6 +242,23 @@ export class Context<T = null> {
    */
   static fromJSON(data: Record<string, unknown>): Context {
     return this.deserialize(data);
+  }
+
+  /**
+   * The cancel token's `AbortSignal` if a token is bound, else a never-aborted
+   * fallback. Modules using standard Web-API I/O (`fetch`, `setTimeout` via
+   * `AbortSignal.timeout`, Web Streams) should attach this signal so they
+   * participate in real cancellation when callers invoke `cancelToken.cancel()`
+   * or `AsyncTaskManager.cancel()` (D-18, apcore v0.22.0).
+   */
+  get signal(): AbortSignal {
+    if (this.cancelToken !== null) {
+      return this.cancelToken.signal;
+    }
+    if (Context._NEVER_SIGNAL === null) {
+      Context._NEVER_SIGNAL = new AbortController().signal;
+    }
+    return Context._NEVER_SIGNAL;
   }
 
   /**
