@@ -162,6 +162,73 @@ describe('Registry on_load ordering (#65)', () => {
     expect(registry.has('test.syncfail')).toBe(false);
   });
 
+  it('registerInternal sync onLoad failure emits module_load_failed and rolls back (A-D-REG-004)', () => {
+    // Spec REG-003 / A-D-REG-004: the strong-guarantee invariant applies to
+    // registerInternal too. On sync onLoad failure the module must NOT appear
+    // in the visible map and module_load_failed must be emitted.
+    const emitter = new EventEmitter();
+    const registry = new Registry();
+    registry.setEventEmitter(emitter);
+
+    const captured: Array<{ eventType: string; data: Record<string, unknown> }> = [];
+    emitter.subscribe({ onEvent: (ev) => { captured.push({ eventType: ev.eventType, data: ev.data }); } });
+
+    const mod = {
+      id: 'sys.failload',
+      description: 'sys mod whose onLoad throws',
+      onLoad() { throw new Error('boom-internal'); },
+      execute() { return {}; },
+    };
+
+    expect(() => registry.registerInternal('sys.failload', mod)).toThrow('boom-internal');
+
+    const events = captured.filter((e) => e.eventType === 'apcore.registry.module_load_failed');
+    expect(events).toHaveLength(1);
+    expect(events[0].data['module_id']).toBe('sys.failload');
+
+    expect(registry.get('sys.failload')).toBeNull();
+    expect(registry.has('sys.failload')).toBe(false);
+  });
+
+  it('discover()-path sync onLoad failure does not publish module (A-D-REG-003)', async () => {
+    // Spec REG-003 / A-D-REG-003: deferred-publish applies to the discover
+    // path as well. Before the fix, _registerImpl inserted into _modules
+    // *before* calling onLoad, so a concurrent get() could observe a module
+    // that later fails. After the fix the insert happens only on onLoad
+    // success. The discover loop logs the failure and continues, but the
+    // module_load_failed event MUST fire and the module MUST NOT appear in
+    // the visible map.
+    const emitter = new EventEmitter();
+    const registry = new Registry();
+    registry.setEventEmitter(emitter);
+
+    const captured: Array<{ eventType: string; data: Record<string, unknown> }> = [];
+    emitter.subscribe({ onEvent: (ev) => { captured.push({ eventType: ev.eventType, data: ev.data }); } });
+
+    const failingMod = {
+      id: 'discover.failload',
+      description: 'discover mod whose onLoad throws',
+      onLoad() { throw new Error('discover-boom'); },
+      execute() { return {}; },
+    };
+
+    registry.setDiscoverer({
+      async discover() {
+        return [{ moduleId: 'discover.failload', module: failingMod }];
+      },
+    });
+
+    const count = await registry.discover();
+    expect(count).toBe(0); // failing module is not counted as registered
+
+    expect(registry.get('discover.failload')).toBeNull();
+    expect(registry.has('discover.failload')).toBe(false);
+
+    const events = captured.filter((e) => e.eventType === 'apcore.registry.module_load_failed');
+    expect(events).toHaveLength(1);
+    expect(events[0].data['module_id']).toBe('discover.failload');
+  });
+
   it('register() without async onLoad works synchronously when not awaited', () => {
     // Existing sync callers: no await, no async onLoad — should still work
     const registry = new Registry();
