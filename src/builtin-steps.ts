@@ -13,6 +13,8 @@ import type { ApprovalHandler, ApprovalResult } from './approval.js';
 import { createApprovalRequest } from './approval.js';
 import type { Config } from './config.js';
 import { getDefault } from './config-defaults.js';
+import type { CancelToken } from './cancel.js';
+import { ExecutionCancelledError } from './cancel.js';
 import { Context } from './context.js';
 import {
   ACLDeniedError,
@@ -118,7 +120,10 @@ export class BuiltinContextCreation implements Step {
     // Always wrap in a child context for this module call.
     // If no parent context was provided, create a fresh root first.
     if (ctx.context == null) {
-      ctx.context = Context.create(null).child(ctx.moduleId);
+      // Issue #66: no executor arg; auto-binding happens on the next
+      // executor entry. For internal child-context creation we just need a
+      // fresh root.
+      ctx.context = Context.create().child(ctx.moduleId);
     } else {
       ctx.context = ctx.context.child(ctx.moduleId);
     }
@@ -538,8 +543,15 @@ export class BuiltinExecute implements Step {
       // fallback: execute normally and wrap as single-chunk
     }
 
-    // Regular execution with timeout
-    let timeoutMs = this._defaultTimeout;
+    // Regular execution with timeout.
+    //
+    // Spec D-11 (per-module timeout): each module MAY declare its own
+    // `resources.timeout` (milliseconds) via either the top-level `resources`
+    // field or `annotations.resources.timeout`. The effective timeout is the
+    // module value when present; otherwise the executor default. The global
+    // deadline (if any) further clamps the effective timeout so the call
+    // cannot outrun an outer budget.
+    let timeoutMs = this._readModuleTimeoutMs(mod) ?? this._defaultTimeout;
     const globalDeadline = ctx.context.data[CTX_GLOBAL_DEADLINE] as number | undefined;
     if (globalDeadline !== undefined) {
       const remaining = globalDeadline - Date.now();
@@ -566,7 +578,18 @@ export class BuiltinExecute implements Step {
     );
 
     if (timeoutMs === 0) {
-      ctx.output = await executionPromise;
+      // No timeout: still race against the cancel signal so callers see a
+      // typed ExecutionCancelledError instead of waiting for the module to
+      // discover the cancel cooperatively (D-18, D-21).
+      const cancelToken = ctx.context.cancelToken;
+      if (cancelToken !== null) {
+        ctx.output = await Promise.race([
+          executionPromise,
+          this._raceAgainstCancel(cancelToken),
+        ]);
+      } else {
+        ctx.output = await executionPromise;
+      }
     } else {
       let timer: ReturnType<typeof setTimeout>;
       const timeoutPromise = new Promise<never>((_, reject) => {
@@ -574,12 +597,66 @@ export class BuiltinExecute implements Step {
           reject(new ModuleTimeoutError(ctx.moduleId, timeoutMs));
         }, timeoutMs);
       });
-      ctx.output = await Promise.race([executionPromise, timeoutPromise]).finally(() => {
+      // D-18 / D-21: race execution against both the timeout AND the caller's
+      // cancel token so cancellation surfaces as a typed
+      // ExecutionCancelledError mid-pipeline even if the module is sitting
+      // on an await point that isn't a Web API.
+      const cancelToken = ctx.context.cancelToken;
+      const racers: Promise<unknown>[] = [executionPromise, timeoutPromise];
+      if (cancelToken !== null) {
+        racers.push(this._raceAgainstCancel(cancelToken));
+      }
+      ctx.output = (await Promise.race(racers).finally(() => {
         clearTimeout(timer!);
-      });
+      })) as Record<string, unknown>;
     }
 
     return { action: 'continue' };
+  }
+
+  /**
+   * Build a Promise that rejects with ExecutionCancelledError as soon as the
+   * given CancelToken's underlying AbortSignal fires. Used to race against
+   * the module's executionPromise so cancellation interrupts even if the
+   * module isn't awaiting a Web API directly. (D-18, D-21)
+   */
+  /**
+   * Read the module's declared `resources.timeout` (D-11) in milliseconds.
+   * Returns `null` when not declared. Supports two equivalent locations
+   * (module-level `resources` or `annotations.resources`) for parity with
+   * the other SDKs.
+   */
+  private _readModuleTimeoutMs(mod: Record<string, unknown>): number | null {
+    const readNumber = (val: unknown): number | null =>
+      typeof val === 'number' && Number.isFinite(val) && val >= 0 ? val : null;
+
+    const directResources = mod['resources'];
+    if (directResources != null && typeof directResources === 'object') {
+      const t = readNumber((directResources as Record<string, unknown>)['timeout']);
+      if (t !== null) return t;
+    }
+    const ann = mod['annotations'];
+    if (ann != null && typeof ann === 'object') {
+      const annResources = (ann as Record<string, unknown>)['resources'];
+      if (annResources != null && typeof annResources === 'object') {
+        const t = readNumber((annResources as Record<string, unknown>)['timeout']);
+        if (t !== null) return t;
+      }
+    }
+    return null;
+  }
+
+  private _raceAgainstCancel(cancelToken: CancelToken): Promise<never> {
+    if (cancelToken.signal.aborted) {
+      return Promise.reject(new ExecutionCancelledError());
+    }
+    return new Promise<never>((_, reject) => {
+      const onAbort = (): void => {
+        cancelToken.signal.removeEventListener('abort', onAbort);
+        reject(new ExecutionCancelledError());
+      };
+      cancelToken.signal.addEventListener('abort', onAbort, { once: true });
+    });
   }
 }
 

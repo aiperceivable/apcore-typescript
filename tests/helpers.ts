@@ -25,6 +25,9 @@ export function createTestRegistry(): Registry {
   return new Registry();
 }
 
-export function createTestContext(executor?: unknown): Context {
-  return Context.create(executor, createIdentity('test-user'));
+export function createTestContext(_executor?: unknown): Context {
+  // Issue #66: executor is no longer a Context.create() parameter — the
+  // Executor auto-binds itself on the first .call(). The `executor`
+  // parameter is kept for backward call-site compatibility but ignored.
+  return Context.create(createIdentity('test-user'));
 }

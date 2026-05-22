@@ -3,7 +3,6 @@ import { Context, createIdentity } from '../src/context.js';
 
 function makeCtx(): Context {
   return Context.create(
-    null,
     createIdentity('user-1', 'user', ['admin'], { org: 'acme' }),
   );
 }

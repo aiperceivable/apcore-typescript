@@ -55,17 +55,15 @@ describe('PlatformNotifyMiddleware', () => {
 
     mw.onError('mod.a', {}, new Error('boom'), ctx);
 
-    // Issue #36: emits BOTH canonical and legacy event during deprecation window.
-    expect(events).toHaveLength(2);
+    // Issue #36: v0.22.0 removed the legacy alias; only the canonical event remains.
+    expect(events).toHaveLength(1);
     const canonical = events.find(e => e.eventType === 'apcore.health.error_threshold_exceeded');
     const legacy = events.find(e => e.eventType === 'error_threshold_exceeded');
     expect(canonical).toBeDefined();
-    expect(legacy).toBeDefined();
+    expect(legacy).toBeUndefined();
     expect(canonical!.moduleId).toBe('mod.a');
     expect(canonical!.data['error_rate']).toBe(0.2);
     expect(canonical!.data['threshold']).toBe(0.1);
-    expect(legacy!.data['deprecated']).toBe(true);
-    expect(legacy!.data['canonical_event']).toBe('apcore.health.error_threshold_exceeded');
   });
 
   it('does not emit duplicate error_threshold_exceeded alerts (hysteresis)', () => {
@@ -84,7 +82,7 @@ describe('PlatformNotifyMiddleware', () => {
     mw.onError('mod.a', {}, new Error('boom'), ctx);
 
     // Only one alert despite multiple errors
-    const errorEvents = events.filter(e => e.eventType === 'error_threshold_exceeded');
+    const errorEvents = events.filter(e => e.eventType === 'apcore.health.error_threshold_exceeded');
     expect(errorEvents).toHaveLength(1);
   });
 
@@ -103,7 +101,7 @@ describe('PlatformNotifyMiddleware', () => {
 
     // Trigger alert
     mw.onError('mod.a', {}, new Error('boom'), ctx);
-    expect(events.filter(e => e.eventType === 'error_threshold_exceeded')).toHaveLength(1);
+    expect(events.filter(e => e.eventType === 'apcore.health.error_threshold_exceeded')).toHaveLength(1);
 
     // Add many successful calls to bring error rate below threshold * 0.5
     for (let i = 0; i < 200; i++) metrics.incrementCalls('mod.a', 'success');
@@ -132,7 +130,7 @@ describe('PlatformNotifyMiddleware', () => {
 
     mw.after('mod.a', {}, {}, ctx);
 
-    const latencyEvents = events.filter(e => e.eventType === 'latency_threshold_exceeded');
+    const latencyEvents = events.filter(e => e.eventType === 'apcore.health.latency_threshold_exceeded');
     expect(latencyEvents).toHaveLength(1);
     expect(latencyEvents[0].moduleId).toBe('mod.a');
     expect(latencyEvents[0].data['threshold']).toBe(5000);
@@ -154,7 +152,7 @@ describe('PlatformNotifyMiddleware', () => {
 
     mw.after('mod.a', {}, {}, ctx);
 
-    const latencyEvents = events.filter(e => e.eventType === 'latency_threshold_exceeded');
+    const latencyEvents = events.filter(e => e.eventType === 'apcore.health.latency_threshold_exceeded');
     expect(latencyEvents).toHaveLength(0);
   });
 
@@ -175,7 +173,7 @@ describe('PlatformNotifyMiddleware', () => {
     mw.after('mod.a', {}, {}, ctx);
     mw.after('mod.a', {}, {}, ctx);
 
-    const latencyEvents = events.filter(e => e.eventType === 'latency_threshold_exceeded');
+    const latencyEvents = events.filter(e => e.eventType === 'apcore.health.latency_threshold_exceeded');
     expect(latencyEvents).toHaveLength(1);
   });
 
@@ -195,7 +193,7 @@ describe('PlatformNotifyMiddleware', () => {
 
     mw.after('mod.a', {}, {}, ctx);
 
-    const latencyEvents = events.filter(e => e.eventType === 'latency_threshold_exceeded');
+    const latencyEvents = events.filter(e => e.eventType === 'apcore.health.latency_threshold_exceeded');
     expect(latencyEvents).toHaveLength(1);
     // p99 should be 60000ms (last bucket * 1000), not 0
     expect(latencyEvents[0].data['p99_latency_ms']).toBe(60000);

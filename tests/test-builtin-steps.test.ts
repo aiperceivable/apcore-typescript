@@ -34,7 +34,7 @@ import {
 // ---------------------------------------------------------------------------
 
 function makePipelineContext(overrides: Partial<PipelineContext> = {}): PipelineContext {
-  const ctx = Context.create(null).child('test.module');
+  const ctx = Context.create().child('test.module');
   return {
     moduleId: 'test.module',
     inputs: {},
@@ -479,7 +479,7 @@ describe('BuiltinExecute', () => {
 
   it('throws ModuleTimeoutError when global deadline exceeded', async () => {
     const step = new BuiltinExecute(null);
-    const ctx = Context.create(null).child('test.module');
+    const ctx = Context.create().child('test.module');
     ctx.data[CTX_GLOBAL_DEADLINE] = Date.now() - 1000; // already past
     const mod = makeModule();
     const pctx = makePipelineContext({ module: mod, context: ctx });

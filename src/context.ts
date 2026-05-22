@@ -4,6 +4,7 @@
 
 import { v4 as uuidv4 } from 'uuid';
 import type { CancelToken } from './cancel.js';
+import { ContextBindingError } from './errors.js';
 import { ContextLogger } from './observability/context-logger.js';
 import type { TraceParent } from './trace-context.js';
 
@@ -42,6 +43,15 @@ export class Context<T = null> {
   readonly globalDeadline: number | null;
   private _logger: ContextLogger | null = null;
 
+  /**
+   * Never-aborted fallback signal returned when no `cancelToken` is bound.
+   * Modules can safely attach this signal to Web APIs (`fetch`, etc.) and
+   * rely on it never firing in the no-cancel case. Lazy-created on first
+   * read so contexts without cancel support pay no AbortController cost.
+   * (D-18, apcore v0.22.0)
+   */
+  private static _NEVER_SIGNAL: AbortSignal | null = null;
+
   constructor(
     traceId: string,
     callerId: string | null = null,
@@ -70,6 +80,15 @@ export class Context<T = null> {
   /**
    * Create a new top-level Context with a generated 32-char hex traceId.
    *
+   * Per apcore Issue #66 / v0.22.0, the public input list is unified across
+   * SDKs to: `identity`, `traceParent`, `cancelToken`, `data`, `services`,
+   * `globalDeadline`. `executor` and `callerId` are NOT accepted as inputs:
+   *   - `executor` is bound to the Context by the Executor on first call()
+   *     (see {@link _withExecutor}); top-level Contexts created locally
+   *     therefore have `executor === null` until the Executor binds itself.
+   *   - `callerId` is managed exclusively by {@link child}; top-level
+   *     Contexts always have `callerId === null`.
+   *
    * When `traceParent` is provided, its `traceId` is accepted only if it is
    * exactly 32 lowercase hex characters and not the W3C-reserved all-zero
    * or all-f value. Otherwise a fresh traceId is generated and a warning
@@ -78,10 +97,10 @@ export class Context<T = null> {
    * TraceParent header parser or the caller's ContextFactory.
    */
   static create<S = null>(
-    executor: unknown = null,
     identity: Identity | null = null,
+    traceParent: TraceParent | null = null,
+    cancelToken: CancelToken | null = null,
     data?: Record<string, unknown>,
-    traceParent?: TraceParent | null,
     services?: S,
     globalDeadline?: number | null,
   ): Context<S> {
@@ -116,13 +135,70 @@ export class Context<T = null> {
       traceId,
       null,
       [],
-      executor,
+      null,
       identity,
       null,
       ctxData,
-      null,
+      cancelToken,
       services ?? (null as S),
       globalDeadline ?? null,
+    );
+  }
+
+  /**
+   * @internal SDK-only. Returns a new Context with `executor` bound.
+   *
+   * Idempotent for the same Executor instance — returns `this` unchanged.
+   * Throws {@link ContextBindingError} if the Context is already bound to a
+   * different Executor (cross-executor rebind is a programming error per
+   * apcore spec §"Contract: Executor binding to Context").
+   */
+  _withExecutor(executor: unknown): Context<T> {
+    if (this.executor === executor) return this;
+    if (this.executor != null) {
+      throw new ContextBindingError(
+        'Context already bound to a different Executor instance',
+      );
+    }
+    return new Context<T>(
+      this.traceId,
+      this.callerId,
+      [...this.callChain],
+      executor,
+      this.identity,
+      this.redactedInputs,
+      this.data,
+      this.cancelToken,
+      this.services,
+      this.globalDeadline,
+    );
+  }
+
+  /**
+   * @internal SDK-only. Returns a new Context with `cancelToken` bound.
+   *
+   * Idempotent for the same token instance — returns `this` unchanged.
+   * Throws {@link ContextBindingError} if the Context is already bound to a
+   * different CancelToken.
+   */
+  _withCancelToken(cancelToken: CancelToken): Context<T> {
+    if (this.cancelToken === cancelToken) return this;
+    if (this.cancelToken != null) {
+      throw new ContextBindingError(
+        'Context already bound to a different CancelToken',
+      );
+    }
+    return new Context<T>(
+      this.traceId,
+      this.callerId,
+      [...this.callChain],
+      this.executor,
+      this.identity,
+      this.redactedInputs,
+      this.data,
+      cancelToken,
+      this.services,
+      this.globalDeadline,
     );
   }
 
@@ -233,6 +309,23 @@ export class Context<T = null> {
    */
   static fromJSON(data: Record<string, unknown>): Context {
     return this.deserialize(data);
+  }
+
+  /**
+   * The cancel token's `AbortSignal` if a token is bound, else a never-aborted
+   * fallback. Modules using standard Web-API I/O (`fetch`, `setTimeout` via
+   * `AbortSignal.timeout`, Web Streams) should attach this signal so they
+   * participate in real cancellation when callers invoke `cancelToken.cancel()`
+   * or `AsyncTaskManager.cancel()` (D-18, apcore v0.22.0).
+   */
+  get signal(): AbortSignal {
+    if (this.cancelToken !== null) {
+      return this.cancelToken.signal;
+    }
+    if (Context._NEVER_SIGNAL === null) {
+      Context._NEVER_SIGNAL = new AbortController().signal;
+    }
+    return Context._NEVER_SIGNAL;
   }
 
   /**

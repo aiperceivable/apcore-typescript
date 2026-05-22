@@ -803,7 +803,11 @@ describe('Registry register() onLoad callback', () => {
     expect(registry.has('with.load')).toBe(true);
   });
 
-  it('re-deletes module and re-throws when onLoad throws', () => {
+  it('re-deletes module and rejects when onLoad throws', async () => {
+    // v0.22.0 A-D-REG-001: register() always returns a Promise; sync onLoad
+    // failures now surface as a rejection (and emit
+    // apcore.registry.module_load_failed) so the strong-guarantee invariant
+    // holds uniformly across sync and async onLoad.
     const registry = new Registry();
     const loadError = new Error('onLoad failed');
     const mod = {
@@ -815,7 +819,7 @@ describe('Registry register() onLoad callback', () => {
         throw loadError;
       },
     };
-    expect(() => registry.register('bad.load', mod)).toThrow(loadError);
+    await expect(registry.register('bad.load', mod)).rejects.toBe(loadError);
     expect(registry.has('bad.load')).toBe(false);
     expect(registry.count).toBe(0);
   });

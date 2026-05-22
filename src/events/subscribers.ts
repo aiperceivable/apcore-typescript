@@ -4,7 +4,8 @@
 
 import * as fs from 'node:fs';
 import type { ApCoreEvent, EventSubscriber } from './emitter.js';
-import { fnmatch } from './retry.js';
+import { DEFAULT_RETRY, fnmatch } from './retry.js';
+import type { RetryConfig } from './retry.js';
 
 const SEVERITY_ORDER: Record<string, number> = { info: 0, warn: 1, error: 2, fatal: 3 };
 
@@ -20,28 +21,38 @@ function _nextSubscriberId(typeName: string): string {
 /**
  * Delivers events via HTTP POST to a webhook URL.
  *
- * Retries on 5xx and connection errors up to `retryCount` times.
- * Does not retry on 4xx responses. Enforces `timeoutMs`.
+ * Retries on 5xx and connection errors. As of v0.22.0 finding A-D-EVT-001,
+ * the retry policy is unified across event subscribers: the subscriber MUST
+ * NOT loop internally. Instead, it rethrows on 5xx / network errors and the
+ * outer `EventEmitter._deliver` applies the spec retry policy declared via
+ * the `retry` field (defaults to `DEFAULT_RETRY` — 3 attempts, 100 ms initial
+ * backoff, 2× multiplier, 30 s cap). 4xx responses are treated as
+ * non-retryable: a warning is logged and the call returns normally.
  */
 export class WebhookSubscriber implements EventSubscriber {
   readonly subscriberId: string;
+  readonly retry: RetryConfig;
   private readonly _url: string;
   private readonly _headers: Record<string, string>;
-  private readonly _retryCount: number;
   private readonly _timeoutMs: number;
 
   constructor(
     url: string,
     headers?: Record<string, string>,
-    retryCount: number = 3,
-    timeoutMs: number = 5000,
+    timeoutMsOrOpts: number | { timeoutMs?: number; retry?: RetryConfig; id?: string } = 5000,
     id?: string,
   ) {
-    this.subscriberId = id ?? _nextSubscriberId('webhook');
+    if (typeof timeoutMsOrOpts === 'number') {
+      this._timeoutMs = timeoutMsOrOpts;
+      this.retry = { ...DEFAULT_RETRY };
+      this.subscriberId = id ?? _nextSubscriberId('webhook');
+    } else {
+      this._timeoutMs = timeoutMsOrOpts.timeoutMs ?? 5000;
+      this.retry = { ...DEFAULT_RETRY, ...(timeoutMsOrOpts.retry ?? {}) };
+      this.subscriberId = timeoutMsOrOpts.id ?? id ?? _nextSubscriberId('webhook');
+    }
     this._url = url;
     this._headers = headers ?? {};
-    this._retryCount = retryCount;
-    this._timeoutMs = timeoutMs;
   }
 
   async onEvent(event: ApCoreEvent): Promise<void> {
@@ -57,54 +68,29 @@ export class WebhookSubscriber implements EventSubscriber {
       ...this._headers,
     };
 
-    const attempts = 1 + this._retryCount;
-    let lastError: unknown = null;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this._timeoutMs);
+    try {
+      const response = await fetch(this._url, {
+        method: 'POST',
+        headers: mergedHeaders,
+        body: JSON.stringify(payload),
+        signal: controller.signal,
+      });
 
-    for (let attempt = 0; attempt < attempts; attempt++) {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), this._timeoutMs);
-      try {
-        const response = await fetch(this._url, {
-          method: 'POST',
-          headers: mergedHeaders,
-          body: JSON.stringify(payload),
-          signal: controller.signal,
-        });
-
-        if (response.status < 500) {
-          if (response.status >= 400) {
-            console.warn(
-              '[apcore:events]',
-              `Webhook ${this._url} returned ${response.status} for event ${event.eventType}`,
-            );
-          }
-          return;
-        }
-
-        // 5xx -- retry
-        lastError = new Error(`Webhook returned ${response.status}`);
-        console.warn(
-          '[apcore:events]',
-          `Webhook ${this._url} returned ${response.status} (attempt ${attempt + 1}/${attempts})`,
-        );
-      } catch (err: unknown) {
-        lastError = err;
-        console.warn(
-          '[apcore:events]',
-          `Webhook ${this._url} failed (attempt ${attempt + 1}/${attempts}):`,
-          err,
-        );
-      } finally {
-        clearTimeout(timer);
+      if (response.status >= 500) {
+        // Server error — rethrow so the EventEmitter retry policy applies.
+        throw new Error(`Webhook ${this._url} returned ${response.status}`);
       }
-    }
-
-    if (lastError !== null) {
-      console.warn(
-        '[apcore:events]',
-        `Webhook ${this._url} delivery failed after ${attempts} attempts:`,
-        lastError,
-      );
+      if (response.status >= 400) {
+        // Client error — non-retryable; log and return.
+        console.warn(
+          '[apcore:events]',
+          `Webhook ${this._url} returned ${response.status} for event ${event.eventType}`,
+        );
+      }
+    } finally {
+      clearTimeout(timer);
     }
   }
 }
@@ -113,10 +99,16 @@ export class WebhookSubscriber implements EventSubscriber {
  * Delivers events via the A2A protocol to the platform.
  *
  * Sends a POST with `skillId="apevo.event_receiver"` and the
- * serialized event in the payload. Failures are logged, not raised.
+ * serialized event in the payload. As of v0.22.0 finding A-D-EVT-001 the
+ * subscriber no longer silently swallows errors: it rethrows on any
+ * status >=400 or network error so the unified `EventEmitter._deliver`
+ * retry policy applies (defaults to `DEFAULT_RETRY` — 3 attempts, 100 ms
+ * initial backoff, 2× multiplier, 30 s cap). After exhaustion the
+ * EventEmitter routes the failure through the DLQ + `onFailure` path.
  */
 export class A2ASubscriber implements EventSubscriber {
   readonly subscriberId: string;
+  readonly retry: RetryConfig;
   private readonly _platformUrl: string;
   private readonly _auth: string | Record<string, string> | undefined;
   private readonly _timeoutMs: number;
@@ -125,15 +117,25 @@ export class A2ASubscriber implements EventSubscriber {
   constructor(
     platformUrl: string,
     auth?: string | Record<string, string | unknown>,
-    timeoutMs: number = 5000,
+    timeoutMsOrOpts:
+      | number
+      | { timeoutMs?: number; retry?: RetryConfig; id?: string; skillId?: string } = 5000,
     id?: string,
     skillId: string = 'apevo.event_receiver',
   ) {
-    this.subscriberId = id ?? _nextSubscriberId('a2a');
+    if (typeof timeoutMsOrOpts === 'number') {
+      this._timeoutMs = timeoutMsOrOpts;
+      this.retry = { ...DEFAULT_RETRY };
+      this.subscriberId = id ?? _nextSubscriberId('a2a');
+      this._skillId = skillId;
+    } else {
+      this._timeoutMs = timeoutMsOrOpts.timeoutMs ?? 5000;
+      this.retry = { ...DEFAULT_RETRY, ...(timeoutMsOrOpts.retry ?? {}) };
+      this.subscriberId = timeoutMsOrOpts.id ?? id ?? _nextSubscriberId('a2a');
+      this._skillId = timeoutMsOrOpts.skillId ?? skillId;
+    }
     this._platformUrl = platformUrl;
     this._auth = auth as string | Record<string, string> | undefined;
-    this._timeoutMs = timeoutMs;
-    this._skillId = skillId;
   }
 
   async onEvent(event: ApCoreEvent): Promise<void> {
@@ -177,17 +179,11 @@ export class A2ASubscriber implements EventSubscriber {
       });
 
       if (response.status >= 400) {
-        console.warn(
-          '[apcore:events]',
+        // Rethrow so the EventEmitter unified retry/DLQ policy applies.
+        throw new Error(
           `A2A delivery to ${this._platformUrl} failed with status ${response.status}`,
         );
       }
-    } catch (err: unknown) {
-      console.warn(
-        '[apcore:events]',
-        `A2A delivery to ${this._platformUrl} failed for event ${event.eventType}:`,
-        err,
-      );
     } finally {
       clearTimeout(timer);
     }

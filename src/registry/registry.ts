@@ -782,9 +782,24 @@ export class Registry {
     // Detect async onLoad
     const modObj = module as Record<string, unknown>;
     if (typeof modObj['onLoad'] === 'function') {
-      // Call onLoad and check if it returns a Promise
+      // Call onLoad and check if it returns a Promise.
+      // Sync onLoad must emit module_load_failed on throw (Issue #65 gap;
+      // mirror the async-Promise rejection branch below). The strong-guarantee
+      // invariant — caller observes either fully-published or
+      // module_load_failed — applies to every registration path including
+      // this entry point.
       let onLoadResult: unknown;
-      onLoadResult = (modObj['onLoad'] as () => unknown)();
+      try {
+        onLoadResult = (modObj['onLoad'] as () => unknown)();
+      } catch (e) {
+        // Surface sync onLoad failures as a rejected Promise so the
+        // strong-guarantee invariant — `register()` always returns a Promise
+        // — holds for sync and async onLoad alike. Without this, callers
+        // doing `await registry.register(...)` would see sync throws and the
+        // module_load_failed event would arrive before the await target.
+        this._emitModuleLoadFailed(moduleId, e);
+        return Promise.reject(e);
+      }
 
       if (onLoadResult instanceof Promise) {
         // Async onLoad: deferred-publish
@@ -876,13 +891,15 @@ export class Registry {
       }
     }
 
-    this._modules.set(moduleId, module);
-    this._lowercaseMap.set(moduleId.toLowerCase(), moduleId);
-
-    // Populate metadata from the module object, layering any explicit overrides
-    // (e.g. the `version` / `metadata` args passed to `register()`) on top.
+    // A-D-REG-003 / spec REG-003: deferred-publish for the discover path.
+    // Reserve the slot in metadata + lowercase index (for conflict detection)
+    // but do NOT insert into `_modules` until onLoad has completed. The
+    // strong-guarantee invariant (#65) applies uniformly to every registration
+    // path including discover/hot-reload — observers must never see a module
+    // that subsequently fails its onLoad.
     const modObj = module as Record<string, unknown>;
     this._moduleMeta.set(moduleId, mergeModuleMetadata(modObj, metadataOverrides));
+    this._lowercaseMap.set(moduleId.toLowerCase(), moduleId);
 
     // Call onLoad if available (sync only in this discover() path)
     if (typeof modObj['onLoad'] === 'function') {
@@ -890,26 +907,29 @@ export class Registry {
       try {
         onLoadResult = (modObj['onLoad'] as () => unknown)();
       } catch (e) {
-        this._modules.delete(moduleId);
+        // Rollback the reservation: nothing was published, so observers
+        // never saw the module.
         this._moduleMeta.delete(moduleId);
         this._lowercaseMap.delete(moduleId.toLowerCase());
         this._emitModuleLoadFailed(moduleId, e);
         throw e;
       }
       if (onLoadResult instanceof Promise) {
-        // Async onLoad in discover() path: warn and skip — deferred-publish is
-        // only available via the public register() API.
+        // Async onLoad in discover() path: warn and skip — deferred-publish
+        // with async onLoad is only available via the public register() API.
         console.warn(
           `[apcore:registry] Module '${moduleId}' has async onLoad in discover() path ` +
           `— async onLoad is not supported here; use Registry.register() instead. Module skipped.`,
         );
-        this._modules.delete(moduleId);
         this._moduleMeta.delete(moduleId);
         this._lowercaseMap.delete(moduleId.toLowerCase());
         onLoadResult.catch(() => {}); // prevent unhandled rejection
         return;
       }
     }
+
+    // onLoad succeeded — now commit the module to the visible map.
+    this._modules.set(moduleId, module);
 
     this._triggerEvent(REGISTRY_EVENTS.REGISTER, moduleId, module);
   }
@@ -1396,7 +1416,11 @@ export class Registry {
       console.warn(`[apcore:registry] ID conflict: ${conflict.message}`);
     }
 
-    this._modules.set(moduleId, module);
+    // A-D-REG-004 / spec REG-003: deferred-publish for registerInternal.
+    // Reserve metadata + lowercase index but defer the visible _modules
+    // insert until onLoad succeeds so the strong-guarantee invariant (#65)
+    // holds uniformly across `register()`, `registerInternal`, and
+    // discover/hot-reload paths.
     const modObj = module as Record<string, unknown>;
     this._moduleMeta.set(moduleId, mergeModuleMetadata(modObj, {}));
     // Mirror apcore-python register_internal and apcore-rust register_core:
@@ -1410,13 +1434,14 @@ export class Registry {
       try {
         (modObj['onLoad'] as () => void)();
       } catch (e) {
-        this._modules.delete(moduleId);
         this._moduleMeta.delete(moduleId);
         this._lowercaseMap.delete(moduleId.toLowerCase());
+        this._emitModuleLoadFailed(moduleId, e);
         throw e;
       }
     }
 
+    this._modules.set(moduleId, module);
     this._triggerEvent(REGISTRY_EVENTS.REGISTER, moduleId, module);
   }
 

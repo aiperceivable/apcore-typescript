@@ -353,7 +353,12 @@ export class Executor {
   ): Promise<Record<string, unknown>> {
     this._validateModuleId(moduleId);
 
-    const ctx = context != null ? context : Context.create(this);
+    // Issue #66: auto-bind executor to context on every entry. _withExecutor
+    // is idempotent for the same instance and raises ContextBindingError on
+    // cross-executor rebind, so the rule "Executor binds itself on first call"
+    // is enforced regardless of how the caller built the Context.
+    let ctx = context ?? Context.create();
+    ctx = ctx._withExecutor(this);
     const pipeCtx: PipelineContext = {
       moduleId,
       inputs: inputs ?? {},
@@ -453,7 +458,9 @@ export class Executor {
   ): Promise<[Record<string, unknown>, PipelineTrace]> {
     const strategy = options?.strategy ?? this._strategy;
 
-    const ctx = context ?? Context.create(this);
+    // Issue #66: auto-bind executor (see call() for rationale).
+    let ctx = context ?? Context.create();
+    ctx = ctx._withExecutor(this);
     const pipelineCtx: PipelineContext = {
       moduleId,
       inputs: inputs ?? {},
@@ -472,12 +479,40 @@ export class Executor {
       const [output, trace] = await this._pipelineEngine.run(strategy, pipelineCtx);
       return [(output ?? {}) as Record<string, unknown>, trace];
     } catch (exc) {
-      // Unwrap PipelineStepError so callers see the original typed cause, consistent
-      // with call() behaviour (§1.1 engine-level contract vs public API surface).
-      if (exc instanceof PipelineStepError && exc.cause instanceof Error) {
-        throw exc.cause;
+      // Spec D-19/D-20/D-22: `callWithTrace` MUST share `call()`'s error
+      // semantics — same on_error chain, same cancellation short-circuit,
+      // same MiddlewareChainError unwrap. The trace is the observable record
+      // of execution, including any middleware recovery, not a sanitized
+      // projection. (Closes A-D-EXEC-004; mirrors Python
+      // `call_async_with_trace`.)
+      if (exc instanceof ExecutionCancelledError) throw exc;
+
+      const unwrapped =
+        exc instanceof PipelineStepError ? (exc.cause instanceof Error ? exc.cause : exc) : exc;
+      const ctxObj = pipelineCtx.context;
+      const underlying =
+        unwrapped instanceof MiddlewareChainError ? unwrapped.original : (unwrapped as Error);
+      const wrapped = propagateError(underlying, moduleId, ctxObj);
+
+      const executedMw = pipelineCtx.executedMiddlewares;
+      if (executedMw && executedMw.length > 0) {
+        const recovery = await this._middlewareManager.executeOnError(
+          moduleId,
+          pipelineCtx.inputs,
+          wrapped as Error,
+          ctxObj,
+          executedMw as Middleware[],
+        );
+        if (recovery !== null && !(recovery instanceof RetrySignal)) {
+          // RetrySignal is intentionally not honoured in the trace variant
+          // (D-19 leaves retry-loop semantics to `call()`); a non-null
+          // recovery dict counts as a successful middleware repair and is
+          // returned alongside the trace already captured in pipelineCtx.
+          const trace = (pipelineCtx.trace ?? null) as unknown as PipelineTrace;
+          return [recovery, trace];
+        }
       }
-      throw exc;
+      throw wrapped;
     }
   }
 
@@ -510,7 +545,9 @@ export class Executor {
   ): AsyncGenerator<Record<string, unknown>> {
     this._validateModuleId(moduleId);
 
-    const ctx = context != null ? context : Context.create(this);
+    // Issue #66: auto-bind executor (see call() for rationale).
+    let ctx = context ?? Context.create();
+    ctx = ctx._withExecutor(this);
     const pipeCtx: PipelineContext = {
       moduleId,
       inputs: inputs ?? {},
@@ -674,11 +711,14 @@ export class Executor {
     }
     checks.push({ check: 'module_id', passed: true });
 
-    // Run pipeline in dry_run mode — pure=false steps are skipped
+    // Run pipeline in dry_run mode — pure=false steps are skipped.
+    // Issue #66: auto-bind executor on every entry (see call() for rationale).
+    let validateCtx = context ?? Context.create();
+    validateCtx = validateCtx._withExecutor(this);
     const pipeCtx: PipelineContext = {
       moduleId,
       inputs: effectiveInputs,
-      context: context ?? Context.create(this),
+      context: validateCtx,
       module: null,
       validatedInputs: null,
       output: null,

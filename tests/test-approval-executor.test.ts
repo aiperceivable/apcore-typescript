@@ -452,7 +452,7 @@ describe('ApprovalAuditEvents', () => {
     const registry = createTestRegistry();
     const executor = new Executor({ registry, approvalHandler: new AutoApproveHandler() });
     // Set up tracing spans on context to capture approval event
-    const ctx = Context.create(executor).child('test.approval_required');
+    const ctx = Context.create().child('test.approval_required');
     const spansStack = [{ events: [] as Record<string, unknown>[] }];
     ctx.data['_apcore.mw.tracing.spans'] = spansStack;
     await executor.call('test.approval_required', {}, ctx);
@@ -465,7 +465,7 @@ describe('ApprovalAuditEvents', () => {
   it('emits audit span event on denied', async () => {
     const registry = createTestRegistry();
     const executor = new Executor({ registry, approvalHandler: new AlwaysDenyHandler() });
-    const ctx = Context.create(executor).child('test.approval_required');
+    const ctx = Context.create().child('test.approval_required');
     const spansStack = [{ events: [] as Record<string, unknown>[] }];
     ctx.data['_apcore.mw.tracing.spans'] = spansStack;
     await expect(executor.call('test.approval_required', {}, ctx)).rejects.toThrow(ApprovalDeniedError);
@@ -480,7 +480,7 @@ describe('ApprovalAuditEvents', () => {
       createApprovalResult({ status: 'pending', approvalId: 'tok-123' }),
     );
     const executor = new Executor({ registry, approvalHandler: handler });
-    const ctx = Context.create(executor).child('test.approval_required');
+    const ctx = Context.create().child('test.approval_required');
     const spansStack = [{ events: [] as Record<string, unknown>[] }];
     ctx.data['_apcore.mw.tracing.spans'] = spansStack;
     await expect(executor.call('test.approval_required', {}, ctx)).rejects.toThrow(ApprovalPendingError);
@@ -516,7 +516,7 @@ describe('ApprovalAuditEvents', () => {
     const infoSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
     try {
-      const ctx = Context.create(executor);
+      const ctx = Context.create();
       ctx.data['_apcore.mw.tracing.spans'] = [mockSpan];
       await executor.call('test.approval_required', {}, ctx);
 
@@ -541,7 +541,7 @@ describe('ApprovalAuditEvents', () => {
     const infoSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
     try {
-      const ctx = Context.create(executor);
+      const ctx = Context.create();
       ctx.data['_apcore.mw.tracing.spans'] = [mockSpan];
 
       await expect(executor.call('test.approval_required', {}, ctx)).rejects.toThrow(ApprovalDeniedError);

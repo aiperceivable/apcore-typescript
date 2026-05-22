@@ -13,7 +13,7 @@ import { ErrorHistory } from '../observability/error-history.js';
 import { ErrorHistoryMiddleware } from '../middleware/error-history.js';
 import { UsageCollector, UsageMiddleware } from '../observability/usage.js';
 import type { EventSubscriber } from '../events/emitter.js';
-import { EventEmitter, emitWithLegacy } from '../events/emitter.js';
+import { createEvent, EventEmitter } from '../events/emitter.js';
 import { WebhookSubscriber, A2ASubscriber, FileSubscriber, StdoutSubscriber, FilterSubscriber } from '../events/subscribers.js';
 import { PlatformNotifyMiddleware } from '../middleware/platform-notify.js';
 import { HealthSummaryModule, HealthModule } from './health.js';
@@ -72,14 +72,22 @@ function _registerBuiltInFactories(): void {
     const headers = config['headers'] as Record<string, string> | undefined;
     const retryCount = config['retry_count'] as number | undefined;
     const timeoutMs = config['timeout_ms'] as number | undefined;
-    return new WebhookSubscriber(url, headers, retryCount, timeoutMs);
+    // v0.22.0 A-D-EVT-001: subscriber-internal retry loop removed; configure
+    // the unified EventEmitter retry policy by translating retry_count
+    // (legacy: number of additional retries) to maxAttempts (1 + retry_count).
+    const opts: { timeoutMs?: number; retry?: { maxAttempts?: number } } = {};
+    if (timeoutMs !== undefined) opts.timeoutMs = timeoutMs;
+    if (retryCount !== undefined) opts.retry = { maxAttempts: retryCount + 1 };
+    return new WebhookSubscriber(url, headers, opts);
   });
 
   _subscriberFactories.set('a2a', (config: Record<string, unknown>): EventSubscriber => {
     const platformUrl = config['platform_url'] as string;
     const auth = config['auth'] as string | Record<string, string> | undefined;
     const timeoutMs = config['timeout_ms'] as number | undefined;
-    return new A2ASubscriber(platformUrl, auth, timeoutMs);
+    const opts: { timeoutMs?: number } = {};
+    if (timeoutMs !== undefined) opts.timeoutMs = timeoutMs;
+    return new A2ASubscriber(platformUrl, auth, opts);
   });
 
   _subscriberFactories.set('file', (config: Record<string, unknown>): EventSubscriber => {
@@ -364,9 +372,8 @@ export function registerSysModules(
     registry.setEventEmitter(eventEmitter);
 
     // Bridge registry events.
-    // §Issue #36: emit canonical apcore.registry.* names and legacy aliases
-    // (with deprecated: true) during the deprecation window. Once the legacy
-    // names are removed, drop the emitWithLegacy() wrapper for direct emit().
+    // §Issue #36: legacy aliases removed in v0.22.0 — emit only the canonical
+    // apcore.registry.* names.
     //
     // Single-emit rule for ephemeral.* registrations: the registry-side
     // direct emit (`Registry._emitEphemeralAudit`) already fires the
@@ -378,25 +385,21 @@ export function registerSysModules(
     // rule".
     registry.on('register', (moduleId: string) => {
       if (moduleId.startsWith('ephemeral.')) return;
-      emitWithLegacy(
-        eventEmitter,
+      eventEmitter.emit(createEvent(
         'apcore.registry.module_registered',
-        'module_registered',
         moduleId,
         'info',
         {},
-      );
+      ));
     });
     registry.on('unregister', (moduleId: string) => {
       if (moduleId.startsWith('ephemeral.')) return;
-      emitWithLegacy(
-        eventEmitter,
+      eventEmitter.emit(createEvent(
         'apcore.registry.module_unregistered',
-        'module_unregistered',
         moduleId,
         'info',
         {},
-      );
+      ));
     });
   }
 

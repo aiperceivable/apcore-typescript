@@ -267,7 +267,7 @@ describe('Executor.stream()', () => {
     // Pre-populate the context with an already-expired global deadline so
     // the first chunk-loop check trips. Use the canonical context.data slot.
     const { Context } = await import('../src/context.js');
-    const ctx = Context.create(executor);
+    const ctx = Context.create();
     ctx.data[CTX_GLOBAL_DEADLINE] = Date.now() + 10; // ~10ms from now
 
     const collected: Record<string, unknown>[] = [];

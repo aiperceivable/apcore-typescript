@@ -8,6 +8,7 @@ import { Registry } from '../../src/registry/registry.js';
 import { Executor } from '../../src/executor.js';
 import { FunctionModule } from '../../src/decorator.js';
 import { Context, createIdentity } from '../../src/context.js';
+import { ContextBindingError } from '../../src/errors.js';
 import { InMemoryExporter, TracingMiddleware } from '../../src/observability/tracing.js';
 import { MetricsCollector, MetricsMiddleware } from '../../src/observability/metrics.js';
 
@@ -153,10 +154,72 @@ describe('Binding + Registry + Executor', () => {
 
     const executor = new Executor({ registry });
     const identity = createIdentity('user123', 'user', ['admin']);
-    const ctx = Context.create(executor, identity);
+    // Issue #66: executor is NOT a Context.create() parameter. The Executor
+    // auto-binds itself on the first call().
+    const ctx = Context.create(identity);
+    expect(ctx.executor).toBeNull();
 
     const result = await executor.call('test.ctx', {}, ctx);
     expect(result['hasIdentity']).toBe(true);
+    // After the call returns, the Context's *original* instance still has
+    // executor === null (Context is immutable); the bound copy lived inside
+    // the pipeline. This is the expected v0.22.0 behavior.
+    expect(ctx.executor).toBeNull();
+  });
+
+  // -------------------------------------------------------------------------
+  // Executor binding contract (apcore Issue #66 / v0.22.0)
+  // -------------------------------------------------------------------------
+
+  it('auto-binds executor on first call() (Issue #66)', async () => {
+    const registry = new Registry();
+    let observed: unknown = null;
+    registry.register('test.observe', new FunctionModule({
+      execute: (_inputs, context) => {
+        observed = context.executor;
+        return { ok: true };
+      },
+      moduleId: 'test.observe',
+      inputSchema: Type.Object({}),
+      outputSchema: Type.Object({ ok: Type.Boolean() }),
+      description: 'Captures executor from context',
+    }));
+
+    const executor = new Executor({ registry });
+    const ctx = Context.create();
+    expect(ctx.executor).toBeNull();
+
+    await executor.call('test.observe', {}, ctx);
+    // Module saw the auto-bound executor on its child context.
+    expect(observed).toBe(executor);
+  });
+
+  it('rebind on the same executor is idempotent (Issue #66)', async () => {
+    const registry = new Registry();
+    registry.register('test.noop', new FunctionModule({
+      execute: () => ({ ok: true }),
+      moduleId: 'test.noop',
+      inputSchema: Type.Object({}),
+      outputSchema: Type.Object({ ok: Type.Boolean() }),
+      description: 'noop',
+    }));
+
+    const executor = new Executor({ registry });
+    const ctx = Context.create();
+
+    // Three calls on the same Context + Executor MUST NOT raise.
+    await executor.call('test.noop', {}, ctx);
+    await executor.call('test.noop', {}, ctx);
+    await executor.call('test.noop', {}, ctx);
+  });
+
+  it('cross-executor rebind raises ContextBindingError (Issue #66)', () => {
+    const executorA = new Executor({ registry: new Registry() });
+    const executorB = new Executor({ registry: new Registry() });
+
+    // Manually bind to A using the internal helper, then try B.
+    const ctx = Context.create()._withExecutor(executorA);
+    expect(() => ctx._withExecutor(executorB)).toThrow(ContextBindingError);
   });
 
   it('mixed bindings and FunctionModule in same registry', async () => {

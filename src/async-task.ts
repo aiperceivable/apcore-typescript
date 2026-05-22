@@ -3,6 +3,7 @@
  */
 
 import { v4 as uuidv4 } from 'uuid';
+import { CancelToken } from './cancel.js';
 import type { Context } from './context.js';
 import type { Executor } from './executor.js';
 
@@ -29,35 +30,45 @@ export interface TaskInfo {
   readonly maxRetries: number;
 }
 
+/**
+ * Pluggable task storage backend.
+ *
+ * Spec D-17 (apcore v0.22.0): every method MUST be asynchronous so that
+ * Redis-, SQL-, and other I/O-backed stores can be plugged in without
+ * blocking the event loop. `InMemoryTaskStore` exposes async signatures
+ * even though its operations are CPU-only — uniform shape lets stores
+ * compose generically. Supersedes the partially-sync contract that
+ * existed in apcore-typescript through v0.21.x.
+ */
 export interface TaskStore {
-  save(task: TaskInfo): void;
-  get(taskId: string): TaskInfo | null;
-  list(status?: TaskStatus): TaskInfo[];
-  delete(taskId: string): void;
-  listExpired(beforeTimestamp: number): TaskInfo[];
+  save(task: TaskInfo): Promise<void>;
+  get(taskId: string): Promise<TaskInfo | null>;
+  list(status?: TaskStatus): Promise<TaskInfo[]>;
+  delete(taskId: string): Promise<void>;
+  listExpired(beforeTimestamp: number): Promise<TaskInfo[]>;
 }
 
 export class InMemoryTaskStore implements TaskStore {
   private readonly _data: Map<string, TaskInfo> = new Map();
 
-  save(task: TaskInfo): void {
+  async save(task: TaskInfo): Promise<void> {
     this._data.set(task.taskId, task);
   }
 
-  get(taskId: string): TaskInfo | null {
+  async get(taskId: string): Promise<TaskInfo | null> {
     return this._data.get(taskId) ?? null;
   }
 
-  list(status?: TaskStatus): TaskInfo[] {
+  async list(status?: TaskStatus): Promise<TaskInfo[]> {
     const all = [...this._data.values()];
     return status ? all.filter(t => t.status === status) : all;
   }
 
-  delete(taskId: string): void {
+  async delete(taskId: string): Promise<void> {
     this._data.delete(taskId);
   }
 
-  listExpired(beforeTimestamp: number): TaskInfo[] {
+  async listExpired(beforeTimestamp: number): Promise<TaskInfo[]> {
     return [...this._data.values()].filter(
       t => TERMINAL_STATUSES.has(t.status) && t.completedAt !== null && t.completedAt < beforeTimestamp,
     );
@@ -134,6 +145,11 @@ interface InternalTask {
   promise: Promise<void>;
   cancelled: boolean;
   resolve: () => void;
+  // D-18 (apcore v0.22.0): the same CancelToken is wired into the per-attempt
+  // child Context so `cancel()` produces a real AbortSignal abort at the next
+  // Web-API await point inside the executing module — not merely a cooperative
+  // flag.
+  cancelToken: CancelToken;
 }
 
 interface AsyncTaskManagerOptions {
@@ -179,7 +195,12 @@ export class AsyncTaskManager {
     inputs: Record<string, unknown>,
     opts?: { context?: Context | null; retry?: RetryConfig },
   ): Promise<string> {
-    if (this._internal.size >= this._maxTasks) {
+    // A-D-AT-01 (apcore v0.22.0): max_tasks counts active (PENDING|RUNNING)
+    // tasks only — completed/failed/cancelled tasks remain in `_internal` for
+    // bookkeeping but must not count toward the live concurrency cap. Mirrors
+    // Python `_ACTIVE_STATUSES` filter.
+    const active = await this._countActiveTasks();
+    if (active >= this._maxTasks) {
       throw new Error(`Task limit reached (${this._maxTasks})`);
     }
     const taskId = uuidv4();
@@ -197,29 +218,34 @@ export class AsyncTaskManager {
       maxRetries: retry?.maxRetries ?? 0,
     };
 
-    this._store.save(info);
+    await this._store.save(info);
 
     let resolvePromise!: () => void;
     const promise = new Promise<void>((resolve) => {
       resolvePromise = resolve;
     });
 
+    // D-18: every submitted task owns a CancelToken so AsyncTaskManager.cancel()
+    // produces a real AbortSignal abort, not just a cooperative flag.
+    const cancelToken = new CancelToken();
+
     const internal: InternalTask = {
       promise,
       cancelled: false,
       resolve: resolvePromise,
+      cancelToken,
     };
 
     this._internal.set(taskId, internal);
-    this._enqueue(taskId, moduleId, inputs, opts?.context ?? null, retry);
+    this._enqueue(taskId, moduleId, inputs, opts?.context ?? null, retry, cancelToken);
     return taskId;
   }
 
   /**
    * Return the TaskInfo for a task, or null if not found.
    */
-  getStatus(taskId: string): TaskInfo | null {
-    const info = this._store.get(taskId);
+  async getStatus(taskId: string): Promise<TaskInfo | null> {
+    const info = await this._store.get(taskId);
     return info ? { ...info } : null;
   }
 
@@ -228,8 +254,8 @@ export class AsyncTaskManager {
    *
    * Throws if the task is not found or not in COMPLETED status.
    */
-  getResult(taskId: string): Record<string, unknown> {
-    const info = this._store.get(taskId);
+  async getResult(taskId: string): Promise<Record<string, unknown>> {
+    const info = await this._store.get(taskId);
     if (!info) {
       throw new Error(`Task not found: ${taskId}`);
     }
@@ -243,9 +269,13 @@ export class AsyncTaskManager {
    * Cancel a running or pending task.
    *
    * Returns true if the task was successfully marked as cancelled.
+   *
+   * D-18 (v0.22.0): calling `cancel()` aborts the running executor invocation
+   * via the CancelToken's underlying AbortSignal — modules performing standard
+   * Web-API I/O (`fetch`, `setTimeout`, Web Streams) participate in real abort.
    */
   async cancel(taskId: string): Promise<boolean> {
-    const info = this._store.get(taskId) as MutableTaskInfo | null;
+    const info = await this._store.get(taskId) as MutableTaskInfo | null;
     if (!info) return false;
 
     if (info.status !== TaskStatus.PENDING && info.status !== TaskStatus.RUNNING) {
@@ -256,17 +286,19 @@ export class AsyncTaskManager {
     if (!internal) return false;
 
     internal.cancelled = true;
+    internal.cancelToken.cancel();
     info.status = TaskStatus.CANCELLED;
     info.completedAt = Date.now() / 1000;
-    this._store.save(info);
+    await this._store.save(info);
     return true;
   }
 
   /**
    * Return all tasks, optionally filtered by status.
    */
-  listTasks(status?: TaskStatus): TaskInfo[] {
-    return this._store.list(status).map(t => ({ ...t }));
+  async listTasks(status?: TaskStatus): Promise<TaskInfo[]> {
+    const items = await this._store.list(status);
+    return items.map(t => ({ ...t }));
   }
 
   /**
@@ -274,15 +306,15 @@ export class AsyncTaskManager {
    *
    * Returns the number of tasks removed.
    */
-  cleanup(maxAgeSeconds: number = 3600): number {
+  async cleanup(maxAgeSeconds: number = 3600): Promise<number> {
     const threshold = Date.now() / 1000 - maxAgeSeconds;
     let removed = 0;
 
-    for (const task of this._store.list()) {
+    for (const task of await this._store.list()) {
       if (!TERMINAL_STATUSES.has(task.status)) continue;
       const refTime = task.completedAt ?? task.submittedAt;
       if (refTime <= threshold) {
-        this._store.delete(task.taskId);
+        await this._store.delete(task.taskId);
         this._internal.delete(task.taskId);
         removed++;
       }
@@ -296,7 +328,7 @@ export class AsyncTaskManager {
    */
   async shutdown(): Promise<void> {
     const promises: Promise<void>[] = [];
-    for (const task of this._store.list()) {
+    for (const task of await this._store.list()) {
       if (task.status === TaskStatus.PENDING || task.status === TaskStatus.RUNNING) {
         const internal = this._internal.get(task.taskId);
         void this.cancel(task.taskId);
@@ -307,6 +339,17 @@ export class AsyncTaskManager {
       await this._reaper.stop();
     }
     await Promise.allSettled(promises);
+  }
+
+  /** Count tasks in PENDING or RUNNING state across the store. */
+  private async _countActiveTasks(): Promise<number> {
+    let count = 0;
+    for (const t of await this._store.list()) {
+      if (t.status === TaskStatus.PENDING || t.status === TaskStatus.RUNNING) {
+        count++;
+      }
+    }
+    return count;
   }
 
   /**
@@ -327,20 +370,24 @@ export class AsyncTaskManager {
     let resolveStop!: () => void;
     const stopPromise = new Promise<void>((resolve) => { resolveStop = resolve; });
 
-    const sweep = (): void => {
+    const sweep = async (): Promise<void> => {
       if (stopped) return;
       const threshold = Date.now() / 1000 - ttlSeconds;
-      const expired = this._store.listExpired(threshold);
-      for (const task of expired) {
-        this._store.delete(task.taskId);
-        this._internal.delete(task.taskId);
+      try {
+        const expired = await this._store.listExpired(threshold);
+        for (const task of expired) {
+          await this._store.delete(task.taskId);
+          this._internal.delete(task.taskId);
+        }
+      } catch (err) {
+        console.warn('[apcore:async-task] Reaper sweep failed:', err);
       }
       if (!stopped) {
-        timeoutHandle = setTimeout(sweep, sweepIntervalMs);
+        timeoutHandle = setTimeout(() => { void sweep(); }, sweepIntervalMs);
       }
     };
 
-    timeoutHandle = setTimeout(sweep, sweepIntervalMs);
+    timeoutHandle = setTimeout(() => { void sweep(); }, sweepIntervalMs);
 
     const handle: ReaperHandle = {
       stop: async (): Promise<void> => {
@@ -386,10 +433,17 @@ export class AsyncTaskManager {
     inputs: Record<string, unknown>,
     context: Context | null,
     retry: RetryConfig | null,
+    cancelToken: CancelToken,
   ): void {
     const run = async (): Promise<void> => {
       const internal = this._internal.get(taskId);
       if (!internal) return;
+
+      // Per-task Context augmented with the task's cancel token so the
+      // executor sees real cancellation (D-18). When the caller already
+      // supplied a Context we shallow-clone it to attach the token without
+      // mutating the caller's instance.
+      const taskContext = await this._buildTaskContext(context, cancelToken);
 
       // slotHeld tracks whether we currently hold a concurrency slot.
       // We release it during backoff waits so other tasks can run.
@@ -403,23 +457,28 @@ export class AsyncTaskManager {
 
           if (internal.cancelled) return;
 
-          const info = this._store.get(taskId) as MutableTaskInfo | null;
+          const info = await this._store.get(taskId) as MutableTaskInfo | null;
           if (!info) return;
 
           info.status = TaskStatus.RUNNING;
-          info.startedAt = Date.now() / 1000;
-          this._store.save(info);
+          // A-D-AT-08: preserve startedAt across retries (set only on first
+          // attempt). Mirrors Python + Rust semantics — `startedAt` reflects
+          // when the task first started running, not the latest attempt.
+          if (info.startedAt === null) {
+            info.startedAt = Date.now() / 1000;
+          }
+          await this._store.save(info);
 
           let execError: unknown = null;
           let succeeded = false;
 
           try {
-            const result = await this._executor.call(moduleId, inputs, context);
+            const result = await this._executor.call(moduleId, inputs, taskContext);
             if (!internal.cancelled) {
               info.status = TaskStatus.COMPLETED;
               info.completedAt = Date.now() / 1000;
               info.result = result;
-              this._store.save(info);
+              await this._store.save(info);
               succeeded = true;
             }
           } catch (err) {
@@ -435,9 +494,10 @@ export class AsyncTaskManager {
             const delay = retry.computeDelayMs(info.retryCount);
             info.retryCount += 1;
             info.status = TaskStatus.PENDING;
-            info.startedAt = null;
-            info.completedAt = null;
-            this._store.save(info);
+            // Intentionally do NOT reset startedAt / completedAt (A-D-AT-08):
+            // startedAt reflects first-run timestamp; completedAt remains null
+            // because the task has not yet terminated.
+            await this._store.save(info);
 
             await new Promise<void>((resolve) => setTimeout(resolve, delay));
 
@@ -447,7 +507,7 @@ export class AsyncTaskManager {
             info.status = TaskStatus.FAILED;
             info.completedAt = Date.now() / 1000;
             info.error = execError instanceof Error ? execError.message : String(execError);
-            this._store.save(info);
+            await this._store.save(info);
             return;
           }
         }
@@ -460,5 +520,42 @@ export class AsyncTaskManager {
     run().catch((err) => {
       console.warn('[apcore:async-task] Unexpected error in task runner:', err);
     });
+  }
+
+  /**
+   * Build the Context to hand to `executor.call()` for a task attempt.
+   *
+   * If the caller supplied a Context we shallow-clone it with the task's
+   * CancelToken attached; if no Context was supplied we create a fresh one
+   * via the public `Context.create()` factory with the token already bound
+   * (per Issue #66, `cancelToken` is now a first-class create() parameter).
+   * Either way the executor sees a Context whose `cancelToken` is the same
+   * instance that `AsyncTaskManager.cancel()` aborts (D-18).
+   */
+  private async _buildTaskContext(
+    callerContext: Context | null,
+    cancelToken: CancelToken,
+  ): Promise<Context> {
+    // Lazy import to avoid a static circular dep between async-task and context.
+    const { Context: CtxClass } = await import('./context.js');
+    if (callerContext === null) {
+      // Executor binding is deferred to the first executor.call() — Issue #66
+      // removes `executor` from Context.create()'s public surface.
+      return CtxClass.create(undefined, undefined, cancelToken);
+    }
+    // Shallow clone (preserve identity/data/etc.) and overwrite cancelToken.
+    const cloned = new CtxClass(
+      callerContext.traceId,
+      callerContext.callerId,
+      [...callerContext.callChain],
+      callerContext.executor,
+      callerContext.identity,
+      callerContext.redactedInputs,
+      callerContext.data,
+      cancelToken,
+      callerContext.services,
+      callerContext.globalDeadline,
+    );
+    return cloned;
   }
 }

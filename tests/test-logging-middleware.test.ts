@@ -8,7 +8,7 @@ import type { Logger } from '../src/middleware/logging.js';
 import { Context } from '../src/context.js';
 
 function makeContext(moduleId: string = 'test.mod'): Context {
-  const ctx = Context.create(null);
+  const ctx = Context.create();
   return ctx.child(moduleId);
 }
 

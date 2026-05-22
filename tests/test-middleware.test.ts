@@ -4,7 +4,7 @@ import { BeforeMiddleware, AfterMiddleware } from '../src/middleware/adapters.js
 import { Context, createIdentity } from '../src/context.js';
 
 function makeContext(): Context {
-  return Context.create(null, createIdentity('test-user'));
+  return Context.create(createIdentity('test-user'));
 }
 
 describe('Middleware base class', () => {
