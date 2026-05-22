@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
-## [Unreleased]
+## [0.22.0] - 2026-05-22
 
 ### Added
 
@@ -27,9 +27,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 
 - **`emitWithLegacy()` helper and legacy event aliases ([apcore#36](https://github.com/aiperceivable/apcore/issues/36)).** Per spec v0.22.0 finalization, the legacy event names `module_registered`, `module_unregistered`, `error_threshold_exceeded`, and `latency_threshold_exceeded` are no longer emitted alongside their canonical `apcore.<subsystem>.<event>` counterparts. The `emitWithLegacy` helper has been deleted from `src/events/emitter.ts` and the public surface. Subscribers MUST listen on the canonical names (`apcore.registry.module_registered`, `apcore.health.error_threshold_exceeded`, etc.). Closes finding A-D-EVT-002.
-
-
-## [0.22.0] - 2026-05-20
 
 ### Added
 
