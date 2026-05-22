@@ -4,7 +4,7 @@ import { MiddlewareManager, MiddlewareChainError } from '../src/middleware/manag
 import { Context, createIdentity } from '../src/context.js';
 
 function makeContext(): Context {
-  return Context.create(null, createIdentity('test-user'));
+  return Context.create(createIdentity('test-user'));
 }
 
 class TaggingMiddleware extends Middleware {

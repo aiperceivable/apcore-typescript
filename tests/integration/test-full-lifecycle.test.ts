@@ -258,7 +258,7 @@ describe('Full Lifecycle Integration', () => {
     }));
 
     const executor = new Executor({ registry });
-    const ctx = Context.create(executor, createIdentity('user1'));
+    const ctx = Context.create(createIdentity('user1'));
 
     const result = await executor.call('mod.a', {}, ctx);
     expect(result['combined']).toBe(11);
@@ -300,7 +300,7 @@ describe('Full Lifecycle Integration', () => {
     }));
 
     const executor = new Executor({ registry });
-    const ctx = Context.create(executor, createIdentity('user1'));
+    const ctx = Context.create(createIdentity('user1'));
 
     const result = await executor.call('mod.a', {}, ctx);
     expect(result['fromB']).toBe('hello_from_a');

@@ -120,7 +120,10 @@ export class BuiltinContextCreation implements Step {
     // Always wrap in a child context for this module call.
     // If no parent context was provided, create a fresh root first.
     if (ctx.context == null) {
-      ctx.context = Context.create(null).child(ctx.moduleId);
+      // Issue #66: no executor arg; auto-binding happens on the next
+      // executor entry. For internal child-context creation we just need a
+      // fresh root.
+      ctx.context = Context.create().child(ctx.moduleId);
     } else {
       ctx.context = ctx.context.child(ctx.moduleId);
     }

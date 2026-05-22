@@ -46,12 +46,12 @@ describe('Context.create()', () => {
     expect(ctx.callChain).toEqual([]);
   });
 
-  it('accepts executor and identity', () => {
+  it('accepts identity (executor is bound on executor.call(), not here)', () => {
     const identity = createIdentity('u1', 'admin');
-    const executor = { name: 'test-executor' };
-    const ctx = Context.create(executor, identity);
-    expect(ctx.executor).toBe(executor);
+    const ctx = Context.create(identity);
     expect(ctx.identity).toBe(identity);
+    // Issue #66: executor is NOT a Context.create() parameter.
+    expect(ctx.executor).toBeNull();
   });
 
   it('defaults identity to null', () => {
@@ -70,7 +70,7 @@ describe('Context.create()', () => {
   });
 
   it('accepts custom data', () => {
-    const ctx = Context.create(null, null, { key: 'value' });
+    const ctx = Context.create(null, null, null, { key: 'value' });
     expect(ctx.data).toEqual({ key: 'value' });
   });
 
@@ -113,7 +113,7 @@ describe('Context.child()', () => {
   });
 
   it('shares data reference with parent', () => {
-    const parent = Context.create(null, null, { shared: true });
+    const parent = Context.create(null, null, null, { shared: true });
     const child = parent.child('mod');
     expect(child.data).toBe(parent.data);
 
@@ -121,16 +121,18 @@ describe('Context.child()', () => {
     expect(parent.data['newKey']).toBe('newValue');
   });
 
-  it('preserves executor from parent', () => {
+  it('preserves executor from parent (when bound via _withExecutor)', () => {
     const executor = { id: 'exec' };
-    const parent = Context.create(executor);
+    // Issue #66: executor is bound via _withExecutor (internal helper),
+    // not Context.create(). Child() then propagates the bound executor.
+    const parent = Context.create()._withExecutor(executor);
     const child = parent.child('mod');
     expect(child.executor).toBe(executor);
   });
 
   it('preserves identity from parent', () => {
     const identity = createIdentity('u1', 'admin', ['role1']);
-    const parent = Context.create(null, identity);
+    const parent = Context.create(identity);
     const child = parent.child('mod');
     expect(child.identity).toBe(identity);
   });

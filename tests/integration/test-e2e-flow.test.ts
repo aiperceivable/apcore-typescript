@@ -81,7 +81,7 @@ describe('E2E Flow', () => {
     registry.register('math.add_ten', modB);
 
     const executor = new Executor({ registry });
-    const ctx = Context.create(executor, createIdentity('test_user'));
+    const ctx = Context.create(createIdentity('test_user'));
 
     const r1 = await executor.call('math.double', { x: 5 }, ctx);
     expect(r1['value']).toBe(10);

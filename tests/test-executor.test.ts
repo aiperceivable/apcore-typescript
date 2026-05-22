@@ -445,7 +445,7 @@ describe('Executor', () => {
     registry.register('ctx_test', mod);
 
     const executor = new Executor({ registry });
-    const ctx = Context.create(executor, createIdentity('user1'));
+    const ctx = Context.create(createIdentity('user1'));
     await executor.call('ctx_test', {}, ctx);
 
     expect(capturedCtx).not.toBeNull();

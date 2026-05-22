@@ -16,7 +16,7 @@ describe('FunctionModule', () => {
       outputSchema,
       description: 'Says hello',
     });
-    const ctx = Context.create(null, createIdentity('test-user'));
+    const ctx = Context.create(createIdentity('test-user'));
     const result = await fm.execute({ name: 'World' }, ctx);
     expect(result).toEqual({ greeting: 'Hello, World!' });
   });
@@ -62,7 +62,7 @@ describe('FunctionModule', () => {
       inputSchema,
       outputSchema,
     });
-    const ctx = Context.create(null, createIdentity('test-user'));
+    const ctx = Context.create(createIdentity('test-user'));
     const result = await fm.execute({}, ctx);
     expect(result).toEqual({});
   });

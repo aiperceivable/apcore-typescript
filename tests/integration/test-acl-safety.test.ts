@@ -76,12 +76,12 @@ describe('ACL Integration', () => {
     const executor = new Executor({ registry, acl });
 
     // System identity - allowed
-    const sysCtx = Context.create(executor, createIdentity('sys', 'system'));
+    const sysCtx = Context.create(createIdentity('sys', 'system'));
     const result = await executor.call('test.mod', {}, sysCtx);
     expect(result['value']).toBe('ok');
 
     // User identity - denied
-    const userCtx = Context.create(executor, createIdentity('user1', 'user'));
+    const userCtx = Context.create(createIdentity('user1', 'user'));
     await expect(executor.call('test.mod', {}, userCtx)).rejects.toThrow(ACLDeniedError);
   });
 
@@ -102,12 +102,12 @@ describe('ACL Integration', () => {
     const executor = new Executor({ registry, acl });
 
     // Admin role - allowed
-    const adminCtx = Context.create(executor, createIdentity('admin1', 'user', ['admin']));
+    const adminCtx = Context.create(createIdentity('admin1', 'user', ['admin']));
     const result = await executor.call('test.mod', {}, adminCtx);
     expect(result['value']).toBe('ok');
 
     // Viewer role - denied
-    const viewerCtx = Context.create(executor, createIdentity('viewer1', 'user', ['viewer']));
+    const viewerCtx = Context.create(createIdentity('viewer1', 'user', ['viewer']));
     await expect(executor.call('test.mod', {}, viewerCtx)).rejects.toThrow(ACLDeniedError);
   });
 
@@ -128,7 +128,7 @@ describe('ACL Integration', () => {
     const executor = new Executor({ registry, acl });
 
     // Shallow call - allowed
-    const ctx = Context.create(executor);
+    const ctx = Context.create();
     const result = await executor.call('test.mod', {}, ctx);
     expect(result['value']).toBe('ok');
 

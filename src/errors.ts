@@ -1276,6 +1276,35 @@ export class StreamingInterfaceError extends ModuleError {
 }
 
 /**
+ * Raised when a Context that is already bound to one Executor (or CancelToken)
+ * is offered to a different Executor (or CancelToken). Per apcore Issue #66 /
+ * v0.22.0 spec "Contract: Executor binding to Context", binding is a one-shot
+ * operation: idempotent for the same instance, error for a different one.
+ */
+export class ContextBindingError extends ModuleError {
+  static override readonly DEFAULT_RETRYABLE: boolean | null = false;
+
+  constructor(message: string, options?: ErrorOptions) {
+    super(
+      'CONTEXT_BINDING_ERROR',
+      message,
+      {},
+      options?.cause,
+      options?.traceId,
+      options?.retryable,
+      options?.aiGuidance ??
+        'A Context was offered to an Executor (or attached to a CancelToken) ' +
+          'that does not match the one it is already bound to. Create a fresh ' +
+          'Context via Context.create() for the new Executor / CancelToken, or ' +
+          'reuse the existing bound Context across calls on the same Executor.',
+      options?.userFixable,
+      options?.suggestion,
+    );
+    this.name = 'ContextBindingError';
+  }
+}
+
+/**
  * All framework error codes as constants.
  * Use these instead of hardcoding error code strings.
  */
@@ -1338,6 +1367,7 @@ export const ErrorCodes = Object.freeze({
   SYS_MODULE_REGISTRATION_FAILED: 'SYS_MODULE_REGISTRATION_FAILED',
   DUPLICATE_MODULE_ID: 'DUPLICATE_MODULE_ID',
   STREAMING_INTERFACE_MISMATCH: 'STREAMING_INTERFACE_MISMATCH',
+  CONTEXT_BINDING_ERROR: 'CONTEXT_BINDING_ERROR',
 } as const);
 
 export type ErrorCode = (typeof ErrorCodes)[keyof typeof ErrorCodes];

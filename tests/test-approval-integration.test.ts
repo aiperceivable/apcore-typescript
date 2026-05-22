@@ -206,7 +206,7 @@ describe('ApprovalCallback', () => {
     });
     const executor = new Executor({ registry, approvalHandler: handler });
     const identity = createIdentity('user-42', 'user', ['admin']);
-    const ctx = Context.create(executor, identity);
+    const ctx = Context.create(identity);
 
     await executor.call('admin.delete_user', { user_id: '123' }, ctx);
 
@@ -227,12 +227,12 @@ describe('ApprovalCallback', () => {
     const executor = new Executor({ registry, approvalHandler: handler });
 
     // Admin user → approved
-    const adminCtx = Context.create(executor, createIdentity('admin-1', 'user', ['admin']));
+    const adminCtx = Context.create(createIdentity('admin-1', 'user', ['admin']));
     const result = await executor.call('admin.delete_user', { user_id: '123' }, adminCtx);
     expect(result['deleted']).toBe(true);
 
     // Regular user → denied
-    const userCtx = Context.create(executor, createIdentity('user-1', 'user', ['viewer']));
+    const userCtx = Context.create(createIdentity('user-1', 'user', ['viewer']));
     try {
       await executor.call('admin.delete_user', { user_id: '123' }, userCtx);
       expect.unreachable('Should have thrown');

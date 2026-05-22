@@ -527,9 +527,10 @@ export class AsyncTaskManager {
    *
    * If the caller supplied a Context we shallow-clone it with the task's
    * CancelToken attached; if no Context was supplied we create a fresh one
-   * via the public `Context.create()` factory then attach the token. Either
-   * way the executor sees a Context whose `cancelToken` is the same instance
-   * that `AsyncTaskManager.cancel()` aborts (D-18).
+   * via the public `Context.create()` factory with the token already bound
+   * (per Issue #66, `cancelToken` is now a first-class create() parameter).
+   * Either way the executor sees a Context whose `cancelToken` is the same
+   * instance that `AsyncTaskManager.cancel()` aborts (D-18).
    */
   private async _buildTaskContext(
     callerContext: Context | null,
@@ -538,13 +539,9 @@ export class AsyncTaskManager {
     // Lazy import to avoid a static circular dep between async-task and context.
     const { Context: CtxClass } = await import('./context.js');
     if (callerContext === null) {
-      const ctx = CtxClass.create(this._executor);
-      // The Context fields are intentionally typed `readonly`, but cancelToken
-      // is a per-call attachment that must reflect the task's token. Casting
-      // through `unknown` keeps the public API readonly while letting the
-      // manager wire the token before handing the Context to the executor.
-      (ctx as unknown as { cancelToken: CancelToken }).cancelToken = cancelToken;
-      return ctx;
+      // Executor binding is deferred to the first executor.call() — Issue #66
+      // removes `executor` from Context.create()'s public surface.
+      return CtxClass.create(undefined, undefined, cancelToken);
     }
     // Shallow clone (preserve identity/data/etc.) and overwrite cancelToken.
     const cloned = new CtxClass(
