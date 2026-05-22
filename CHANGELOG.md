@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.22.0] - 2026-05-22
 
+### Changed
+
+- **`Context.create()` signature unified across SDKs ([apcore#66](https://github.com/aiperceivable/apcore/issues/66)).** Per the v0.22.0 spec §"Contract: Context.create", the public input list is now `(identity, traceParent, cancelToken, data, services, globalDeadline)`. **BREAKING:**
+  - `executor` has been removed as a parameter. The Executor now auto-binds itself to the Context on the first `call()` / `callWithTrace()` / `stream()` / `validate()` entry (see §"Contract: Executor binding to Context"). Idempotent for the same Executor instance; cross-executor rebind raises the new `ContextBindingError` (`code: CONTEXT_BINDING_ERROR`).
+  - `callerId` is no longer accepted as an input — it has always been managed exclusively by `Context.child()`; this just makes the contract explicit.
+  - `cancelToken` is now a first-class slot at position 3, replacing the cast-through-`unknown` workaround in `AsyncTaskManager._buildTaskContext` and the manual `new Context(...)` construction pattern documented in `examples/cancel-token.ts`.
+  - Two new internal helpers, `Context._withExecutor(executor)` and `Context._withCancelToken(token)`, return a new immutable Context with the given field bound; same-instance rebind is a noop, cross-instance rebind throws `ContextBindingError`.
+  - Call-site migration: `Context.create(executor, identity)` → `Context.create(identity)`; `Context.create(null, null, undefined, traceParent)` → `Context.create(null, traceParent)`; `Context.create(executor)` → `Context.create()`. A new `tests/conformance.test.ts` block drives the canonical `context_create.json` fixture against the SDK to lock in cross-language behavioral parity.
+
 ### Added
 
 - **Per-module `resources.timeout` honored by `BuiltinExecute` (spec D-11).** Modules MAY declare their own timeout in milliseconds via the top-level `resources.timeout` field or `annotations.resources.timeout`; the executor uses the module value ahead of `executor.default_timeout`, and the global deadline (when set) further clamps the effective timeout. Closes finding A-D-EXEC-001.

@@ -92,7 +92,7 @@ describe('ContextLogger', () => {
 
   it('fromContext sets trace/module/caller', () => {
     const { output, lines } = createBufferOutput();
-    const ctx = Context.create(undefined, createIdentity('user1'));
+    const ctx = Context.create(createIdentity('user1'));
     const childCtx = ctx.child('mod.test');
     const logger = ContextLogger.fromContext(childCtx, 'test-logger', { output });
     logger.info('context log');

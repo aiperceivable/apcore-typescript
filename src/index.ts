@@ -158,6 +158,7 @@ export {
   SysModulesDisabledError,
   StreamingInterfaceError,
   DuplicateModuleIdError,
+  ContextBindingError,
   ErrorCodes,
 } from './errors.js';
 export type { ErrorCode, ErrorOptions } from './errors.js';

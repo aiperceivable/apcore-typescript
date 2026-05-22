@@ -18,7 +18,10 @@ describe('ContextKey v0.22.0 promotion (#63)', () => {
 
   it('key-anchored API round-trips', () => {
     const KEY = new ContextKey<number>('ext.test.retry.count');
-    const ctx = Context.create({});
+    // Issue #66: Context.create() takes (identity, ...) — passing nothing
+    // yields a fresh top-level Context with no identity, which is all this
+    // round-trip test needs.
+    const ctx = Context.create();
     expect(KEY.exists(ctx)).toBe(false);
     KEY.set(ctx, 3);
     expect(KEY.exists(ctx)).toBe(true);

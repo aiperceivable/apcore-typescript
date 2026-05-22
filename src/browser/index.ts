@@ -156,6 +156,7 @@ export {
   ModuleReloadConflictError,
   SysModuleRegistrationError,
   SysModulesDisabledError,
+  ContextBindingError,
   ErrorCodes,
 } from '../errors.js';
 export type { ErrorCode, ErrorOptions } from '../errors.js';

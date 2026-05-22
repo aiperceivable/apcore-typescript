@@ -33,20 +33,9 @@ console.log('Completed:', result);
 // Run 2: Cancel mid-flight
 console.log('\n--- Run 2: Cancel after 80ms ---');
 const token = new CancelToken();
-// Build a Context that carries the cancel token.
-// `Context.create()` is the canonical static factory but does not expose
-// cancelToken, so we derive a traceId from it and pass the token positionally.
-const base = Context.create();
-const ctx = new Context(
-  base.traceId,
-  null,    // callerId
-  [],      // callChain
-  null,    // executor
-  null,    // identity
-  null,    // redactedInputs
-  {},      // data
-  token,   // cancelToken
-);
+// cancelToken is a first-class Context.create() parameter (v0.22.0, Issue #66).
+// Signature is (identity, traceParent, cancelToken, data, services, globalDeadline).
+const ctx = Context.create(undefined, undefined, token);
 
 // Cancel after 80ms
 setTimeout(() => {

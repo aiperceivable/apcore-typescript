@@ -353,7 +353,12 @@ export class Executor {
   ): Promise<Record<string, unknown>> {
     this._validateModuleId(moduleId);
 
-    const ctx = context != null ? context : Context.create(this);
+    // Issue #66: auto-bind executor to context on every entry. _withExecutor
+    // is idempotent for the same instance and raises ContextBindingError on
+    // cross-executor rebind, so the rule "Executor binds itself on first call"
+    // is enforced regardless of how the caller built the Context.
+    let ctx = context ?? Context.create();
+    ctx = ctx._withExecutor(this);
     const pipeCtx: PipelineContext = {
       moduleId,
       inputs: inputs ?? {},
@@ -453,7 +458,9 @@ export class Executor {
   ): Promise<[Record<string, unknown>, PipelineTrace]> {
     const strategy = options?.strategy ?? this._strategy;
 
-    const ctx = context ?? Context.create(this);
+    // Issue #66: auto-bind executor (see call() for rationale).
+    let ctx = context ?? Context.create();
+    ctx = ctx._withExecutor(this);
     const pipelineCtx: PipelineContext = {
       moduleId,
       inputs: inputs ?? {},
@@ -538,7 +545,9 @@ export class Executor {
   ): AsyncGenerator<Record<string, unknown>> {
     this._validateModuleId(moduleId);
 
-    const ctx = context != null ? context : Context.create(this);
+    // Issue #66: auto-bind executor (see call() for rationale).
+    let ctx = context ?? Context.create();
+    ctx = ctx._withExecutor(this);
     const pipeCtx: PipelineContext = {
       moduleId,
       inputs: inputs ?? {},
@@ -702,11 +711,14 @@ export class Executor {
     }
     checks.push({ check: 'module_id', passed: true });
 
-    // Run pipeline in dry_run mode — pure=false steps are skipped
+    // Run pipeline in dry_run mode — pure=false steps are skipped.
+    // Issue #66: auto-bind executor on every entry (see call() for rationale).
+    let validateCtx = context ?? Context.create();
+    validateCtx = validateCtx._withExecutor(this);
     const pipeCtx: PipelineContext = {
       moduleId,
       inputs: effectiveInputs,
-      context: context ?? Context.create(this),
+      context: validateCtx,
       module: null,
       validatedInputs: null,
       output: null,

@@ -378,7 +378,7 @@ describe('TraceContext.inject() — dynamic traceFlags', () => {
       traceFlags: '00',
       tracestate: [],
     };
-    const ctx = Context.create(null, null, undefined, inbound);
+    const ctx = Context.create(null, inbound);
     const headers = TraceContext.inject(ctx);
     expect(headers.traceparent.endsWith('-00')).toBe(true);
   });
@@ -391,7 +391,7 @@ describe('TraceContext.inject() — dynamic traceFlags', () => {
       traceFlags: '01',
       tracestate: [['vendor', 'opaque']],
     };
-    const ctx = Context.create(null, null, undefined, inbound);
+    const ctx = Context.create(null, inbound);
     const headers = TraceContext.inject(ctx);
     expect(headers.tracestate).toBe('vendor=opaque');
   });
@@ -450,7 +450,7 @@ describe('Context.create() with traceParent', () => {
       traceFlags: '01',
       tracestate: [],
     };
-    const ctx = Context.create(null, null, undefined, tp);
+    const ctx = Context.create(null, tp);
     expect(ctx.traceId).toBe('4bf92f3577b34da6a3ce929d0e0e4736');
   });
 
@@ -462,7 +462,7 @@ describe('Context.create() with traceParent', () => {
       traceFlags: '01',
       tracestate: [],
     };
-    const ctx = Context.create(null, null, undefined, tp);
+    const ctx = Context.create(null, tp);
     // Should match 32-hex format
     expect(ctx.traceId).toMatch(/^[0-9a-f]{32}$/);
   });
@@ -485,7 +485,7 @@ describe('Context.create() with traceParent', () => {
     const parsed = TraceContext.extract(headers);
     expect(parsed).not.toBeNull();
 
-    const restored = Context.create(null, null, undefined, parsed);
+    const restored = Context.create(null, parsed);
     expect(restored.traceId).toBe(original.traceId);
   });
 });
