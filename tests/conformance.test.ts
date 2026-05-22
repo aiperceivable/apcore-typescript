@@ -3275,6 +3275,32 @@ describe('apcore Conformance Suite (TypeScript)', () => {
             expect(restored.globalDeadline).toBeNull();
             break;
           }
+          case 'distributed_cancel_token_post_deserialize_null': {
+            const serialized = {
+              _context_version: 1,
+              trace_id: '4bf92f3577b34da6a3ce929d0e0e4736',
+              caller_id: null,
+              call_chain: [],
+              identity: null,
+              data: {},
+            };
+            const restored = Context.fromJSON(serialized);
+            expect(restored.cancelToken).toBeNull();
+            break;
+          }
+          case 'distributed_global_deadline_post_deserialize_null': {
+            const serialized = {
+              _context_version: 1,
+              trace_id: '4bf92f3577b34da6a3ce929d0e0e4736',
+              caller_id: null,
+              call_chain: [],
+              identity: null,
+              data: {},
+            };
+            const restored = Context.fromJSON(serialized);
+            expect(restored.globalDeadline).toBeNull();
+            break;
+          }
           case 'tracestate_carried_inside_traceparent': {
             const tp = {
               version: '00',
