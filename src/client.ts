@@ -6,6 +6,7 @@ import type { TSchema } from '@sinclair/typebox';
 import type { Config } from './config.js';
 import type { Context } from './context.js';
 import { FunctionModule, module as createModule } from './decorator.js';
+import { SysModulesDisabledError } from './errors.js';
 import type { ApCoreEvent, EventSubscriber } from './events/emitter.js';
 import { EventEmitter } from './events/emitter.js';
 import { Executor } from './executor.js';
@@ -236,7 +237,7 @@ export class APCore {
   ): EventSubscriber {
     const emitter = this.events;
     if (!emitter) {
-      throw new Error(
+      throw new SysModulesDisabledError(
         'Events are not enabled. Set sys_modules.enabled=true and '
         + 'sys_modules.events.enabled=true in config.',
       );
@@ -254,11 +255,14 @@ export class APCore {
 
   /**
    * Unsubscribe a previously registered event subscriber.
+   *
+   * @throws {SysModulesDisabledError} If events are not enabled
+   *   (code `SYS_MODULES_DISABLED`).
    */
   off(subscriber: EventSubscriber): void {
     const emitter = this.events;
     if (!emitter) {
-      throw new Error(
+      throw new SysModulesDisabledError(
         'Events are not enabled. Set sys_modules.enabled=true and '
         + 'sys_modules.events.enabled=true in config.',
       );
@@ -294,7 +298,7 @@ export class APCore {
 
   private _requireSysModules(method: string): void {
     if (!this._sysModulesContext || Object.keys(this._sysModulesContext).length === 0) {
-      throw new Error(
+      throw new SysModulesDisabledError(
         `Cannot call ${method}(): sys_modules must be enabled in config.`,
       );
     }

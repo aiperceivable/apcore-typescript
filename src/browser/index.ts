@@ -155,6 +155,7 @@ export {
   CircuitBreakerOpenError,
   ModuleReloadConflictError,
   SysModuleRegistrationError,
+  SysModulesDisabledError,
   ContextBindingError,
   ErrorCodes,
 } from '../errors.js';

@@ -1222,6 +1222,34 @@ export class SysModuleRegistrationError extends ModuleError {
   }
 }
 
+/**
+ * Raised when an APCore client method requires sys_modules to be enabled.
+ *
+ * Cross-language equivalent of Rust's `ModuleError(code=SysModulesDisabled)`
+ * and Python's `SysModulesDisabledError`. Replaces bare `Error` in
+ * `APCore.on/off/disable/enable` so callers can dispatch on
+ * `error.code === 'SYS_MODULES_DISABLED'` instead of catching generic
+ * `Error`.
+ */
+export class SysModulesDisabledError extends ModuleError {
+  static override readonly DEFAULT_RETRYABLE: boolean | null = false;
+
+  constructor(message: string, options?: ErrorOptions) {
+    super(
+      'SYS_MODULES_DISABLED',
+      message,
+      undefined,
+      options?.cause,
+      options?.traceId,
+      options?.retryable,
+      options?.aiGuidance,
+      options?.userFixable,
+      options?.suggestion,
+    );
+    this.name = 'SysModulesDisabledError';
+  }
+}
+
 export class DuplicateModuleIdError extends ModuleError {
   static override readonly DEFAULT_RETRYABLE: boolean | null = false;
 
@@ -1365,6 +1393,7 @@ export const ErrorCodes = Object.freeze({
   CIRCUIT_BREAKER_OPEN: 'CIRCUIT_BREAKER_OPEN',
   MODULE_RELOAD_CONFLICT: 'MODULE_RELOAD_CONFLICT',
   SYS_MODULE_REGISTRATION_FAILED: 'SYS_MODULE_REGISTRATION_FAILED',
+  SYS_MODULES_DISABLED: 'SYS_MODULES_DISABLED',
   DUPLICATE_MODULE_ID: 'DUPLICATE_MODULE_ID',
   STREAMING_INTERFACE_MISMATCH: 'STREAMING_INTERFACE_MISMATCH',
   CONTEXT_BINDING_ERROR: 'CONTEXT_BINDING_ERROR',
