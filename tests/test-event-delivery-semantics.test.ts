@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
-import { EventEmitter, createEvent } from '../../src/events/emitter.js';
-import type { ApCoreEvent, EventSubscriber } from '../../src/events/emitter.js';
-import { StdoutSubscriber } from '../../src/events/subscribers.js';
+import { EventEmitter, createEvent } from '../src/events/emitter.js';
+import type { ApCoreEvent, EventSubscriber } from '../src/events/emitter.js';
+import { StdoutSubscriber } from '../src/events/subscribers.js';
 
 describe('Event delivery semantics (#61)', () => {
   describe('eventPattern filtering', () => {

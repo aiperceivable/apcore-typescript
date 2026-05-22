@@ -1,9 +1,9 @@
 import { describe, it, expect, vi } from 'vitest';
-import { STREAMING_MARKER, isStreamingModule } from '../../src/streaming.js';
-import type { Module } from '../../src/module.js';
-import { Registry } from '../../src/registry/registry.js';
-import { StreamingInterfaceError } from '../../src/errors.js';
-import { createAnnotations } from '../../src/module.js';
+import { STREAMING_MARKER, isStreamingModule } from '../src/streaming.js';
+import type { Module } from '../src/module.js';
+import { Registry } from '../src/registry/registry.js';
+import { StreamingInterfaceError } from '../src/errors.js';
+import { createAnnotations } from '../src/module.js';
 
 class ProperStreamingModule {
   readonly [STREAMING_MARKER] = true as const;

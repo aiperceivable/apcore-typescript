@@ -1,10 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { ContextKey } from '../../src/context-key.js';
-import { Context } from '../../src/context.js';
+import { ContextKey } from '../src/context-key.js';
+import { Context } from '../src/context.js';
 import {
   TRACING_SPANS, TRACING_SAMPLED, METRICS_STARTS,
   LOGGING_START, REDACTED_OUTPUT, RETRY_COUNT_BASE,
-} from '../../src/context-keys.js';
+} from '../src/context-keys.js';
 
 describe('ContextKey v0.22.0 promotion (#63)', () => {
   it('builtin identifiers match spec §1.5', () => {
@@ -37,7 +37,7 @@ describe('ContextKey v0.22.0 promotion (#63)', () => {
   });
 
   it('ContextKey is exported from src/index.ts', async () => {
-    const { ContextKey: CK } = await import('../../src/index.js');
+    const { ContextKey: CK } = await import('../src/index.js');
     expect(CK).toBeDefined();
     expect(new CK('test')).toBeInstanceOf(ContextKey);
   });
