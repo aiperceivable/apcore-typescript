@@ -239,33 +239,6 @@ export class BuiltinModuleLookup implements Step {
 }
 
 // ---------------------------------------------------------------------------
-// 4. BuiltinToggleGate
-// ---------------------------------------------------------------------------
-
-/** Blocks execution if the module has been disabled via the toggle system. */
-export class BuiltinToggleGate implements Step {
-  readonly name = 'toggle_gate';
-  readonly description = 'Block disabled modules before ACL and execution';
-  readonly removable = true;
-  readonly replaceable = true;
-  readonly pure = true;
-  readonly requires = ['context', 'module'] as const;
-
-  private readonly _toggleState: ToggleState;
-
-  constructor(toggleState?: ToggleState) {
-    this._toggleState = toggleState ?? DEFAULT_TOGGLE_STATE;
-  }
-
-  async execute(ctx: PipelineContext): Promise<StepResult> {
-    if (this._toggleState.isDisabled(ctx.moduleId)) {
-      throw new ModuleDisabledError(ctx.moduleId);
-    }
-    return { action: 'continue' };
-  }
-}
-
-// ---------------------------------------------------------------------------
 // 6. BuiltinACLCheck
 // ---------------------------------------------------------------------------
 
