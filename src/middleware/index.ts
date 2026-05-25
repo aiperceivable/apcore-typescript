@@ -10,7 +10,7 @@ export { ErrorHistoryMiddleware } from './error-history.js';
 export { PlatformNotifyMiddleware } from './platform-notify.js';
 export {
   CircuitBreakerMiddleware,
-  CircuitState as MiddlewareCircuitState,
+  CircuitBreakerState,
   CTX_CIRCUIT_STATE,
 } from './circuit-breaker.js';
 export type { CircuitBreakerOptions } from './circuit-breaker.js';

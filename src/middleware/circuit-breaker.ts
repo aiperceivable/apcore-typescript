@@ -16,7 +16,7 @@ import { Middleware } from './base.js';
 
 export const CTX_CIRCUIT_STATE = '_apcore.mw.circuit.state';
 
-export enum CircuitState {
+export enum CircuitBreakerState {
   CLOSED = 'CLOSED',
   OPEN = 'OPEN',
   HALF_OPEN = 'HALF_OPEN',
@@ -54,7 +54,7 @@ class RollingWindow {
 }
 
 interface CircuitRecord {
-  state: CircuitState;
+  state: CircuitBreakerState;
   window: RollingWindow;
   openedAt: number | null;
   probeInFlight: boolean;
@@ -96,7 +96,7 @@ export class CircuitBreakerMiddleware extends Middleware {
     const key = this._key(moduleId, callerId);
     if (!this._circuits.has(key)) {
       this._circuits.set(key, {
-        state: CircuitState.CLOSED,
+        state: CircuitBreakerState.CLOSED,
         window: new RollingWindow(this._windowSize),
         openedAt: null,
         probeInFlight: false,
@@ -106,16 +106,16 @@ export class CircuitBreakerMiddleware extends Middleware {
   }
 
   private _maybeHalfOpen(record: CircuitRecord): void {
-    if (record.state === CircuitState.OPEN && record.openedAt !== null) {
+    if (record.state === CircuitBreakerState.OPEN && record.openedAt !== null) {
       if (Date.now() - record.openedAt >= this._recoveryWindowMs) {
-        record.state = CircuitState.HALF_OPEN;
+        record.state = CircuitBreakerState.HALF_OPEN;
         record.probeInFlight = false;
       }
     }
   }
 
   private _openCircuit(moduleId: string, callerId: string | null, record: CircuitRecord): void {
-    record.state = CircuitState.OPEN;
+    record.state = CircuitBreakerState.OPEN;
     record.openedAt = Date.now();
     record.probeInFlight = false;
     console.warn(
@@ -125,7 +125,7 @@ export class CircuitBreakerMiddleware extends Middleware {
   }
 
   private _closeCircuit(moduleId: string, callerId: string | null, record: CircuitRecord): void {
-    record.state = CircuitState.CLOSED;
+    record.state = CircuitBreakerState.CLOSED;
     record.openedAt = null;
     record.probeInFlight = false;
     console.warn(
@@ -159,11 +159,11 @@ export class CircuitBreakerMiddleware extends Middleware {
     this._maybeHalfOpen(record);
     context.data[CTX_CIRCUIT_STATE] = record.state;
 
-    if (record.state === CircuitState.OPEN) {
+    if (record.state === CircuitBreakerState.OPEN) {
       throw new CircuitBreakerOpenError(moduleId, callerId);
     }
 
-    if (record.state === CircuitState.HALF_OPEN) {
+    if (record.state === CircuitBreakerState.HALF_OPEN) {
       if (record.probeInFlight) {
         throw new CircuitBreakerOpenError(moduleId, callerId);
       }
@@ -184,9 +184,9 @@ export class CircuitBreakerMiddleware extends Middleware {
 
     record.window.record(false);
 
-    if (record.state === CircuitState.HALF_OPEN) {
+    if (record.state === CircuitBreakerState.HALF_OPEN) {
       this._closeCircuit(moduleId, callerId, record);
-      context.data[CTX_CIRCUIT_STATE] = CircuitState.CLOSED;
+      context.data[CTX_CIRCUIT_STATE] = CircuitBreakerState.CLOSED;
     }
 
     return null;
@@ -207,16 +207,16 @@ export class CircuitBreakerMiddleware extends Middleware {
 
     record.window.record(true);
 
-    if (record.state === CircuitState.HALF_OPEN) {
+    if (record.state === CircuitBreakerState.HALF_OPEN) {
       this._openCircuit(moduleId, callerId, record);
-      context.data[CTX_CIRCUIT_STATE] = CircuitState.OPEN;
-    } else if (record.state === CircuitState.CLOSED) {
+      context.data[CTX_CIRCUIT_STATE] = CircuitBreakerState.OPEN;
+    } else if (record.state === CircuitBreakerState.CLOSED) {
       if (
         record.window.length >= this._windowSize &&
         record.window.errorRate >= this._openThreshold
       ) {
         this._openCircuit(moduleId, callerId, record);
-        context.data[CTX_CIRCUIT_STATE] = CircuitState.OPEN;
+        context.data[CTX_CIRCUIT_STATE] = CircuitBreakerState.OPEN;
       }
     }
 
@@ -224,7 +224,7 @@ export class CircuitBreakerMiddleware extends Middleware {
   }
 
   /** Return the current circuit state for a given (moduleId, callerId) pair. */
-  getState(moduleId: string, callerId: string | null = null): CircuitState {
+  getState(moduleId: string, callerId: string | null = null): CircuitBreakerState {
     const record = this._getRecord(moduleId, callerId);
     this._maybeHalfOpen(record);
     return record.state;

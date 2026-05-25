@@ -81,12 +81,14 @@ import { EventEmitter } from '../src/events/index.js';
 import { UsageCollector } from '../src/observability/index.js';
 import {
   CircuitBreakerMiddleware,
-  MiddlewareCircuitState,
   Middleware,
   MiddlewareManager,
   validateContextKey,
   isAsyncHandler,
 } from '../src/middleware/index.js';
+// Public export name (audit D2-001): middleware circuit-breaker state enum is
+// publicly exported as `CircuitBreakerState` for cross-SDK parity (matches apcore-rust).
+import { CircuitBreakerState } from '../src/index.js';
 import { TracingMiddleware } from '../src/middleware/tracing.js';
 import type { OtelTracer, OtelSpan } from '../src/middleware/tracing.js';
 import {
@@ -1696,7 +1698,7 @@ describe('apcore Conformance Suite (TypeScript)', () => {
         cb.onError(moduleId, {}, new Error('fail'), ctx);
       }
 
-      expect(cb.getState(moduleId, callerId)).toBe(tc.expected.circuit_state as MiddlewareCircuitState);
+      expect(cb.getState(moduleId, callerId)).toBe(tc.expected.circuit_state as CircuitBreakerState);
       expect(emitter.emitted).toContain(tc.expected.event_emitted);
     });
 
@@ -1719,7 +1721,7 @@ describe('apcore Conformance Suite (TypeScript)', () => {
       const ctx = new Context('trace', callerId, []);
 
       driveToOpen(cb, moduleId, ctx, 10);
-      expect(cb.getState(moduleId, callerId)).toBe(MiddlewareCircuitState.OPEN);
+      expect(cb.getState(moduleId, callerId)).toBe(CircuitBreakerState.OPEN);
 
       // A subsequent before() must throw CircuitBreakerOpenError (module never reached)
       let thrown: Error | null = null;
@@ -1758,7 +1760,7 @@ describe('apcore Conformance Suite (TypeScript)', () => {
 
       // Drive to OPEN (openedAt = baseTime)
       driveToOpen(cb, moduleId, ctx, 10);
-      expect(cb.getState(moduleId, callerId)).toBe(MiddlewareCircuitState.OPEN);
+      expect(cb.getState(moduleId, callerId)).toBe(CircuitBreakerState.OPEN);
 
       // Advance past recovery_window_ms
       vi.setSystemTime(baseTime + tc.input.ms_since_opened);
@@ -1809,7 +1811,7 @@ describe('apcore Conformance Suite (TypeScript)', () => {
       // Successful probe → CLOSED, emit apcore.circuit.closed
       cb.after(moduleId, {}, {}, ctx);
 
-      expect(cb.getState(moduleId, callerId)).toBe(tc.expected.circuit_state as MiddlewareCircuitState);
+      expect(cb.getState(moduleId, callerId)).toBe(tc.expected.circuit_state as CircuitBreakerState);
       expect(emitter.emitted).toContain(tc.expected.event_emitted);
     });
 
@@ -1907,7 +1909,7 @@ describe('apcore Conformance Suite (TypeScript)', () => {
       // Failed probe → back to OPEN
       cb.onError(moduleId, {}, new Error('probe failure'), ctx);
 
-      expect(cb.getState(moduleId, callerId)).toBe(MiddlewareCircuitState.OPEN);
+      expect(cb.getState(moduleId, callerId)).toBe(CircuitBreakerState.OPEN);
       expect(emitter.emitted.filter((e) => e === 'apcore.circuit.opened').length).toBeGreaterThanOrEqual(2);
     });
 

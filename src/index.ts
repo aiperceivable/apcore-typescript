@@ -185,7 +185,7 @@ export {
   ErrorHistoryMiddleware,
   PlatformNotifyMiddleware,
   CircuitBreakerMiddleware,
-  MiddlewareCircuitState,
+  CircuitBreakerState,
   CTX_CIRCUIT_STATE,
   CTX_TRACING_SPAN_ID,
   validateContextKey,

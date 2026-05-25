@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Middleware circuit-breaker state enum public export renamed `MiddlewareCircuitState` → `CircuitBreakerState` for cross-SDK naming parity (audit D2-001).** The middleware circuit-breaker state enum is now publicly exported as `CircuitBreakerState`, matching apcore-rust's `CircuitBreakerState` (apcore-python names the equivalent `CircuitState`). The internal enum in `src/middleware/circuit-breaker.ts` was also renamed to `CircuitBreakerState`. The unrelated events circuit-breaker enum (`CircuitState`, exported from `./events`) is unchanged. **BREAKING for importers of `MiddlewareCircuitState` — switch to `CircuitBreakerState`.** No deprecation alias is provided.
+
 - **`Context.create()` signature unified across SDKs ([apcore#66](https://github.com/aiperceivable/apcore/issues/66)).** Per the v0.22.0 spec §"Contract: Context.create", the public input list is now `(identity, traceParent, cancelToken, data, services, globalDeadline)`. **BREAKING:**
   - `executor` has been removed as a parameter. The Executor now auto-binds itself to the Context on the first `call()` / `callWithTrace()` / `stream()` / `validate()` entry (see §"Contract: Executor binding to Context"). Idempotent for the same Executor instance; cross-executor rebind raises the new `ContextBindingError` (`code: CONTEXT_BINDING_ERROR`).
   - `callerId` is no longer accepted as an input — it has always been managed exclusively by `Context.child()`; this just makes the contract explicit.
