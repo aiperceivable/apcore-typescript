@@ -8,6 +8,8 @@ import { FunctionModule } from '../../src/decorator.js';
 import { DuplicateModuleIdError, InvalidInputError, ModuleNotFoundError } from '../../src/errors.js';
 import { Config } from '../../src/config.js';
 import { createAnnotations } from '../../src/module.js';
+import { EventEmitter } from '../../src/events/emitter.js';
+import type { ApCoreEvent } from '../../src/events/emitter.js';
 
 function createMod(id: string): FunctionModule {
   return new FunctionModule({
@@ -1034,6 +1036,181 @@ describe('Registry discover() onLoad failure during _registerInOrder', () => {
       expect.stringContaining('[apcore:registry]'),
       expect.any(Error),
     );
+    warnSpy.mockRestore();
+  });
+});
+
+/* -----------------------------------------------------------
+ * discover() deferred-publish contract (audit D11-001 / D10-005)
+ *
+ * The discover path MUST mirror the public register() deferred-publish
+ * contract: a module is NEVER published to the registry until its onLoad
+ * (sync or async) has succeeded, and any onLoad failure (sync throw OR
+ * async rejection) emits `apcore.registry.module_load_failed` instead of
+ * publishing the module.
+ * --------------------------------------------------------- */
+
+describe('Registry discover() deferred-publish + module_load_failed (D11-001/D10-005)', () => {
+  let tempDir: string;
+
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), 'apcore-registry-deferpub-'));
+  });
+
+  afterEach(() => {
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it('does not publish module and emits module_load_failed when SYNC onLoad throws during discover()', async () => {
+    writeFileSync(
+      join(tempDir, 'syncfail.js'),
+      `export default {
+        execute: async () => ({}),
+        description: 'Sync onLoad failure',
+        inputSchema: { type: 'object' },
+        outputSchema: { type: 'object' },
+        onLoad() { throw new Error('sync onLoad exploded'); },
+      };`,
+      'utf-8',
+    );
+    writeFileSync(
+      join(tempDir, 'goodsync.js'),
+      `export default {
+        execute: async () => ({}),
+        description: 'Good module',
+        inputSchema: { type: 'object' },
+        outputSchema: { type: 'object' },
+      };`,
+      'utf-8',
+    );
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const emitter = new EventEmitter();
+    const events: ApCoreEvent[] = [];
+    emitter.subscribe({ onEvent: (e) => { events.push(e); } });
+
+    const registry = new Registry({ extensionsDir: tempDir });
+    registry.setEventEmitter(emitter);
+
+    const count = await registry.discover();
+
+    // Failing module is NOT visible; good module still registers.
+    expect(registry.has('syncfail')).toBe(false);
+    expect(registry.get('syncfail')).toBeNull();
+    expect(registry.has('goodsync')).toBe(true);
+    expect(count).toBe(1);
+
+    // module_load_failed emitted for the failing module.
+    const failEvents = events.filter(
+      (e) => e.eventType === 'apcore.registry.module_load_failed' && e.moduleId === 'syncfail',
+    );
+    expect(failEvents).toHaveLength(1);
+
+    warnSpy.mockRestore();
+  });
+
+  it('does not publish module and emits module_load_failed when ASYNC onLoad rejects during discover()', async () => {
+    writeFileSync(
+      join(tempDir, 'asyncfail.js'),
+      `export default {
+        execute: async () => ({}),
+        description: 'Async onLoad rejection',
+        inputSchema: { type: 'object' },
+        outputSchema: { type: 'object' },
+        async onLoad() { throw new Error('async onLoad rejected'); },
+      };`,
+      'utf-8',
+    );
+    writeFileSync(
+      join(tempDir, 'goodasync.js'),
+      `export default {
+        execute: async () => ({}),
+        description: 'Good module',
+        inputSchema: { type: 'object' },
+        outputSchema: { type: 'object' },
+      };`,
+      'utf-8',
+    );
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const emitter = new EventEmitter();
+    const events: ApCoreEvent[] = [];
+    emitter.subscribe({ onEvent: (e) => { events.push(e); } });
+
+    const registry = new Registry({ extensionsDir: tempDir });
+    registry.setEventEmitter(emitter);
+
+    // Must resolve without an unhandled promise rejection.
+    const count = await registry.discover();
+
+    expect(registry.has('asyncfail')).toBe(false);
+    expect(registry.get('asyncfail')).toBeNull();
+    expect(registry.has('goodasync')).toBe(true);
+    expect(count).toBe(1);
+
+    const failEvents = events.filter(
+      (e) => e.eventType === 'apcore.registry.module_load_failed' && e.moduleId === 'asyncfail',
+    );
+    expect(failEvents).toHaveLength(1);
+
+    warnSpy.mockRestore();
+  });
+
+  it('publishes module when ASYNC onLoad resolves during discover()', async () => {
+    writeFileSync(
+      join(tempDir, 'asyncok.js'),
+      `export default {
+        execute: async () => ({}),
+        description: 'Async onLoad success',
+        inputSchema: { type: 'object' },
+        outputSchema: { type: 'object' },
+        async onLoad() { return; },
+      };`,
+      'utf-8',
+    );
+
+    const emitter = new EventEmitter();
+    const events: ApCoreEvent[] = [];
+    emitter.subscribe({ onEvent: (e) => { events.push(e); } });
+
+    const registry = new Registry({ extensionsDir: tempDir });
+    registry.setEventEmitter(emitter);
+
+    const count = await registry.discover();
+
+    expect(registry.has('asyncok')).toBe(true);
+    expect(registry.get('asyncok')).not.toBeNull();
+    expect(count).toBe(1);
+
+    const failEvents = events.filter(
+      (e) => e.eventType === 'apcore.registry.module_load_failed',
+    );
+    expect(failEvents).toHaveLength(0);
+  });
+
+  it('never makes a failing-onLoad module observable after discover() resolves (strong guarantee)', async () => {
+    writeFileSync(
+      join(tempDir, 'neverpub.js'),
+      `export default {
+        execute: async () => ({}),
+        description: 'Failing onLoad, must never be observable',
+        inputSchema: { type: 'object' },
+        outputSchema: { type: 'object' },
+        onLoad() { throw new Error('boom'); },
+      };`,
+      'utf-8',
+    );
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const registry = new Registry({ extensionsDir: tempDir });
+
+    await registry.discover();
+
+    expect(registry.has('neverpub')).toBe(false);
+    expect(registry.get('neverpub')).toBeNull();
+    expect(registry.list()).not.toContain('neverpub');
+    expect(registry.count).toBe(0);
+
     warnSpy.mockRestore();
   });
 });

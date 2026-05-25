@@ -628,35 +628,49 @@ export class Registry {
     return resolveDependencies(modulesWithDeps, knownIds, moduleVersions);
   }
 
-  private _registerInOrder(
+  private async _registerInOrder(
     loadOrder: string[],
     validModules: Map<string, unknown>,
     rawMetadata: Map<string, Record<string, unknown>>,
-  ): number {
+  ): Promise<number> {
     // Stage 8 (D-32). Conflict detection / ID validation already happened in
     // `_filterIdConflicts` (stage 7), so this loop is purely a register pass.
+    //
+    // Deferred-publish contract (issue #65, audit D11-001 / D10-005): a module
+    // is NEVER published to `_modules`/`_moduleMeta`/`_lowercaseMap` until its
+    // `onLoad` (sync or async) has succeeded. This mirrors the public
+    // `_registerWithOnLoad` path: the caller observes either a fully-published
+    // module OR an `apcore.registry.module_load_failed` event — never a module
+    // that is visible mid-load. On `onLoad` failure we emit the event, skip
+    // publishing, and move to the next module (skip-on-failure, never abort).
     let count = 0;
     for (const modId of loadOrder) {
       const mod = validModules.get(modId);
       if (mod === undefined) continue;
       const modObj = mod as Record<string, unknown>;
-      const mergedMeta = mergeModuleMetadata(modObj, rawMetadata.get(modId) ?? {});
 
-      this._modules.set(modId, mod);
-      this._moduleMeta.set(modId, mergedMeta);
-      this._lowercaseMap.set(modId.toLowerCase(), modId);
-
+      // Run onLoad BEFORE publishing. Handle both sync and async onLoad: call
+      // it, and if it returns a Promise, await it.
       if (typeof modObj['onLoad'] === 'function') {
         try {
-          (modObj['onLoad'] as () => void)();
+          const onLoadResult = (modObj['onLoad'] as () => unknown)();
+          if (onLoadResult instanceof Promise) {
+            await onLoadResult;
+          }
         } catch (e) {
+          // Sync throw or async rejection: emit module_load_failed, do NOT
+          // publish, warn, and skip to the next module.
+          this._emitModuleLoadFailed(modId, e);
           console.warn(`[apcore:registry] onLoad failed for ${modId}, skipping:`, e);
-          this._modules.delete(modId);
-          this._moduleMeta.delete(modId);
-          this._lowercaseMap.delete(modId.toLowerCase());
           continue;
         }
       }
+
+      // Success (including empty / no-onLoad modules): publish all state.
+      const mergedMeta = mergeModuleMetadata(modObj, rawMetadata.get(modId) ?? {});
+      this._modules.set(modId, mod);
+      this._moduleMeta.set(modId, mergedMeta);
+      this._lowercaseMap.set(modId.toLowerCase(), modId);
 
       this._triggerEvent(REGISTRY_EVENTS.REGISTER, modId, mod);
       count++;
