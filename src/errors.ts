@@ -9,6 +9,15 @@ export interface ErrorOptions {
   aiGuidance?: string | null;
   userFixable?: boolean | null;
   suggestion?: string | null;
+  /**
+   * Optional structured details payload. Most subclasses build their own
+   * `details` from positional constructor args and ignore this field;
+   * subclasses that take no detail-bearing positional args (e.g.
+   * InvalidInputError) read it so callers can attach a machine-readable
+   * payload (e.g. the STREAM_CHUNK_NOT_OBJECT contract) without changing
+   * the existing positional parameter order.
+   */
+  details?: Record<string, unknown>;
 }
 
 export class ModuleError extends Error {
@@ -416,7 +425,7 @@ export class InvalidInputError extends ModuleError {
     super(
       'GENERAL_INVALID_INPUT',
       message,
-      {},
+      options?.details ?? {},
       options?.cause,
       options?.traceId,
       options?.retryable,

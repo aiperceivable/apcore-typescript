@@ -4,7 +4,7 @@ import { CTX_GLOBAL_DEADLINE, Executor } from '../src/executor.js';
 import { FunctionModule } from '../src/decorator.js';
 import { Registry } from '../src/registry/registry.js';
 import { Middleware } from '../src/middleware/base.js';
-import { ModuleNotFoundError, ModuleTimeoutError, SchemaValidationError } from '../src/errors.js';
+import { InvalidInputError, ModuleNotFoundError, ModuleTimeoutError, SchemaValidationError } from '../src/errors.js';
 
 function createSimpleModule(id: string): FunctionModule {
   return new FunctionModule({
@@ -312,5 +312,105 @@ describe('Executor.stream()', () => {
     const chunks = await collectChunks(executor.stream('phase3.fail'));
     expect(chunks).toHaveLength(1);
     expect(chunks[0]).toEqual({ count: 'not-a-number' });
+  });
+
+  it('D10-001: rejects a non-object (string) stream chunk before delivery with STREAM_CHUNK_NOT_OBJECT', async () => {
+    // Cross-SDK parity with apcore-rust deep_merge_chunks_checked / D-19:
+    // a chunk that is not a plain JSON object MUST be rejected BEFORE it is
+    // yielded. The bad chunk MUST NOT reach the consumer.
+    const registry = new Registry();
+    const mod = {
+      description: 'module streaming a bad string chunk',
+      inputSchema: Type.Object({}),
+      outputSchema: Type.Object({ a: Type.Optional(Type.Number()) }),
+      execute: () => ({ a: 1 }),
+      async *stream(): AsyncGenerator<Record<string, unknown>> {
+        yield { a: 1 };
+        yield 'not an object' as unknown as Record<string, unknown>;
+      },
+    };
+    registry.register('bad.string.stream', mod);
+
+    const executor = new Executor({ registry });
+    const collected: Record<string, unknown>[] = [];
+    let caught: unknown = null;
+    try {
+      for await (const chunk of executor.stream('bad.string.stream')) {
+        collected.push(chunk);
+      }
+    } catch (e) {
+      caught = e;
+    }
+
+    // The bad string chunk MUST NOT have been delivered.
+    expect(collected).toEqual([{ a: 1 }]);
+    expect(collected).not.toContain('not an object');
+
+    expect(caught).toBeInstanceOf(InvalidInputError);
+    const err = caught as InvalidInputError;
+    expect(err.code).toBe('GENERAL_INVALID_INPUT');
+    expect(err.details['code']).toBe('STREAM_CHUNK_NOT_OBJECT');
+    expect(err.details['actual_type']).toBe('string');
+    expect(err.details['chunk_index']).toBe(1);
+  });
+
+  it('D10-001: rejects a non-object (array) stream chunk with actual_type "array"', async () => {
+    const registry = new Registry();
+    const mod = {
+      description: 'module streaming a bad array chunk',
+      inputSchema: Type.Object({}),
+      outputSchema: Type.Object({ a: Type.Optional(Type.Number()) }),
+      execute: () => ({ a: 1 }),
+      async *stream(): AsyncGenerator<Record<string, unknown>> {
+        yield { a: 1 };
+        yield [1, 2, 3] as unknown as Record<string, unknown>;
+      },
+    };
+    registry.register('bad.array.stream', mod);
+
+    const executor = new Executor({ registry });
+    const collected: Record<string, unknown>[] = [];
+    let caught: unknown = null;
+    try {
+      for await (const chunk of executor.stream('bad.array.stream')) {
+        collected.push(chunk);
+      }
+    } catch (e) {
+      caught = e;
+    }
+
+    expect(collected).toEqual([{ a: 1 }]);
+    expect(caught).toBeInstanceOf(InvalidInputError);
+    const err = caught as InvalidInputError;
+    expect(err.code).toBe('GENERAL_INVALID_INPUT');
+    expect(err.details['code']).toBe('STREAM_CHUNK_NOT_OBJECT');
+    expect(err.details['actual_type']).toBe('array');
+    expect(err.details['chunk_index']).toBe(1);
+  });
+
+  it('D10-001: all-object stream is delivered and accumulated unchanged', async () => {
+    const registry = new Registry();
+    let afterOutput: Record<string, unknown> | null = null;
+    const mod = {
+      description: 'all-object streaming module',
+      inputSchema: Type.Object({}),
+      outputSchema: Type.Object({ a: Type.Optional(Type.Number()), b: Type.Optional(Type.Number()) }),
+      execute: () => ({ a: 1, b: 2 }),
+      async *stream(): AsyncGenerator<Record<string, unknown>> {
+        yield { a: 1 };
+        yield { b: 2 };
+      },
+    };
+    registry.register('all.object.stream', mod);
+
+    const executor = new Executor({ registry });
+    executor.useAfter((_mid, _inputs, output) => {
+      afterOutput = { ...output };
+      return null;
+    });
+
+    const chunks = await collectChunks(executor.stream('all.object.stream'));
+    expect(chunks).toEqual([{ a: 1 }, { b: 2 }]);
+    expect(afterOutput).toEqual({ a: 1, b: 2 });
   });
 });

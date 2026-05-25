@@ -153,6 +153,35 @@ export function deepMergeChunk(
   }
 }
 
+/**
+ * JSON type name for a value, matching apcore-rust `json_type_name` EXACTLY
+ * (D-19 / D10-001 cross-SDK parity): null→"null", boolean→"bool",
+ * number→"number", string→"string", array→"array", object→"object".
+ * Used to populate the STREAM_CHUNK_NOT_OBJECT error's `actual_type`.
+ */
+function jsonTypeName(value: unknown): string {
+  if (value === null) return 'null';
+  if (Array.isArray(value)) return 'array';
+  switch (typeof value) {
+    case 'boolean':
+      return 'bool';
+    case 'number':
+      return 'number';
+    case 'string':
+      return 'string';
+    default:
+      return 'object';
+  }
+}
+
+/**
+ * A valid stream chunk is a plain JSON object (not null, not an array, not a
+ * scalar). Mirrors apcore-rust `Value::is_object()`.
+ */
+function isPlainObjectChunk(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
 export class Executor {
   private _registry: Registry;
   private _middlewareManager: MiddlewareManager;
@@ -609,6 +638,7 @@ export class Executor {
     // seconds. (sync finding A-D-202.)
     const globalDeadline =
       (pipeCtx.context?.data?.[CTX_GLOBAL_DEADLINE] as number | undefined) ?? null;
+    let chunkIndex = 0;
     try {
       for await (const chunk of outputStream) {
         // Enforce global_deadline between chunks — matches apcore-python
@@ -618,8 +648,29 @@ export class Executor {
         if (globalDeadline !== null && Date.now() > globalDeadline) {
           throw new ModuleTimeoutError(moduleId, 0);
         }
-        deepMergeChunk(accumulated, chunk as Record<string, unknown>);
+        // Enforce stream-chunk shape BEFORE merge and BEFORE yield (D10-001 /
+        // apcore-rust deep_merge_chunks_checked, D-19). A non-object chunk is
+        // rejected so it is never delivered to the consumer; deep_merge can
+        // only accumulate objects. The throw routes through the catch below
+        // (propagateError / onError) like other stream errors.
+        if (!isPlainObjectChunk(chunk)) {
+          const actualType = jsonTypeName(chunk);
+          throw new InvalidInputError(
+            `Streaming chunk at index ${chunkIndex} is not a JSON object ` +
+              `(got ${actualType}); chunks must be objects so deep_merge can ` +
+              `accumulate them.`,
+            {
+              details: {
+                code: 'STREAM_CHUNK_NOT_OBJECT',
+                chunk_index: chunkIndex,
+                actual_type: actualType,
+              },
+            },
+          );
+        }
+        deepMergeChunk(accumulated, chunk);
         yield chunk;
+        chunkIndex += 1;
       }
     } catch (exc) {
       if (exc instanceof ExecutionCancelledError) throw exc;
