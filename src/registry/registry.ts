@@ -1004,12 +1004,32 @@ export class Registry {
    * `includeHidden: true` to enumerate every registered module — useful
    * for introspection tools, debug consoles, and tests.
    */
-  list(options?: { tags?: string[]; prefix?: string; includeHidden?: boolean }): string[] {
+  /**
+   * Return sorted list of unique registered module IDs, optionally filtered.
+   *
+   * @param options.tags When supplied, only modules carrying *all* of the given tags are returned.
+   * @param options.prefix When supplied, only IDs starting with the prefix are returned.
+   * @param options.visibility Filter by module visibility. Supported: `['public', 'hidden']`.
+   *                           Defaults to `['public']`. Aligned with apcore D-24.
+   * @param options.includeHidden Deprecated. Use `visibility: ['public', 'hidden']` instead.
+   */
+  list(options?: {
+    tags?: string[];
+    prefix?: string;
+    visibility?: string[];
+    includeHidden?: boolean;
+  }): string[] {
     let ids = [...this._modules.keys()];
 
-    if (options?.includeHidden !== true) {
-      ids = ids.filter((id) => this._isDiscoverable(id));
-    }
+    // D-24 alignment: visibility list takes precedence over legacy includeHidden bool.
+    const vis = options?.visibility ?? (options?.includeHidden === true ? ['public', 'hidden'] : ['public']);
+    const showPublic = vis.includes('public');
+    const showHidden = vis.includes('hidden');
+
+    ids = ids.filter((id) => {
+      const isDisc = this._isDiscoverable(id);
+      return (isDisc && showPublic) || (!isDisc && showHidden);
+    });
 
     if (options?.prefix != null) {
       ids = ids.filter((id) => id.startsWith(options.prefix!));

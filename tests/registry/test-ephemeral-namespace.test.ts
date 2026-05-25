@@ -21,7 +21,7 @@ import { FunctionModule } from '../../src/decorator.js';
 import { InvalidInputError } from '../../src/errors.js';
 import { createAnnotations } from '../../src/module.js';
 import { EventEmitter, type ApCoreEvent } from '../../src/events/emitter.js';
-import { Context } from '../../src/context.js';
+import { Context, Identity } from '../../src/context.js';
 
 function createMod(
   id: string,
@@ -219,7 +219,7 @@ describe('v0.21.0 — Audit-event single-emit rule', () => {
       'agent-99',
       [],
       null,
-      { id: 'agent-99', type: 'agent', roles: ['executor'], attrs: {} },
+      new Identity('agent-99', 'agent', ['executor']),
     );
     registry.register(
       'ephemeral.audit_ctx',

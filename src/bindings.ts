@@ -134,26 +134,32 @@ export class BindingLoader {
   }
 
   async loadBindingDir(
-    dirPath: string,
+    dirPath: string | undefined,
     registry: Registry,
     pattern: string = '*.binding.yaml',
   ): Promise<FunctionModule[]> {
-    if (!existsSync(dirPath) || !statSync(dirPath).isDirectory()) {
-      throw new BindingFileInvalidError(dirPath, 'Directory does not exist');
+    const actualPath = dirPath ?? process.env.APCORE_BINDINGS_DIR;
+    if (!actualPath) {
+      throw new BindingFileInvalidError(
+        '',
+        'No directory provided and APCORE_BINDINGS_DIR environment variable is not set',
+      );
     }
 
-    const files = readdirSync(dirPath)
+    if (!existsSync(actualPath) || !statSync(actualPath).isDirectory()) {
+      throw new BindingFileInvalidError(actualPath, 'Directory does not exist');
+    }
+
+    const files = readdirSync(actualPath)
       .filter((f) => {
         // Simple glob matching for *.binding.yaml
         const suffix = pattern.replace('*', '');
         return f.endsWith(suffix);
       })
       .sort();
-
     const results: FunctionModule[] = [];
     for (const f of files) {
-      const fms = await this.loadBindings(join(dirPath, f), registry);
-      results.push(...fms);
+      results.push(...(await this.loadBindings(join(actualPath, f), registry)));
     }
     return results;
   }

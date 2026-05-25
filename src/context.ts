@@ -8,11 +8,34 @@ import { ContextBindingError } from './errors.js';
 import { ContextLogger } from './observability/context-logger.js';
 import type { TraceParent } from './trace-context.js';
 
-export interface Identity {
+export class Identity {
   readonly id: string;
   readonly type: string;
   readonly roles: readonly string[];
   readonly attrs: Readonly<Record<string, unknown>>;
+
+  constructor(
+    id: string,
+    type: string = 'user',
+    roles: string[] = [],
+    attrs: Record<string, unknown> = {},
+  ) {
+    this.id = id;
+    this.type = type;
+    this.roles = Object.freeze([...roles]);
+    this.attrs = Object.freeze({ ...attrs });
+    Object.freeze(this);
+  }
+
+  /**
+   * Get an attribute value by key.
+   *
+   * Aligned with apcore D-03. May trigger a fetch if the identity
+   * is lazy-loaded (future extension).
+   */
+  getAttr<T = unknown>(key: string, defaultValue?: T): T | undefined {
+    return (this.attrs[key] as T) ?? defaultValue;
+  }
 }
 
 export function createIdentity(
@@ -21,12 +44,7 @@ export function createIdentity(
   roles: string[] = [],
   attrs: Record<string, unknown> = {},
 ): Identity {
-  return Object.freeze({
-    id,
-    type,
-    roles: Object.freeze([...roles]),
-    attrs: Object.freeze({ ...attrs }),
-  });
+  return new Identity(id, type, roles, attrs);
 }
 
 export class Context<T = null> {
