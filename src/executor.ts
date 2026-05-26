@@ -155,7 +155,7 @@ export function deepMergeChunk(
 
 /**
  * JSON type name for a value, matching apcore-rust `json_type_name` EXACTLY
- * (D-19 / D10-001 cross-SDK parity): null→"null", boolean→"bool",
+ * (D-58 / D10-001 cross-SDK parity): null→"null", boolean→"bool",
  * number→"number", string→"string", array→"array", object→"object".
  * Used to populate the STREAM_CHUNK_NOT_OBJECT error's `actual_type`.
  */
@@ -649,7 +649,7 @@ export class Executor {
           throw new ModuleTimeoutError(moduleId, 0);
         }
         // Enforce stream-chunk shape BEFORE merge and BEFORE yield (D10-001 /
-        // apcore-rust deep_merge_chunks_checked, D-19). A non-object chunk is
+        // apcore-rust deep_merge_chunks_checked, D-58). A non-object chunk is
         // rejected so it is never delivered to the consumer; deep_merge can
         // only accumulate objects. The throw routes through the catch below
         // (propagateError / onError) like other stream errors.

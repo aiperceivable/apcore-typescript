@@ -315,7 +315,7 @@ describe('Executor.stream()', () => {
   });
 
   it('D10-001: rejects a non-object (string) stream chunk before delivery with STREAM_CHUNK_NOT_OBJECT', async () => {
-    // Cross-SDK parity with apcore-rust deep_merge_chunks_checked / D-19:
+    // Cross-SDK parity with apcore-rust deep_merge_chunks_checked / D-58:
     // a chunk that is not a plain JSON object MUST be rejected BEFORE it is
     // yielded. The bad chunk MUST NOT reach the consumer.
     const registry = new Registry();
