@@ -25,10 +25,23 @@ export class MiddlewareManager {
   private _registrations: Map<string, { middleware: Middleware; stack: string }> = new Map();
 
   add(middleware: Middleware, opts?: { allowDuplicate?: boolean; identityKey?: string }): void {
+    // A-D-017: reject priority > 1000 at the manager level (Python/Rust parity).
+    // The Middleware base class also guards this at construction, but a plain
+    // object or a subclass bypassing super() could carry an out-of-range value.
+    if (middleware.priority > 1000) {
+      throw new RangeError(
+        `Middleware '${middleware.constructor.name}' has priority ${middleware.priority} ` +
+          `which exceeds the maximum allowed value of 1000`,
+      );
+    }
+
+    // A-D-018(a) DEFERRED: default identity stays constructor.name. A robust
+    // module/package-qualified identity (Python uses module.qualname) is not
+    // reliably available for a JS class at runtime, so we keep the bare name.
     const identity = opts?.identityKey ?? middleware.constructor.name;
 
-    if (!opts?.allowDuplicate && this._registrations.has(identity)) {
-      const prior = this._registrations.get(identity)!;
+    const prior = this._registrations.get(identity);
+    if (!opts?.allowDuplicate && prior !== undefined) {
       console.warn(
         `[apcore:middleware] Duplicate middleware registration detected for identity '${identity}' ` +
         `(class: ${middleware.constructor.name}). ` +
@@ -38,8 +51,14 @@ export class MiddlewareManager {
       );
     }
 
-    const stack = new Error().stack ?? '(unavailable)';
-    this._registrations.set(identity, { middleware, stack });
+    // A-D-019(b) first-registration-wins: only record the identity when it is
+    // absent. A duplicate must NOT overwrite the original registration site.
+    // A-D-021/022(d): identity is recorded even when allowDuplicate is true —
+    // only the warning above is suppressed by allowDuplicate, not the recording.
+    if (prior === undefined) {
+      const stack = new Error().stack ?? '(unavailable)';
+      this._registrations.set(identity, { middleware, stack });
+    }
 
     // Stable insertion: find the first middleware with a strictly lower priority
     // and insert before it. This keeps higher-priority middlewares first and

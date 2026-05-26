@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { Middleware } from '../src/middleware/base.js';
 import { MiddlewareManager, MiddlewareChainError } from '../src/middleware/manager.js';
 import { Context, createIdentity } from '../src/context.js';
@@ -323,6 +323,51 @@ describe('MiddlewareManager', () => {
       mgr.add(mid);
       const tags = mgr.snapshot().map((mw) => (mw as TaggingMiddleware).tag);
       expect(tags).toEqual(['H', 'M', 'L']);
+    });
+  });
+
+  describe('add() guards and identity bookkeeping (A-D-017..022)', () => {
+    it('rejects priority > 1000 at the manager level (A-D-017)', () => {
+      const mgr = new MiddlewareManager();
+      // A plain object middleware bypasses the base-class constructor guard,
+      // so the manager-level guard must still reject it.
+      const bad = { priority: 1001, before: () => null, after: () => null, onError: () => null } as unknown as Middleware;
+      expect(() => mgr.add(bad)).toThrow(RangeError);
+    });
+
+    it('warns on duplicate identity without allowDuplicate', () => {
+      const mgr = new MiddlewareManager();
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      mgr.add(new TaggingMiddleware('A'));
+      mgr.add(new TaggingMiddleware('B')); // same class → same identity
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Duplicate middleware registration'));
+      warnSpy.mockRestore();
+    });
+
+    it('records identity even when allowDuplicate=true; only the warning is suppressed (A-D-021/022 d)', () => {
+      const mgr = new MiddlewareManager();
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      // First add with allowDuplicate suppresses the warning AND records identity.
+      mgr.add(new TaggingMiddleware('A'), { allowDuplicate: true });
+      expect(warnSpy).not.toHaveBeenCalled();
+      // A subsequent plain add of the same identity must now warn, proving the
+      // identity was recorded under allowDuplicate.
+      mgr.add(new TaggingMiddleware('B'));
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Duplicate middleware registration'));
+      warnSpy.mockRestore();
+    });
+
+    it('remove() cleans the identity registry so re-add does not warn (A-D-020 c)', () => {
+      const mgr = new MiddlewareManager();
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const first = new TaggingMiddleware('A');
+      mgr.add(first);
+      expect(mgr.remove(first)).toBe(true);
+      // Identity registry cleaned → re-adding the same class is a fresh
+      // registration, no duplicate warning.
+      mgr.add(new TaggingMiddleware('B'));
+      expect(warnSpy).not.toHaveBeenCalled();
+      warnSpy.mockRestore();
     });
   });
 });
