@@ -63,6 +63,11 @@ export class MaxCallDepthHandler implements ACLConditionHandler {
     } else {
       return false;
     }
+    // Fail closed on non-integer thresholds (e.g. 5.5). A fractional depth is
+    // meaningless and must not silently ALLOW where Python/Rust reject.
+    if (!Number.isInteger(threshold)) {
+      return false;
+    }
     return context.callChain.length <= threshold;
   }
 }
