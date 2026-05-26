@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { EventEmitter, createEvent } from '../src/events/index.js';
 import type { ApCoreEvent, EventSubscriber } from '../src/events/index.js';
 
@@ -54,26 +54,38 @@ describe('EventEmitter', () => {
     emitter.unsubscribe({ onEvent: () => {} });
   });
 
-  it('isolates subscriber errors', () => {
+  it('isolates subscriber errors (failing subscriber does not block fan-out)', () => {
     const emitter = new EventEmitter();
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     let secondCalled = false;
-    emitter.subscribe({ onEvent: () => { throw new Error('boom'); } });
-    emitter.subscribe({ onEvent: () => { secondCalled = true; } });
+    // Throwing subscriber uses a fast retry policy so its eventual DLQ does not slow the test.
+    emitter.subscribe({
+      eventPattern: 'test',
+      retry: { maxAttempts: 3, initialBackoffMs: 1, maxBackoffMs: 2, backoffMultiplier: 1 },
+      onEvent: () => { throw new Error('boom'); },
+    });
+    emitter.subscribe({ eventPattern: 'test', onEvent: () => { secondCalled = true; } });
     emitter.emit(createEvent('test', null, 'info', {}));
+    // Fan-out is synchronous; the second subscriber runs even though the first throws.
     expect(secondCalled).toBe(true);
-    expect(warnSpy).toHaveBeenCalled();
-    warnSpy.mockRestore();
   });
 
-  it('handles async subscriber errors gracefully', async () => {
+  it('handles async subscriber errors gracefully (retries then emits DLQ, never crashes emitter)', async () => {
     const emitter = new EventEmitter();
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    emitter.subscribe({ onEvent: async () => { throw new Error('async boom'); } });
+    const dlqEvents: ApCoreEvent[] = [];
+    emitter.subscribe({
+      eventPattern: 'apcore.event.delivery_failed',
+      onEvent: (e) => { dlqEvents.push(e); },
+    });
+    emitter.subscribe({
+      eventPattern: 'test',
+      retry: { maxAttempts: 3, initialBackoffMs: 1, maxBackoffMs: 2, backoffMultiplier: 1 },
+      onEvent: async () => { throw new Error('async boom'); },
+    });
     emitter.emit(createEvent('test', null, 'info', {}));
     await emitter.flush();
-    expect(warnSpy).toHaveBeenCalled();
-    warnSpy.mockRestore();
+    // Spec: in-process delivery failures are no longer silently dropped — a DLQ event is emitted.
+    expect(dlqEvents.length).toBe(1);
+    expect((dlqEvents[0].data['error'] as Record<string, unknown>)['message']).toBe('async boom');
   });
 
   it('flush waits for all pending async deliveries', async () => {
@@ -178,18 +190,18 @@ describe('EventEmitter', () => {
       let resolved = 0;
       // Subscriber that holds 50ms async delivery
       const slowSubscriber: EventSubscriber = {
+        eventPattern: 'test_event',
+        retry: { maxAttempts: 1 }, // single attempt — isolate cap behavior from retry
         onEvent: () => new Promise<void>((r) => setTimeout(() => { resolved++; r(); }, 50)),
       };
       emitter.subscribe(slowSubscriber);
 
-      // Drop-event observer (sync, never produces a Promise so it never fills _pending).
+      // Drop-event observer: only receives delivery_dropped events (dispatched synchronously,
+      // never tracked in _pending), so it does not consume any of the cap=2 budget.
       const droppedEvents: ApCoreEvent[] = [];
       emitter.subscribe({
-        onEvent: (e) => {
-          if (e.eventType === 'apcore.subscriber.delivery_dropped') {
-            droppedEvents.push(e);
-          }
-        },
+        eventPattern: 'apcore.subscriber.delivery_dropped',
+        onEvent: (e) => { droppedEvents.push(e); },
       });
 
       // First two slow subscriber promises occupy _pending (cap=2).
