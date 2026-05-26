@@ -16,7 +16,12 @@ export interface ResolvedRetryConfig {
   backoffMultiplier: number;
 }
 
-/** Default retry settings when a subscriber configures retry but omits individual fields. */
+/**
+ * Spec default retry policy (event-system.md §Per-Subscriber Retry Policy).
+ * Applied when a subscriber omits the `retry` block entirely, and as the base
+ * for merging when individual fields are omitted. `max_attempts` default is 3 —
+ * uniform across Python/TypeScript/Rust SDKs.
+ */
 export const DEFAULT_RETRY: ResolvedRetryConfig = {
   maxAttempts: 3,
   initialBackoffMs: 100,
@@ -25,14 +30,15 @@ export const DEFAULT_RETRY: ResolvedRetryConfig = {
 };
 
 /**
- * Merge caller-supplied retry config with defaults.
- * A caller that does NOT supply `retry` gets `maxAttempts: 1` (no retry) to
- * preserve backward-compatible fire-and-forget behavior.
+ * Merge caller-supplied retry config with the spec defaults.
+ * A subscriber that does NOT supply `retry` receives the full DEFAULT_RETRY
+ * policy (max_attempts=3), per event-system.md §Per-Subscriber Retry Policy —
+ * built-in and user-registered subscribers share the same default. A subscriber
+ * that explicitly sets `maxAttempts: 1` disables retry (single attempt).
  */
 export function resolveRetry(config?: RetryConfig): ResolvedRetryConfig {
   if (config === undefined) {
-    // No retry config → single attempt (backward compatible)
-    return { ...DEFAULT_RETRY, maxAttempts: 1 };
+    return { ...DEFAULT_RETRY };
   }
   return { ...DEFAULT_RETRY, ...config };
 }

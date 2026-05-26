@@ -107,6 +107,65 @@ describe('Event delivery semantics (#61)', () => {
     });
   });
 
+  describe('default retry policy for subscribers without explicit retry config (A-D-005)', () => {
+    it('custom subscriber with NO retry field is retried up to spec default (max_attempts=3)', async () => {
+      const emitter = new EventEmitter();
+      let attempts = 0;
+      // No `retry` field at all — must inherit the spec default (max_attempts=3),
+      // NOT single-attempt fire-and-forget.
+      const sub: EventSubscriber = {
+        subscriberId: 'no-retry-config',
+        eventPattern: 'test.transient', // scope to target event, ignore any DLQ event
+        async onEvent() {
+          attempts++;
+          if (attempts < 3) throw new Error('transient');
+        },
+      };
+      emitter.subscribe(sub);
+      emitter.emit(createEvent('test.transient', null, 'info', {}));
+      await emitter.flush();
+      // Initial try + 2 retries == 3 attempts; delivery succeeds on the 3rd.
+      expect(attempts).toBe(3);
+    });
+
+    it('subscriber without retry field that always fails emits a DLQ event after 3 attempts', async () => {
+      const emitter = new EventEmitter();
+      const dlqEvents: ApCoreEvent[] = [];
+      emitter.subscribe({
+        eventPattern: 'apcore.event.delivery_failed',
+        onEvent: (e) => { dlqEvents.push(e); },
+      });
+      emitter.subscribe({
+        subscriberId: 'always-fails-no-config',
+        eventPattern: 'test.permanent', // scope to target event, do not self-consume DLQ
+        async onEvent() { throw new Error('permanent'); },
+      });
+      emitter.emit(createEvent('test.permanent', null, 'info', {}));
+      await emitter.flush();
+      expect(dlqEvents.length).toBe(1);
+      expect(dlqEvents[0].data['subscriber_id']).toBe('always-fails-no-config');
+      expect(dlqEvents[0].data['attempt_count']).toBe(3);
+    });
+
+    it('explicit retry: { maxAttempts: 1 } disables retry — onEvent called exactly once', async () => {
+      const emitter = new EventEmitter();
+      let attempts = 0;
+      const sub: EventSubscriber = {
+        subscriberId: 'explicit-single',
+        eventPattern: 'test.single', // scope to the target event, ignore the resulting DLQ event
+        retry: { maxAttempts: 1 },
+        async onEvent() {
+          attempts++;
+          throw new Error('boom');
+        },
+      };
+      emitter.subscribe(sub);
+      emitter.emit(createEvent('test.single', null, 'info', {}));
+      await emitter.flush();
+      expect(attempts).toBe(1);
+    });
+  });
+
   describe('subscriberId', () => {
     it('subscriberId is used in DLQ payload', async () => {
       const emitter = new EventEmitter();

@@ -23,9 +23,9 @@ export interface EventSubscriber {
    */
   readonly eventPattern?: string;
   /**
-   * Optional retry configuration. When absent, delivery uses a single attempt
-   * (fire-and-forget, backward-compatible). When present, delivery is retried
-   * with exponential backoff using DEFAULT_RETRY as the base.
+   * Optional retry configuration. When absent, delivery uses the spec default
+   * policy (max_attempts=3 with exponential backoff). When present, supplied
+   * fields are merged over DEFAULT_RETRY; `maxAttempts: 1` disables retry.
    */
   readonly retry?: RetryConfig;
   /**
@@ -61,10 +61,10 @@ const DEFAULT_MAX_PENDING = 1000;
  * Global event bus with fan-out delivery, per-subscriber retry, and DLQ.
  *
  * Key behaviors:
- * - Subscribers without a `retry` config get single-attempt fire-and-forget delivery
- *   (backward-compatible). Errors are logged via console.warn.
- * - Subscribers with `retry` config get exponential-backoff retries up to
- *   `maxAttempts`. After exhaustion: DLQ event + optional `onFailure` callback.
+ * - All subscribers get exponential-backoff retries up to `maxAttempts`. A subscriber
+ *   that omits `retry` receives the spec default policy (max_attempts=3); one that sets
+ *   `maxAttempts: 1` disables retry (single attempt).
+ * - After retry exhaustion: DLQ event + optional `onFailure` callback.
  * - `eventPattern` (glob) filters which events a subscriber receives.
  * - `flush()` drains all in-flight async deliveries.
  */
@@ -91,14 +91,11 @@ export class EventEmitter {
   emit(event: ApCoreEvent): void {
     const snapshot = this._getMatchingSubscribers(event.eventType);
     for (const subscriber of snapshot) {
-      // Single-attempt (no retry config) subscribers: preserve old fire-and-forget behavior
-      // with synchronous error isolation for sync throws and async error logging.
-      if (!subscriber.retry) {
-        this._emitSingleAttempt(subscriber, event);
-        continue;
-      }
-
-      // Retry-enabled subscribers: async delivery with backoff and DLQ.
+      // Every subscriber — built-in and user-registered, with or without an explicit
+      // `retry` block — goes through the unified retry/backoff/DLQ delivery path.
+      // A subscriber that omits `retry` receives the spec default policy
+      // (max_attempts=3); one that explicitly sets maxAttempts:1 disables retry.
+      // (event-system.md §Per-Subscriber Retry Policy; sync finding A-D-005)
       const deliveryPromise = this._deliver(subscriber, event);
       if (this._pending.length >= this._maxPending) {
         console.warn(
@@ -115,35 +112,6 @@ export class EventEmitter {
           if (idx !== -1) this._pending.splice(idx, 1);
         });
       }
-    }
-  }
-
-  /**
-   * Single-attempt delivery that preserves the original fire-and-forget behavior.
-   * Sync errors are caught and logged immediately; async errors are tracked in _pending.
-   */
-  private _emitSingleAttempt(subscriber: EventSubscriber, event: ApCoreEvent): void {
-    try {
-      const result = subscriber.onEvent(event);
-      if (result instanceof Promise) {
-        if (this._pending.length >= this._maxPending) {
-          console.warn(
-            `[apcore:events] _pending cap (${this._maxPending}) reached — dropping async delivery for event ${event.eventType}`,
-          );
-          this._dispatchDroppedEvent(subscriber, event);
-        } else {
-          const tracked = result.catch((err) => {
-            console.warn(`[apcore:events] Subscriber failed handling event ${event.eventType}:`, err);
-          });
-          this._pending.push(tracked);
-          tracked.then(() => {
-            const idx = this._pending.indexOf(tracked);
-            if (idx !== -1) this._pending.splice(idx, 1);
-          });
-        }
-      }
-    } catch (err) {
-      console.warn(`[apcore:events] Subscriber failed handling event ${event.eventType}:`, err);
     }
   }
 
