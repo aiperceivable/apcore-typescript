@@ -4,7 +4,7 @@
 
 # apcore
 
-[![TypeScript](https://img.shields.io/badge/TypeScript-Node_18+-blue.svg)](https://github.com/aiperceivable/apcore-typescript)
+[![TypeScript](https://img.shields.io/badge/TypeScript-Node_20+-blue.svg)](https://github.com/aiperceivable/apcore-typescript)
 [![License](https://img.shields.io/badge/license-Apache%202.0-green.svg)](https://opensource.org/licenses/Apache-2.0)
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/12294/badge)](https://www.bestpractices.dev/projects/12294)
 
@@ -51,7 +51,7 @@ For full documentation, including Quick Start guides and API reference, visit:
 
 ## Requirements
 
-- Node.js >= 18.0.0
+- Node.js >= 20.0.0
 - TypeScript >= 5.5
 
 ## Installation
