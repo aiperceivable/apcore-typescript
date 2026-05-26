@@ -1,5 +1,5 @@
 /**
- * Execution pipeline types for configurable step-based module invocation.
+ *  Execution pipeline types for configurable step-based module invocation.
  */
 
 import type { Context } from './context.js';
@@ -640,7 +640,7 @@ export class PipelineEngine {
       const stepPure = step.pure ?? false;
       const stepTimeoutMs = step.timeoutMs ?? 0;
 
-      // ① match_modules filter
+      // 1 match_modules filter
       if (stepMatchModules !== null) {
         const matched = stepMatchModules.some((pattern) => matchPattern(pattern, ctx.moduleId));
         if (!matched) {
@@ -657,7 +657,7 @@ export class PipelineEngine {
         }
       }
 
-      // ② dry_run filter: skip steps with side effects
+      // 2 dry_run filter: skip steps with side effects
       if (ctx.dryRun && !stepPure) {
         trace.steps.push({
           name: step.name,
@@ -671,7 +671,7 @@ export class PipelineEngine {
         continue;
       }
 
-      // ③ Execute with per-step timeout, wrapped in StepMiddleware hooks (§2.2)
+      // 3 Execute with per-step timeout, wrapped in StepMiddleware hooks (§2.2)
       const stepStart = performance.now();
       const stepState: PipelineState = {
         stepName: step.name,
@@ -679,7 +679,7 @@ export class PipelineEngine {
         context: ctx,
       };
 
-      // ③a beforeStep hooks (registration order)
+      // 4 a beforeStep hooks (registration order)
       for (const mw of this._stepMiddlewares) {
         if (mw.beforeStep) {
           await _maybeAwait(mw.beforeStep(step.name, stepState));
@@ -705,7 +705,7 @@ export class PipelineEngine {
         const durationMs = performance.now() - stepStart;
         const cause = exc instanceof Error ? exc : new Error(String(exc));
 
-        // ③b onStepError hooks: first non-null recovery wins (§2.2)
+        // 3 b onStepError hooks: first non-null recovery wins (§2.2)
         let recovery: unknown = null;
         for (const mw of this._stepMiddlewares) {
           if (!mw.onStepError) continue;
@@ -745,7 +745,7 @@ export class PipelineEngine {
           continue;
         }
 
-        // ④ ignore_errors: log and continue
+        // 4 ignore_errors: log and continue
         if (stepIgnoreErrors) {
           console.warn(`[apcore:pipeline] Step '${step.name}' failed (ignored):`, cause.message);
           trace.steps.push({
@@ -779,14 +779,14 @@ export class PipelineEngine {
 
       const durationMs = performance.now() - stepStart;
 
-      // ③c afterStep hooks (registration order, success path)
+      // 3 c afterStep hooks (registration order, success path)
       for (const mw of this._stepMiddlewares) {
         if (mw.afterStep) {
           await _maybeAwait(mw.afterStep(step.name, stepState, result));
         }
       }
 
-      // ⑤ Record trace
+      // 5 Record trace
       trace.steps.push({
         name: step.name,
         durationMs,
@@ -795,12 +795,12 @@ export class PipelineEngine {
         decisionPoint: result.confidence != null,
       });
 
-      // ⑥ Handle abort / skip_to / continue
+      // 6 Handle abort / skip_to / continue
       if (result.action === 'continue') {
         // Snapshot output for run_until predicates (§1.4)
         stepOutputs[step.name] = ctx.output != null ? { ...ctx.output } : null;
 
-        // ⑦ run_until: evaluate predicate after each successful continue (§1.4)
+        // 7 run_until: evaluate predicate after each successful continue (§1.4)
         if (ctx.runUntil != null) {
           const state: PipelineState = {
             stepName: step.name,
