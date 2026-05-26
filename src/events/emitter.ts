@@ -18,6 +18,13 @@ export interface EventSubscriber {
   /** Optional stable ID for this subscriber, used in DLQ payloads and identity tracking. */
   readonly subscriberId?: string;
   /**
+   * Optional declared subscriber kind (e.g. 'webhook', 'a2a', 'file'). Used as
+   * the `subscriber_type` in DLQ payloads. When absent, the type is derived
+   * from the constructor name (legacy fallback). Cross-SDK canonical
+   * (Python/Rust, A-D-029) reads this declared field first.
+   */
+  readonly subscriberType?: string;
+  /**
    * Optional glob pattern (supports * and ? wildcards). When set, the emitter
    * only delivers events whose `eventType` matches the pattern.
    */
@@ -72,6 +79,7 @@ export class EventEmitter {
   private _subscribers: EventSubscriber[] = [];
   private _pending: Promise<void>[] = [];
   private readonly _maxPending: number;
+  private _shutdown = false;
 
   constructor(maxPending: number = DEFAULT_MAX_PENDING) {
     this._maxPending = maxPending;
@@ -88,7 +96,20 @@ export class EventEmitter {
     }
   }
 
+  /**
+   * Stop accepting new emits. After shutdown, {@link emit} is a no-op (A-D-028,
+   * cross-SDK canonical with Python/Rust which drop post-shutdown emits). Drains
+   * any in-flight deliveries via {@link flush}.
+   */
+  async shutdown(timeoutMs: number = 5000): Promise<void> {
+    if (this._shutdown) return;
+    this._shutdown = true;
+    await this.flush(timeoutMs);
+  }
+
   emit(event: ApCoreEvent): void {
+    // A-D-028: silently drop emits after shutdown.
+    if (this._shutdown) return;
     const snapshot = this._getMatchingSubscribers(event.eventType);
     for (const subscriber of snapshot) {
       // Every subscriber — built-in and user-registered, with or without an explicit
@@ -115,10 +136,16 @@ export class EventEmitter {
     }
   }
 
-  private _getMatchingSubscribers(eventType: string): EventSubscriber[] {
+  private _getMatchingSubscribers(eventType: string, isDlq = false): EventSubscriber[] {
     return this._subscribers.filter((sub) => {
-      if (!sub.eventPattern) return true;
-      return fnmatch(eventType, sub.eventPattern);
+      // A-D-026: DLQ events (apcore.event.delivery_failed) are delivered ONLY
+      // to subscribers with an explicit, non-wildcard pattern. Catch-all
+      // subscribers (no pattern, or pattern '*') never receive DLQ events —
+      // this prevents cascading failures where a catch-all subscriber would
+      // recursively fail on the DLQ event about its own delivery failure.
+      const pattern = sub.eventPattern ?? '*';
+      if (isDlq && pattern === '*') return false;
+      return fnmatch(eventType, pattern);
     });
   }
 
@@ -156,7 +183,14 @@ export class EventEmitter {
     error: Error,
     attemptCount: number,
   ): Promise<void> {
-    const subscriberType = (subscriber as { constructor?: { name?: string } }).constructor?.name ?? 'unknown';
+    // A-D-029: prefer the declared `subscriberType` field; fall back to the
+    // constructor-name derivation only when it is absent.
+    const subscriberType =
+      typeof subscriber.subscriberType === 'string'
+        ? subscriber.subscriberType
+        : ((subscriber as { constructor?: { name?: string } }).constructor?.name ?? 'unknown')
+            .replace('Subscriber', '')
+            .toLowerCase();
     const subscriberId = subscriber.subscriberId ?? this._identifySubscriber(subscriber);
 
     const dlqEvent = createEvent(
@@ -164,7 +198,7 @@ export class EventEmitter {
       null,
       'error',
       {
-        subscriber_type: subscriberType.replace('Subscriber', '').toLowerCase(),
+        subscriber_type: subscriberType,
         subscriber_id: subscriberId,
         original_event: {
           name: originalEvent.eventType,
@@ -178,8 +212,9 @@ export class EventEmitter {
       },
     );
 
-    // Deliver DLQ event with NO retry — single attempt only; DLQ subscriber errors are logged
-    const dlqSubscribers = this._getMatchingSubscribers(dlqEvent.eventType);
+    // Deliver DLQ event with NO retry — single attempt only; DLQ subscriber errors are logged.
+    // isDlq=true excludes catch-all ('*'/no-pattern) subscribers (A-D-026).
+    const dlqSubscribers = this._getMatchingSubscribers(dlqEvent.eventType, true);
     for (const dlqSub of dlqSubscribers) {
       try {
         const r = dlqSub.onEvent(dlqEvent);
@@ -245,12 +280,23 @@ export class EventEmitter {
    *                   (sync finding A-D-503)
    */
   async flush(timeoutMs: number = 5000): Promise<void> {
-    const deadline = timeoutMs > 0 ? Date.now() + timeoutMs : Infinity;
-    while (this._pending.length > 0) {
-      if (Date.now() >= deadline) return;
-      const pending = [...this._pending];
-      this._pending = [];
-      await Promise.allSettled(pending);
+    // A-D-027: per-pending semantics (Python canonical) — each pending delivery
+    // gets up to `timeoutMs` to settle, rather than sharing one total deadline.
+    // A delivery that exceeds its budget is abandoned (the next call to flush
+    // can re-await any that are still tracked).
+    const pending = [...this._pending];
+    this._pending = [];
+    for (const p of pending) {
+      if (timeoutMs > 0) {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const timeout = new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, timeoutMs);
+        });
+        await Promise.race([p.catch(() => {}), timeout]);
+        if (timer !== undefined) clearTimeout(timer);
+      } else {
+        await p.catch(() => {});
+      }
     }
   }
 }
