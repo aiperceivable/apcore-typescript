@@ -3,7 +3,12 @@ import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { RefResolver } from '../../src/schema/ref-resolver.js';
-import { SchemaCircularRefError, SchemaNotFoundError, SchemaParseError } from '../../src/errors.js';
+import {
+  SchemaCircularRefError,
+  SchemaMaxDepthExceededError,
+  SchemaNotFoundError,
+  SchemaParseError,
+} from '../../src/errors.js';
 
 describe('RefResolver', () => {
   it('resolves local $ref', () => {
@@ -91,7 +96,55 @@ describe('RefResolver', () => {
         C: { type: 'string' },
       },
     };
-    expect(() => resolver.resolve(schema)).toThrow(SchemaCircularRefError);
+    // Depth-cap exhaustion must surface as SchemaMaxDepthExceededError
+    // (SCHEMA_MAX_DEPTH_EXCEEDED), distinct from genuine cycle detection.
+    // Aligns with Rust + PROTOCOL_SPEC §8.2 (A-D-038).
+    expect(() => resolver.resolve(schema)).toThrow(SchemaMaxDepthExceededError);
+  });
+
+  it('depth-cap exhaustion uses SCHEMA_MAX_DEPTH_EXCEEDED code', () => {
+    const resolver = new RefResolver('/tmp/schemas', 2);
+    const schema = {
+      type: 'object',
+      properties: {
+        x: { $ref: '#/definitions/A' },
+      },
+      definitions: {
+        A: { $ref: '#/definitions/B' },
+        B: { $ref: '#/definitions/C' },
+        C: { type: 'string' },
+      },
+    };
+    try {
+      resolver.resolve(schema);
+      expect.fail('expected SchemaMaxDepthExceededError to be thrown');
+    } catch (e) {
+      expect(e).toBeInstanceOf(SchemaMaxDepthExceededError);
+      expect((e as SchemaMaxDepthExceededError).code).toBe('SCHEMA_MAX_DEPTH_EXCEEDED');
+      expect(e).not.toBeInstanceOf(SchemaCircularRefError);
+    }
+  });
+
+  it('genuine cycle still uses SCHEMA_CIRCULAR_REF code', () => {
+    const resolver = new RefResolver('/tmp/schemas');
+    const schema = {
+      definitions: {
+        A: { $ref: '#/definitions/B' },
+        B: { $ref: '#/definitions/A' },
+      },
+      type: 'object',
+      properties: {
+        x: { $ref: '#/definitions/A' },
+      },
+    };
+    try {
+      resolver.resolve(schema);
+      expect.fail('expected SchemaCircularRefError to be thrown');
+    } catch (e) {
+      expect(e).toBeInstanceOf(SchemaCircularRefError);
+      expect((e as SchemaCircularRefError).code).toBe('SCHEMA_CIRCULAR_REF');
+      expect(e).not.toBeInstanceOf(SchemaMaxDepthExceededError);
+    }
   });
 
   it('resolves schema without $ref unchanged', () => {

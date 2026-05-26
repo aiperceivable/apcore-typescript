@@ -6,7 +6,12 @@ import { existsSync, readFileSync } from 'node:fs';
 import * as nodePath from 'node:path';
 import { dirname, resolve } from 'node:path';
 import yaml from 'js-yaml';
-import { SchemaCircularRefError, SchemaNotFoundError, SchemaParseError } from '../errors.js';
+import {
+  SchemaCircularRefError,
+  SchemaMaxDepthExceededError,
+  SchemaNotFoundError,
+  SchemaParseError,
+} from '../errors.js';
 import { deepCopy } from '../utils/index.js';
 
 const INLINE_SENTINEL = '__inline__';
@@ -46,9 +51,7 @@ export class RefResolver {
     }
 
     if (depth >= this._maxDepth) {
-      throw new SchemaCircularRefError(
-        `Maximum reference depth ${this._maxDepth} exceeded resolving: ${refString}`,
-      );
+      throw new SchemaMaxDepthExceededError(refString);
     }
 
     visited.add(refString);

@@ -72,6 +72,7 @@ Cross-language consistency fixes from `/apcore-skills:sync --scope core` review 
 - **`EventEmitter.flush()` uses per-pending timeout semantics (A-D-027).** Each pending delivery now gets up to `timeoutMs` to settle, instead of sharing a single total deadline, matching Python.
 - **`MiddlewareManager.add()` rejects priority > 1000 (A-D-017)** and applies first-registration-wins identity bookkeeping (A-D-019/021/022): a duplicate no longer overwrites the recorded registration, and identity is recorded even under `allowDuplicate` (only the warning is suppressed). Default identity remains `constructor.name` (A-D-018(a) deferred — module-qualified identity is not reliably available at runtime in JS).
 - **README Node requirement corrected to Node 20+ (B-006).** The badge and Requirements section said Node 18 while `engines.node` is `>=20.0.0`.
+- **`$ref` depth-cap exhaustion now throws `SchemaMaxDepthExceededError` (A-D-038).** When `RefResolver` reaches `schema.max_ref_depth` it previously threw `SchemaCircularRefError` (`SCHEMA_CIRCULAR_REF`), conflating the depth cap with genuine cycle detection. It now throws the new `SchemaMaxDepthExceededError` carrying the dedicated `SCHEMA_MAX_DEPTH_EXCEEDED` code, reserving `SCHEMA_CIRCULAR_REF` for actual cycles — aligning with apcore-rust and PROTOCOL_SPEC §8.2 / `error-system.md`. The new error class is additive (non-breaking) and exported from both the Node and browser entries; note the **error code returned for the depth-cap path changes** from `SCHEMA_CIRCULAR_REF` to `SCHEMA_MAX_DEPTH_EXCEEDED`.
 
 ---
 
