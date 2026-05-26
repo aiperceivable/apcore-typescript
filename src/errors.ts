@@ -255,9 +255,10 @@ export class SchemaValidationError extends ModuleError {
     message: string = 'Schema validation failed',
     errors?: Array<Record<string, unknown>>,
     options?: ErrorOptions,
+    errorCode: string = 'SCHEMA_VALIDATION_ERROR',
   ) {
     super(
-      'SCHEMA_VALIDATION_ERROR',
+      errorCode,
       message,
       { errors: errors ?? [] },
       options?.cause,

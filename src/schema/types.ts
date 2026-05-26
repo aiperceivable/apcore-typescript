@@ -65,7 +65,12 @@ export function validationResultToError(result: SchemaValidationResult): SchemaV
     expected: e.expected ?? null,
     actual: e.actual ?? null,
   }));
-  return new SchemaValidationError('Schema validation failed', errorDicts);
+  return new SchemaValidationError(
+    'Schema validation failed',
+    errorDicts,
+    undefined,
+    result.errorCode ?? 'SCHEMA_VALIDATION_ERROR',
+  );
 }
 
 export interface LLMExtensions {

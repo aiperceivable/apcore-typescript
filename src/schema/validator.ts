@@ -59,7 +59,7 @@ export class SchemaValidator {
         return {
           valid: false,
           errors: this._collectErrors(schema, data),
-          errorCode: 'SCHEMA_VALIDATION_FAILED',
+          errorCode: 'SCHEMA_VALIDATION_ERROR',
         };
       }
     }
@@ -71,7 +71,7 @@ export class SchemaValidator {
     return {
       valid: false,
       errors: this._collectErrors(schema, data),
-      errorCode: 'SCHEMA_VALIDATION_FAILED',
+      errorCode: 'SCHEMA_VALIDATION_ERROR',
     };
   }
 
@@ -144,27 +144,18 @@ export class SchemaValidator {
   }
 
   private _validateAndReturn(data: Record<string, unknown>, schema: TSchema): Record<string, unknown> {
+    // Route through validate() so union schemas surface their specific error
+    // code (SCHEMA_UNION_NO_MATCH / SCHEMA_UNION_AMBIGUOUS) and plain failures
+    // surface SCHEMA_VALIDATION_ERROR — all preserved through the thrown error.
+    const result = this.validate(data, schema);
+    if (!result.valid) {
+      throw validationResultToError(result);
+    }
+
     if (this._coerceTypes) {
-      try {
-        return Value.Decode(schema, data) as Record<string, unknown>;
-      } catch {
-        const result: SchemaValidationResult = {
-          valid: false,
-          errors: this._collectErrors(schema, data),
-        };
-        throw validationResultToError(result);
-      }
+      return Value.Decode(schema, data) as Record<string, unknown>;
     }
-
-    if (Value.Check(schema, data)) {
-      return data;
-    }
-
-    const result: SchemaValidationResult = {
-      valid: false,
-      errors: this._collectErrors(schema, data),
-    };
-    throw validationResultToError(result);
+    return data;
   }
 
   /**
