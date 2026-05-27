@@ -234,11 +234,38 @@ describe('SchemaValidator — format warnings (SHOULD-level)', () => {
 describe('SchemaValidator — errorCode in results', () => {
   const validator = new SchemaValidator(false);
 
-  it('sets errorCode SCHEMA_VALIDATION_FAILED on plain type failure', () => {
+  it('sets errorCode SCHEMA_VALIDATION_ERROR on plain type failure', () => {
     const schema = jsonSchemaToTypeBox({ type: 'object', properties: { x: { type: 'integer' } }, required: ['x'] });
     const result = validator.validate({ x: 'not-an-int' }, schema);
     expect(result.valid).toBe(false);
-    expect(result.errorCode).toBe('SCHEMA_VALIDATION_FAILED');
+    expect(result.errorCode).toBe('SCHEMA_VALIDATION_ERROR');
+  });
+
+  it('throws SchemaValidationError carrying SCHEMA_VALIDATION_ERROR code via validateInput', () => {
+    const schema = jsonSchemaToTypeBox({ type: 'object', properties: { x: { type: 'integer' } }, required: ['x'] });
+    try {
+      validator.validateInput({ x: 'not-an-int' }, schema);
+      throw new Error('expected validateInput to throw');
+    } catch (err) {
+      expect(err).toBeInstanceOf(SchemaValidationError);
+      expect((err as SchemaValidationError).code).toBe('SCHEMA_VALIDATION_ERROR');
+    }
+  });
+
+  it('preserves SCHEMA_UNION_AMBIGUOUS code through validateInput (A-D-033)', () => {
+    const schema = jsonSchemaToTypeBox({
+      oneOf: [
+        { type: 'object', properties: { value: { type: 'integer' } }, required: ['value'] },
+        { type: 'object', properties: { value: { type: 'number' } }, required: ['value'] },
+      ],
+    });
+    try {
+      validator.validateInput({ value: 42 }, schema);
+      throw new Error('expected validateInput to throw');
+    } catch (err) {
+      expect(err).toBeInstanceOf(SchemaValidationError);
+      expect((err as SchemaValidationError).code).toBe('SCHEMA_UNION_AMBIGUOUS');
+    }
   });
 });
 

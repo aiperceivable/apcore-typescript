@@ -156,6 +156,17 @@ describe('MaxCallDepthHandler', () => {
     const ctx = makeContext({ callChain: [] });
     expect(handler.evaluate(0, ctx)).toBe(true);
   });
+
+  it('fails closed on fractional numeric threshold (A-D-013)', () => {
+    const ctx = makeContext({ callChain: ['a', 'b'] });
+    // 5.5 would otherwise ALLOW (2 <= 5.5); must reject as non-integer.
+    expect(handler.evaluate(5.5, ctx)).toBe(false);
+  });
+
+  it('fails closed on fractional { lte } threshold (A-D-013)', () => {
+    const ctx = makeContext({ callChain: ['a', 'b'] });
+    expect(handler.evaluate({ lte: 5.5 }, ctx)).toBe(false);
+  });
 });
 
 // ---------------------------------------------------------------------------

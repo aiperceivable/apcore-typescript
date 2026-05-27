@@ -30,6 +30,8 @@ function _nextSubscriberId(typeName: string): string {
  * non-retryable: a warning is logged and the call returns normally.
  */
 export class WebhookSubscriber implements EventSubscriber {
+  /** Declared subscriber kind for DLQ payloads (A-D-029). */
+  readonly subscriberType = 'webhook';
   readonly subscriberId: string;
   readonly retry: RetryConfig;
   private readonly _url: string;
@@ -107,6 +109,8 @@ export class WebhookSubscriber implements EventSubscriber {
  * EventEmitter routes the failure through the DLQ + `onFailure` path.
  */
 export class A2ASubscriber implements EventSubscriber {
+  /** Declared subscriber kind for DLQ payloads (A-D-029). */
+  readonly subscriberType = 'a2a';
   readonly subscriberId: string;
   readonly retry: RetryConfig;
   private readonly _platformUrl: string;
@@ -192,6 +196,8 @@ export class A2ASubscriber implements EventSubscriber {
 
 /** Writes events to a local file (built-in type: 'file'). */
 export class FileSubscriber implements EventSubscriber {
+  /** Declared subscriber kind for DLQ payloads (A-D-029). */
+  readonly subscriberType = 'file';
   readonly subscriberId: string;
   private readonly _path: string;
   private readonly _append: boolean;
@@ -243,6 +249,8 @@ export class FileSubscriber implements EventSubscriber {
 
 /** Writes events to stdout (built-in type: 'stdout'). */
 export class StdoutSubscriber implements EventSubscriber {
+  /** Declared subscriber kind for DLQ payloads (A-D-029). */
+  readonly subscriberType = 'stdout';
   readonly subscriberId: string;
   private readonly _format: string;
   private readonly _levelFilter: string | null;
@@ -289,6 +297,8 @@ export class StdoutSubscriber implements EventSubscriber {
  *   3. If neither is set, forward all events.
  */
 export class FilterSubscriber implements EventSubscriber {
+  /** Declared subscriber kind for DLQ payloads (A-D-029). */
+  readonly subscriberType = 'filter';
   private readonly _delegate: EventSubscriber;
   private readonly _includeEvents: string[] | null;
   private readonly _excludeEvents: string[] | null;

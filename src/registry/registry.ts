@@ -995,9 +995,12 @@ export class Registry {
       throw new ModuleNotFoundError('');
     }
     // In-flight modules are not yet visible — spec #65: module MUST NOT be
-    // observable via get() until onLoad completes.
+    // observable via get() until onLoad completes. Cross-SDK canonical
+    // behaviour (Python/Rust, A-D-002) is to return null for an in-flight id,
+    // matching this SDK's own well-formed-unregistered → null contract and
+    // getDefinition()'s null return for the same case (asymmetry removed).
     if (this._inFlight.has(moduleId)) {
-      throw new ModuleNotFoundError(moduleId);
+      return null;
     }
     return this._modules.get(moduleId) ?? null;
   }

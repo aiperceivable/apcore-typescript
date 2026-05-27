@@ -19,6 +19,10 @@ import {
 import type { StandardStrategyDeps } from './builtin-steps.js';
 import { ExecutionCancelledError } from './cancel.js';
 import type { Config } from './config.js';
+// Import directly from emitter.js (browser-safe) — NOT events/index.js, which
+// re-exports subscribers.ts (Node-only: node:fs, process) and would drag
+// Node-only code into the browser dependency graph.
+import { type EventEmitter, createEvent } from './events/emitter.js';
 import { Context } from './context.js';
 import { InvalidInputError, ModuleError, ModuleTimeoutError } from './errors.js';
 import {
@@ -189,6 +193,7 @@ export class Executor {
   private _config: Config | null;
   private _approvalHandler: ApprovalHandler | null;
   private _toggleState: ToggleState | null;
+  private _eventEmitter: EventEmitter | null;
   private _strategy: ExecutionStrategy;
   private _pipelineEngine: PipelineEngine;
 
@@ -203,6 +208,7 @@ export class Executor {
     config?: Config | null;
     approvalHandler?: ApprovalHandler | null;
     toggleState?: ToggleState | null;
+    eventEmitter?: EventEmitter | null;
   }) {
     this._registry = options.registry;
     this._middlewareManager = new MiddlewareManager();
@@ -210,6 +216,7 @@ export class Executor {
     this._config = options.config ?? null;
     this._approvalHandler = options.approvalHandler ?? null;
     this._toggleState = options.toggleState ?? null;
+    this._eventEmitter = options.eventEmitter ?? null;
 
     if (options.middlewares) {
       for (const mw of options.middlewares) {
@@ -416,6 +423,10 @@ export class Executor {
         // so the executor's public API surfaces the original typed error.
         const unwrapped =
           exc instanceof PipelineStepError ? (exc.cause instanceof Error ? exc.cause : exc) : exc;
+        // D-20: cancellation MUST bypass on_error recovery even when the engine
+        // wrapped it in a PipelineStepError. Re-check the unwrapped cause and
+        // rethrow before any middleware onError handling runs.
+        if (unwrapped instanceof ExecutionCancelledError) throw unwrapped;
         // MiddlewareChainError wraps the original; unwrap it so callers see the
         // real error class/code instead of a generic MODULE_EXECUTE_ERROR.
         const ctxObj = pipeCtx.context;
@@ -484,6 +495,7 @@ export class Executor {
     inputs?: Record<string, unknown> | null,
     context?: Context | null,
     options?: { strategy?: ExecutionStrategy | null } | null,
+    versionHint?: string | null,
   ): Promise<[Record<string, unknown>, PipelineTrace]> {
     const strategy = options?.strategy ?? this._strategy;
 
@@ -502,6 +514,10 @@ export class Executor {
       outputStream: null,
       strategy,
       trace: null,
+      // D-19: callWithTrace shares call() semantics modulo return shape, so the
+      // version hint must reach the pipeline context (e.g. registry version
+      // resolution) identically to call().
+      versionHint: versionHint ?? null,
     };
 
     try {
@@ -518,6 +534,8 @@ export class Executor {
 
       const unwrapped =
         exc instanceof PipelineStepError ? (exc.cause instanceof Error ? exc.cause : exc) : exc;
+      // D-20: step-wrapped cancellation bypasses on_error here too.
+      if (unwrapped instanceof ExecutionCancelledError) throw unwrapped;
       const ctxObj = pipelineCtx.context;
       const underlying =
         unwrapped instanceof MiddlewareChainError ? unwrapped.original : (unwrapped as Error);
@@ -601,6 +619,9 @@ export class Executor {
       // Unwrap PipelineStepError to expose the original typed cause (§1.1).
       const unwrapped =
         exc instanceof PipelineStepError ? (exc.cause instanceof Error ? exc.cause : exc) : exc;
+      // D-20: a step-wrapped cancellation MUST bypass on_error recovery in
+      // stream mode too. Rethrow the unwrapped cancellation before recovery.
+      if (unwrapped instanceof ExecutionCancelledError) throw unwrapped;
       const wrapped = propagateError(unwrapped as Error, moduleId, ctxObj);
       if (pipeCtx.executedMiddlewares && pipeCtx.executedMiddlewares.length > 0) {
         const recovery = await this._middlewareManager.executeOnError(
@@ -714,14 +735,25 @@ export class Executor {
         if (exc instanceof ExecutionCancelledError) throw exc;
         // Chunks are already delivered to the caller and cannot be recalled.
         // Swallow the phase-3 error and log a warning — matches apcore-python
-        // executor.py:920 which emits an ApCoreEvent("apcore.stream.post_validation_failed")
-        // and does NOT re-raise (sync finding A-D-012).
-        // TODO: emit ApCoreEvent via injected EventEmitter when Executor gains
-        // an optional eventEmitter constructor field (pending architectural wiring).
+        // executor.py which emits an ApCoreEvent("apcore.stream.post_validation_failed")
+        // and does NOT re-raise (sync finding A-D-012 / A-D-006).
         const ctxObj = pipeCtx.context;
         const unwrappedPost =
           exc instanceof PipelineStepError ? (exc.cause instanceof Error ? exc.cause : exc) : exc;
         const wrapped = propagateError(unwrappedPost as Error, moduleId, ctxObj);
+        // A-D-006: when an EventEmitter is wired, emit the post-validation-failed
+        // event so observers/trace exporters surface the failure (mirrors
+        // apcore-python executor.py:1096).
+        if (this._eventEmitter !== null) {
+          const cause = unwrappedPost instanceof Error ? unwrappedPost : (wrapped as Error);
+          this._eventEmitter.emit(
+            createEvent('apcore.stream.post_validation_failed', moduleId, 'error', {
+              error_type: cause.constructor?.name ?? 'Error',
+              message: cause.message,
+              trace_id: ctxObj?.traceId ?? null,
+            }),
+          );
+        }
         // Sync finding A-D-011: phase-3 errors must NOT invoke middleware
         // `on_error` once chunks have already been yielded. The middleware
         // recovery contract is "produce a recovery output before any output is

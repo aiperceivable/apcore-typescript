@@ -30,6 +30,7 @@ import {
   ModuleNotFoundError,
   ModuleTimeoutError,
   SchemaCircularRefError,
+  SchemaMaxDepthExceededError,
   SchemaNotFoundError,
   SchemaParseError,
   SchemaValidationError,
@@ -206,6 +207,12 @@ describe('Error subclasses', () => {
     const err = new SchemaCircularRefError('#/definitions/A');
     expect(err.name).toBe('SchemaCircularRefError');
     expect(err.code).toBe('SCHEMA_CIRCULAR_REF');
+  });
+
+  it('SchemaMaxDepthExceededError', () => {
+    const err = new SchemaMaxDepthExceededError('#/definitions/A');
+    expect(err.name).toBe('SchemaMaxDepthExceededError');
+    expect(err.code).toBe('SCHEMA_MAX_DEPTH_EXCEEDED');
   });
 
   it('ACLRuleError', () => {
@@ -604,6 +611,7 @@ describe('ErrorCodes', () => {
     expect(ErrorCodes.SCHEMA_NOT_FOUND).toBe('SCHEMA_NOT_FOUND');
     expect(ErrorCodes.SCHEMA_PARSE_ERROR).toBe('SCHEMA_PARSE_ERROR');
     expect(ErrorCodes.SCHEMA_CIRCULAR_REF).toBe('SCHEMA_CIRCULAR_REF');
+    expect(ErrorCodes.SCHEMA_MAX_DEPTH_EXCEEDED).toBe('SCHEMA_MAX_DEPTH_EXCEEDED');
     expect(ErrorCodes.CALL_DEPTH_EXCEEDED).toBe('CALL_DEPTH_EXCEEDED');
     expect(ErrorCodes.CIRCULAR_CALL).toBe('CIRCULAR_CALL');
     expect(ErrorCodes.CALL_FREQUENCY_EXCEEDED).toBe('CALL_FREQUENCY_EXCEEDED');
@@ -753,6 +761,7 @@ describe('AI Error Guidance Fields', () => {
       ['SchemaNotFoundError', () => new SchemaNotFoundError('s')],
       ['SchemaParseError', () => new SchemaParseError('bad')],
       ['SchemaCircularRefError', () => new SchemaCircularRefError('#/a')],
+      ['SchemaMaxDepthExceededError', () => new SchemaMaxDepthExceededError('#/a')],
       ['CallDepthExceededError', () => new CallDepthExceededError(5, 4, ['a'])],
       ['CircularCallError', () => new CircularCallError('m', ['m'])],
       ['CallFrequencyExceededError', () => new CallFrequencyExceededError('m', 4, 3, ['m'])],

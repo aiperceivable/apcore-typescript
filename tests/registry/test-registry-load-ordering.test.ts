@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { Registry } from '../../src/registry/registry.js';
 import { EventEmitter } from '../../src/events/emitter.js';
-import { DuplicateModuleIdError, InvalidInputError, ModuleNotFoundError } from '../../src/errors.js';
+import { DuplicateModuleIdError, InvalidInputError } from '../../src/errors.js';
 
 describe('Registry on_load ordering (#65)', () => {
   it('module with sync onLoad is visible immediately after register()', async () => {
@@ -37,8 +37,11 @@ describe('Registry on_load ordering (#65)', () => {
     // Start registration but do NOT await it yet
     const registerPromise = registry.register('test.async', mod);
 
-    // Module should NOT be visible yet — get() throws ModuleNotFoundError (spec #65)
-    expect(() => registry.get('test.async')).toThrow(ModuleNotFoundError);
+    // Module should NOT be visible yet — get() returns null for an in-flight id
+    // (A-D-002: cross-SDK canonical = null, matching getDefinition() parity and
+    // the well-formed-unregistered → null contract).
+    expect(registry.get('test.async')).toBeNull();
+    expect(registry.getDefinition('test.async')).toBeNull();
     expect(registry.has('test.async')).toBe(false);
 
     // Resolve onLoad

@@ -294,7 +294,10 @@ function resolveEnvSuffix(
   reg: NamespaceRegistration,
 ): { key: string; isNested: boolean } {
   if (reg.envStyle === 'flat') {
-    const key = suffix.toLowerCase().replace(/__/g, '_').replace(/^_/, '');
+    // A-D-048: flat-style keys are the suffix lowercased verbatim (Python/Rust
+    // canonical). Do NOT collapse `__`→`_` or strip a leading `_`; the literal
+    // key (including double underscores) is what the flat namespace expects.
+    const key = suffix.toLowerCase();
     return { key, isNested: false };
   }
   if (reg.envStyle === 'auto') {

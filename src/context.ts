@@ -81,6 +81,7 @@ export class Context<T = null> {
     cancelToken: CancelToken | null = null,
     services: T = null as T,
     globalDeadline: number | null = null,
+    redactedOutput: Record<string, unknown> | null = null,
   ) {
     this.traceId = traceId;
     this.callerId = callerId;
@@ -88,7 +89,7 @@ export class Context<T = null> {
     this.executor = executor;
     this.identity = identity;
     this.redactedInputs = redactedInputs;
-    this.redactedOutput = null;
+    this.redactedOutput = redactedOutput;
     this.data = data;
     this.services = services;
     this.cancelToken = cancelToken;
@@ -189,6 +190,7 @@ export class Context<T = null> {
       this.cancelToken,
       this.services,
       this.globalDeadline,
+      this.redactedOutput,
     );
   }
 
@@ -217,6 +219,7 @@ export class Context<T = null> {
       cancelToken,
       this.services,
       this.globalDeadline,
+      this.redactedOutput,
     );
   }
 
@@ -282,6 +285,7 @@ export class Context<T = null> {
       null, // cancelToken
       null as never, // services
       null, // globalDeadline
+      (data.redacted_output as Record<string, unknown>) ?? null,
     );
   }
 

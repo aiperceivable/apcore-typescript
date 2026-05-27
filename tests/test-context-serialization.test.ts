@@ -126,6 +126,15 @@ describe('Context.deserialize()', () => {
     warnSpy.mockRestore();
   });
 
+  it('round-trips redactedOutput through toJSON/fromJSON (A-D-009)', () => {
+    const ctx = makeCtx();
+    ctx.redactedOutput = { token: '***', value: 1 };
+    const serialized = ctx.toJSON();
+    expect(serialized.redacted_output).toEqual({ token: '***', value: 1 });
+    const restored = Context.fromJSON(serialized);
+    expect(restored.redactedOutput).toEqual({ token: '***', value: 1 });
+  });
+
   it('does not crash on unknown top-level fields', () => {
     const data = {
       _context_version: 1,

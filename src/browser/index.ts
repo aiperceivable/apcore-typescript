@@ -118,6 +118,7 @@ export {
   SchemaNotFoundError,
   SchemaParseError,
   SchemaCircularRefError,
+  SchemaMaxDepthExceededError,
   CallDepthExceededError,
   CircularCallError,
   CallFrequencyExceededError,

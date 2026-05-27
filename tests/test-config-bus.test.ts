@@ -497,6 +497,21 @@ describe('Config namespace env dispatch', () => {
     expect(ns['devto']).toBeUndefined();
   });
 
+  it('env_style flat keeps double underscores verbatim (A-D-048)', () => {
+    const name = 'flatverb-' + Date.now();
+    const prefix = 'MYAPP_' + Date.now();
+    Config.registerNamespace({ name, envPrefix: prefix, envStyle: 'flat' });
+    // FOO__BAR must map to literal key 'foo__bar' (Python/Rust canonical) —
+    // NOT collapsed to 'foo_bar' nor stripped of a leading underscore.
+    setEnv(`${prefix}_FOO__BAR`, 'val');
+    const yamlPath = path.join(tmpDir, 'flatverb.yaml');
+    fs.writeFileSync(yamlPath, 'apcore:\n  version: "1.0.0"\n');
+    const cfg = Config.load(yamlPath, { validate: false });
+    const ns = cfg.namespace(name);
+    expect(ns['foo__bar']).toBe('val');
+    expect(ns['foo_bar']).toBeUndefined();
+  });
+
   it('env_style flat with defaults and env override', () => {
     const name = 'flatdef-' + Date.now();
     const prefix = 'FLATDEF_' + Date.now();

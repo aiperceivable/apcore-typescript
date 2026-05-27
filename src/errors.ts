@@ -255,9 +255,10 @@ export class SchemaValidationError extends ModuleError {
     message: string = 'Schema validation failed',
     errors?: Array<Record<string, unknown>>,
     options?: ErrorOptions,
+    errorCode: string = 'SCHEMA_VALIDATION_ERROR',
   ) {
     super(
-      'SCHEMA_VALIDATION_ERROR',
+      errorCode,
       message,
       { errors: errors ?? [] },
       options?.cause,
@@ -326,6 +327,25 @@ export class SchemaCircularRefError extends ModuleError {
       options?.suggestion,
     );
     this.name = 'SchemaCircularRefError';
+  }
+}
+
+export class SchemaMaxDepthExceededError extends ModuleError {
+  static override readonly DEFAULT_RETRYABLE: boolean | null = false;
+
+  constructor(refPath: string, options?: ErrorOptions) {
+    super(
+      'SCHEMA_MAX_DEPTH_EXCEEDED',
+      `Maximum reference depth exceeded resolving: ${refPath}`,
+      { refPath },
+      options?.cause,
+      options?.traceId,
+      options?.retryable,
+      options?.aiGuidance,
+      options?.userFixable,
+      options?.suggestion,
+    );
+    this.name = 'SchemaMaxDepthExceededError';
   }
 }
 
@@ -1368,6 +1388,7 @@ export const ErrorCodes = Object.freeze({
   SCHEMA_NOT_FOUND: 'SCHEMA_NOT_FOUND',
   SCHEMA_PARSE_ERROR: 'SCHEMA_PARSE_ERROR',
   SCHEMA_CIRCULAR_REF: 'SCHEMA_CIRCULAR_REF',
+  SCHEMA_MAX_DEPTH_EXCEEDED: 'SCHEMA_MAX_DEPTH_EXCEEDED',
   CALL_DEPTH_EXCEEDED: 'CALL_DEPTH_EXCEEDED',
   CIRCULAR_CALL: 'CIRCULAR_CALL',
   CALL_FREQUENCY_EXCEEDED: 'CALL_FREQUENCY_EXCEEDED',
