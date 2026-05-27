@@ -24,7 +24,7 @@ import type { Config } from './config.js';
 // Node-only code into the browser dependency graph.
 import { type EventEmitter, createEvent } from './events/emitter.js';
 import { Context } from './context.js';
-import { InvalidInputError, ModuleError, ModuleTimeoutError } from './errors.js';
+import { ContextBindingError, InvalidInputError, ModuleError, ModuleTimeoutError } from './errors.js';
 import {
   AfterMiddleware,
   BeforeMiddleware,
@@ -796,8 +796,24 @@ export class Executor {
 
     // Run pipeline in dry_run mode — pure=false steps are skipped.
     // Issue #66: auto-bind executor on every entry (see call() for rationale).
+    // A-D-014: validate() MUST be non-throwing. A Context already bound to a
+    // DIFFERENT executor raises ContextBindingError on bind; surface that as a
+    // failed `executor_binding` check rather than letting it escape (mirrors
+    // apcore-python executor.py and apcore-rust executor.rs).
     let validateCtx = context ?? Context.create();
-    validateCtx = validateCtx._withExecutor(this);
+    try {
+      validateCtx = validateCtx._withExecutor(this);
+    } catch (e) {
+      if (e instanceof ContextBindingError) {
+        checks.push({
+          check: 'executor_binding',
+          passed: false,
+          error: { code: e.code, message: e.message },
+        });
+        return createPreflightResult(checks);
+      }
+      throw e;
+    }
     const pipeCtx: PipelineContext = {
       moduleId,
       inputs: effectiveInputs,

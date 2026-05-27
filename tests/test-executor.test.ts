@@ -371,6 +371,40 @@ describe('Executor', () => {
     expect(result.checks.find((c: { check: string }) => c.check === 'module_lookup')?.passed).toBe(false);
   });
 
+  // A-D-014: validate() is a non-throwing preflight. A Context already bound
+  // to a DIFFERENT executor must surface as a failed `executor_binding` check,
+  // not an escaping ContextBindingError (mirrors Python/Rust).
+  it('validate() reports executor_binding failure for a foreign-bound context (no throw)', async () => {
+    const registry = new Registry();
+    const mod = new FunctionModule({
+      execute: () => ({ ok: true }),
+      moduleId: 'v',
+      inputSchema: Type.Object({ x: Type.Number() }),
+      outputSchema: Type.Object({ ok: Type.Boolean() }),
+      description: 'Validate test',
+    });
+    registry.register('v', mod);
+
+    const executorA = new Executor({ registry });
+    const executorB = new Executor({ registry });
+
+    // Bind the context to executorA, then preflight against executorB.
+    const ctx = Context.create()._withExecutor(executorA);
+
+    const result = await executorB.validate('v', { x: 42 }, ctx);
+    expect(result.valid).toBe(false);
+    const bindingCheck = result.checks.find(
+      (c: { check: string }) => c.check === 'executor_binding',
+    );
+    expect(bindingCheck).toBeDefined();
+    expect(bindingCheck?.passed).toBe(false);
+    expect(
+      result.errors.some(
+        (e: Record<string, unknown>) => e['code'] === 'CONTEXT_BINDING_ERROR',
+      ),
+    ).toBe(true);
+  });
+
   it('validate() reports ACL denial without executing', async () => {
     const registry = new Registry();
     const mod = new FunctionModule({
