@@ -1,10 +1,10 @@
 /**
- * A-D-037 support — compute contentHash for tricky schemas (float 1.0, unicode
+ * A-D-037 support -- compute contentHash for tricky schemas (float 1.0, unicode
  * string/key, large integer, unsorted-key object, baseline) and surface the
  * hex digests so cross-repo (Python/Rust) byte-for-byte parity can be verified.
  *
  * Schemas mirror apcore/conformance/fixtures/schema_content_hash.json. The
- * fixture intentionally records no `expected` hash — each SDK computes it and
+ * fixture intentionally records no `expected` hash -- each SDK computes it and
  * the harness compares across repos.
  */
 
@@ -15,12 +15,12 @@ import { contentHash } from '../../src/schema/loader.js';
 // consumes apcore/conformance/fixtures/schema_content_hash.json) so that
 // large-integer literals are not introduced as JS source-level numbers (which
 // biome's noPrecisionLoss flags). This faithfully reproduces the SDK's real
-// canonicalization path: JSON in → contentHash out.
+// canonicalization path: JSON in -> contentHash out.
 const CASES_JSON: Record<string, string> = {
   float_one_point_zero:
     '{"type":"object","properties":{"ratio":{"type":"number","default":1.0,"minimum":0.0,"maximum":1.0}},"required":["ratio"]}',
   non_ascii_unicode_key_and_value:
-    '{"type":"object","properties":{"名前":{"type":"string","default":"café—naïve—🦀","description":"Unicode key with combining/emoji value"},"δ":{"type":"string","default":"Ω≈ç√∫"}},"required":["名前"]}',
+    '{"type":"object","properties":{"\u540d\u524d":{"type":"string","default":"caf\u00e9\u2014na\u00efve\u2014\ud83e\udd80","description":"Unicode key with combining/emoji value"},"\u03b4":{"type":"string","default":"\u03a9\u2248\u00e7\u221a\u222b"}},"required":["\u540d\u524d"]}',
   large_integer:
     '{"type":"object","properties":{"max_id":{"type":"integer","default":9007199254740993,"maximum":18446744073709551615}},"required":["max_id"]}',
   nested_unsorted_keys:

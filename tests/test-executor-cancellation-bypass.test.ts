@@ -86,6 +86,9 @@ describe('callWithTrace forwards versionHint into the pipeline context (A-D-005)
     let captured: string | null | undefined = '__unset__';
     const captureStep = {
       name: 'capture-version-hint',
+      description: 'Captures versionHint from context for assertion',
+      removable: false,
+      replaceable: false,
       execute: async (ctx: PipelineContext): Promise<StepResult> => {
         captured = ctx.versionHint;
         ctx.output = {};
