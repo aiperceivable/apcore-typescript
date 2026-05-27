@@ -64,35 +64,64 @@ export class ModuleError extends Error {
     return `[${this.code}] ${this.message}`;
   }
 
+  /**
+   * Serialize to the canonical cross-process wire form (A-D-008).
+   *
+   * Keys are emitted in snake_case — `trace_id`, `ai_guidance`,
+   * `user_fixable` — and the `details` object's keys are snake_cased too,
+   * so the JSON matches the Python (`errors.py` `to_dict`), Rust (serde),
+   * and the spec serialization example. This is the form MCP/A2A bridges
+   * put on the wire. Internal TS consumers read the typed properties
+   * (`traceId`, `details['callerId']`, ...), not this serialized output.
+   */
   toJSON(): Record<string, unknown> {
     const obj: Record<string, unknown> = {
       code: this.code,
       message: this.message,
     };
     if (Object.keys(this.details).length > 0) {
-      obj.details = this.details;
+      obj.details = snakeCaseKeys(this.details);
     }
     if (this.cause !== undefined) {
       obj.cause = this.cause instanceof Error ? this.cause.message : String(this.cause);
     }
     if (this.traceId !== undefined) {
-      obj.traceId = this.traceId;
+      obj.trace_id = this.traceId;
     }
     obj.timestamp = this.timestamp;
     if (this.retryable !== null) {
       obj.retryable = this.retryable;
     }
     if (this.aiGuidance !== null) {
-      obj.aiGuidance = this.aiGuidance;
+      obj.ai_guidance = this.aiGuidance;
     }
     if (this.userFixable !== null) {
-      obj.userFixable = this.userFixable;
+      obj.user_fixable = this.userFixable;
     }
     if (this.suggestion !== null) {
       obj.suggestion = this.suggestion;
     }
     return obj;
   }
+}
+
+/** Convert a camelCase identifier to snake_case. */
+function camelToSnake(key: string): string {
+  return key.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase();
+}
+
+/**
+ * Return a shallow copy of `details` with top-level keys snake_cased, for
+ * cross-process wire output (A-D-008). Values are passed through unchanged —
+ * detail values are scalars or arrays of scalars, never nested objects whose
+ * keys need conversion.
+ */
+function snakeCaseKeys(details: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(details)) {
+    out[camelToSnake(k)] = v;
+  }
+  return out;
 }
 
 export class ConfigNotFoundError extends ModuleError {

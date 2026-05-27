@@ -680,12 +680,12 @@ describe('AI Error Guidance Fields', () => {
       expect(json.message).toBe('test');
       expect(json).toHaveProperty('timestamp');
       expect(json).not.toHaveProperty('retryable');
-      expect(json).not.toHaveProperty('aiGuidance');
-      expect(json).not.toHaveProperty('userFixable');
+      expect(json).not.toHaveProperty('ai_guidance');
+      expect(json).not.toHaveProperty('user_fixable');
       expect(json).not.toHaveProperty('suggestion');
       expect(json).not.toHaveProperty('details');
       expect(json).not.toHaveProperty('cause');
-      expect(json).not.toHaveProperty('traceId');
+      expect(json).not.toHaveProperty('trace_id');
     });
 
     it('includes non-null AI fields', () => {
@@ -702,9 +702,12 @@ describe('AI Error Guidance Fields', () => {
       );
       const json = err.toJSON();
       expect(json.retryable).toBe(false);
-      expect(json.aiGuidance).toBe('do not retry');
-      expect(json.userFixable).toBe(true);
+      // A-D-008: wire keys are snake_case for cross-process interop.
+      expect(json.ai_guidance).toBe('do not retry');
+      expect(json.user_fixable).toBe(true);
       expect(json.suggestion).toBe('Fix input');
+      expect(json).not.toHaveProperty('aiGuidance');
+      expect(json).not.toHaveProperty('userFixable');
     });
 
     it('includes details when non-empty', () => {
@@ -721,10 +724,22 @@ describe('AI Error Guidance Fields', () => {
       expect(json.cause).toBe('root cause message');
     });
 
-    it('includes traceId when present', () => {
+    it('includes trace_id (snake_case) when present', () => {
       const err = new ModuleError('TEST', 'test', {}, undefined, 'trace-abc');
       const json = err.toJSON();
-      expect(json.traceId).toBe('trace-abc');
+      expect(json.trace_id).toBe('trace-abc');
+      expect(json).not.toHaveProperty('traceId');
+    });
+
+    // A-D-008: detail object keys are snake_cased on the wire too, matching
+    // the spec serialization example (caller_id/target_id) and Python/Rust.
+    it('snake_cases detail keys', () => {
+      const err = new ACLDeniedError('api.user', 'executor.admin.reset');
+      const json = err.toJSON();
+      expect(json.details).toEqual({
+        caller_id: 'api.user',
+        target_id: 'executor.admin.reset',
+      });
     });
   });
 

@@ -277,10 +277,11 @@ describe('ErrorOptions forwarding — exercises the truthy branch on every subcl
     expect(json.code).toBe('CODE');
     expect(json.details).toEqual({ k: 'v' });
     expect(json.cause).toBe('cause');
-    expect(json.traceId).toBe('tid');
+    // A-D-008: wire keys are snake_case for cross-process interop.
+    expect(json.trace_id).toBe('tid');
     expect(json.retryable).toBe(false);
-    expect(json.aiGuidance).toBe('guidance');
-    expect(json.userFixable).toBe(true);
+    expect(json.ai_guidance).toBe('guidance');
+    expect(json.user_fixable).toBe(true);
     expect(json.suggestion).toBe('suggest');
     expect(typeof json.timestamp).toBe('string');
   });
@@ -298,10 +299,10 @@ describe('ErrorOptions forwarding — exercises the truthy branch on every subcl
     const err = new ModuleError('C', 'm');
     const json = err.toJSON();
     expect(json.cause).toBeUndefined();
-    expect(json.traceId).toBeUndefined();
+    expect(json.trace_id).toBeUndefined();
     expect(json.retryable).toBeUndefined();
-    expect(json.aiGuidance).toBeUndefined();
-    expect(json.userFixable).toBeUndefined();
+    expect(json.ai_guidance).toBeUndefined();
+    expect(json.user_fixable).toBeUndefined();
     expect(json.suggestion).toBeUndefined();
     expect(json.details).toBeUndefined();
   });
