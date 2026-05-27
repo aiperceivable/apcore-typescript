@@ -802,6 +802,16 @@ export class Registry {
       // invariant — caller observes either fully-published or
       // module_load_failed — applies to every registration path including
       // this entry point.
+      // A-D-013: reserve the in-flight slot BEFORE invoking onLoad, for both
+      // sync and async onLoad. The module MUST NOT be observable via get()/has()
+      // while onLoad runs (strong-guarantee invariant #65). Reserving uniformly
+      // — not only for the async branch — makes the in-flight gate effective
+      // for a sync onLoad that re-entrantly inspects the registry, matching
+      // apcore-python (_in_flight.add before on_load) and apcore-rust.
+      // A resolved placeholder Promise is used as the sync sentinel; the
+      // async branch overwrites it with the real loadPromise below.
+      this._inFlight.set(moduleId, Promise.resolve());
+
       let onLoadResult: unknown;
       try {
         onLoadResult = (modObj['onLoad'] as () => unknown)();
@@ -811,6 +821,7 @@ export class Registry {
         // — holds for sync and async onLoad alike. Without this, callers
         // doing `await registry.register(...)` would see sync throws and the
         // module_load_failed event would arrive before the await target.
+        this._inFlight.delete(moduleId);
         this._emitModuleLoadFailed(moduleId, e);
         return Promise.reject(e);
       }
@@ -848,7 +859,10 @@ export class Registry {
         this._inFlight.set(moduleId, loadPromise);
         return loadPromise;
       }
-      // Sync onLoad returned (possibly undefined) — fall through to normal registration
+      // Sync onLoad returned (possibly undefined) — fall through to normal
+      // registration. Release the in-flight reservation now that onLoad has
+      // succeeded; the module becomes visible on the publish below (A-D-013).
+      this._inFlight.delete(moduleId);
     }
 
     // Sync path: no onLoad, or sync onLoad already called above

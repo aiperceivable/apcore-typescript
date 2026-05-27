@@ -20,6 +20,48 @@ describe('Registry on_load ordering (#65)', () => {
     expect(registry.get('test.sync')).toBe(mod);
   });
 
+  // A-D-013: the in-flight slot must be reserved for sync onLoad too, so the
+  // gate (conflict detection + has()/get() hiding) is effective uniformly —
+  // Python/Rust reserve for sync and async alike. Previously the sync-onLoad
+  // path published without reserving _inFlight, leaving the gate dead for it.
+  // We observe the reservation two ways: (1) the id is present in _inFlight
+  // during the sync onLoad and gone after publish; (2) a re-entrant same-ID
+  // register() issued from inside onLoad is rejected as a duplicate (the slot
+  // is held), whereas without the reservation it would not be detected.
+  it('reserves the in-flight slot during sync onLoad and releases it after', async () => {
+    const registry = new Registry();
+    const inFlight = (registry as unknown as { _inFlight: Map<string, unknown> })._inFlight;
+
+    let inFlightDuringLoad = false;
+    let reentrantConflict = false;
+    const mod = {
+      id: 'test.syncgate',
+      description: 'test',
+      inputSchema: {},
+      outputSchema: {},
+      onLoad() {
+        inFlightDuringLoad = inFlight.has('test.syncgate');
+        // The held slot must be visible to conflict detection: a re-entrant
+        // registration of the same ID during onLoad is a duplicate.
+        try {
+          registry.register('test.syncgate', { ...mod, onLoad: undefined });
+        } catch (e) {
+          reentrantConflict = e instanceof DuplicateModuleIdError;
+        }
+      },
+      async execute() { return {}; },
+    };
+
+    await registry.register('test.syncgate', mod);
+
+    expect(inFlightDuringLoad).toBe(true);
+    expect(reentrantConflict).toBe(true);
+    // Slot released and module published once register() resolves.
+    expect(inFlight.has('test.syncgate')).toBe(false);
+    expect(registry.has('test.syncgate')).toBe(true);
+    expect(registry.get('test.syncgate')).toBe(mod);
+  });
+
   it('module with async onLoad is NOT visible until onLoad resolves', async () => {
     const registry = new Registry();
     let resolveLoad!: () => void;
