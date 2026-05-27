@@ -42,7 +42,7 @@ apcore is an AI-Perceivable module standard that makes every interface naturally
 - **Registry async deferred-publish** (#65) — `Registry.register()` returns a `Promise<void>`; modules with an async `onLoad()` stay hidden from `get()`/`has()` until load completes, and `apcore.registry.module_load_failed` is emitted on rejection.
 - **Reserved-namespace query API** (#60) — `Config.reservedNamespaces` static getter and top-level `RESERVED_NAMESPACES` export let callers pre-validate namespace names before calling `Config.registerNamespace()`.
 
-See [`tests/v022/`](./tests/v022) for working examples of each surface.
+See [`examples/v022-tour.ts`](./examples/v022-tour.ts) for a runnable tour of each surface.
 
 ## Documentation
 
