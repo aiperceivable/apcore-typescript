@@ -5,6 +5,7 @@ import type { TaskInfo } from '../src/async-task.js';
 import { Executor } from '../src/executor.js';
 import { FunctionModule } from '../src/decorator.js';
 import { Registry } from '../src/registry/registry.js';
+import { TaskLimitExceededError } from '../src/errors.js';
 
 function createRegistry(): Registry {
   const registry = new Registry();
@@ -155,6 +156,42 @@ describe('AsyncTaskManager', () => {
       const result = await manager.cancel(taskId);
       expect(result).toBe(false);
     });
+
+    // A-D-004: a cancel issued mid-backoff must unwind the runner promptly
+    // instead of waiting out the full retry delay (here 5000ms). The failing
+    // module fails on the first attempt, so the task is in PENDING backoff
+    // when we cancel. `cancel()` already flips the persisted status to
+    // CANCELLED, so the meaningful observable is the runner's settle promise
+    // (awaited by shutdown()): with the bug it stays blocked behind the
+    // setTimeout(delay); with the fix it resolves immediately on abort.
+    it('honors cancel during retry backoff without waiting out the delay', async () => {
+      const { manager } = createManager();
+      const retry = new RetryConfig({
+        maxRetries: 3,
+        retryDelayMs: 5000,
+        backoffMultiplier: 1,
+        maxRetryDelayMs: 5000,
+      });
+
+      const taskId = await manager.submit('test.failing', {}, { retry });
+
+      // Let the first attempt fail and the task enter the backoff window.
+      await wait(80);
+      const duringBackoff = await manager.getStatus(taskId);
+      expect(duringBackoff!.status).toBe(TaskStatus.PENDING);
+      expect(duringBackoff!.retryCount).toBe(1);
+
+      // shutdown() cancels the still-PENDING task and awaits the runner's
+      // in-flight promise. With the bug the runner is parked in
+      // setTimeout(5000) and shutdown() blocks the full delay; with the fix
+      // the abort wakes the runner immediately.
+      const start = Date.now();
+      await manager.shutdown();
+      const elapsed = Date.now() - start;
+
+      expect((await manager.getStatus(taskId))!.status).toBe(TaskStatus.CANCELLED);
+      expect(elapsed).toBeLessThan(2000);
+    });
   });
 
   describe('concurrency limit', () => {
@@ -251,6 +288,32 @@ describe('AsyncTaskManager', () => {
       await expect(limitedManager.submit('test.simple', { x: 4 })).rejects.toThrow(
         'Task limit reached (3)',
       );
+    });
+
+    // A-D-003: over-capacity submit must reject with a typed
+    // TaskLimitExceededError (code TASK_LIMIT_EXCEEDED), matching
+    // Python/Rust — not a bare Error.
+    it('rejects with TaskLimitExceededError when over capacity', async () => {
+      const registry = createRegistry();
+      const executor = new Executor({ registry });
+      const limitedManager = new AsyncTaskManager({ executor, maxConcurrent: 10, maxTasks: 1 });
+
+      await limitedManager.submit('test.simple', { x: 1 });
+
+      await expect(limitedManager.submit('test.simple', { x: 2 })).rejects.toBeInstanceOf(
+        TaskLimitExceededError,
+      );
+      await limitedManager
+        .submit('test.simple', { x: 3 })
+        .then(
+          () => {
+            throw new Error('expected submit to reject');
+          },
+          (err: unknown) => {
+            expect(err).toBeInstanceOf(TaskLimitExceededError);
+            expect((err as TaskLimitExceededError).code).toBe('TASK_LIMIT_EXCEEDED');
+          },
+        );
     });
 
     it('allows submissions after cleanup frees slots', async () => {

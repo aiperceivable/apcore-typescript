@@ -5,6 +5,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import { CancelToken } from './cancel.js';
 import type { Context } from './context.js';
+import { TaskLimitExceededError } from './errors.js';
 import type { Executor } from './executor.js';
 
 export enum TaskStatus {
@@ -201,7 +202,7 @@ export class AsyncTaskManager {
     // Python `_ACTIVE_STATUSES` filter.
     const active = await this._countActiveTasks();
     if (active >= this._maxTasks) {
-      throw new Error(`Task limit reached (${this._maxTasks})`);
+      throw new TaskLimitExceededError(this._maxTasks);
     }
     const taskId = uuidv4();
     const retry = opts?.retry ?? null;
@@ -499,7 +500,12 @@ export class AsyncTaskManager {
             // because the task has not yet terminated.
             await this._store.save(info);
 
-            await new Promise<void>((resolve) => setTimeout(resolve, delay));
+            // A-D-004 (apcore v0.22.0): race the backoff wait against the
+            // task's cancel signal so a cancel() issued mid-backoff unwinds
+            // immediately instead of waiting out the full delay (up to
+            // maxRetryDelayMs). Mirrors Python/Rust cancellable-sleep
+            // semantics during retry backoff.
+            await this._sleepUntilCancelled(delay, cancelToken);
 
             if (internal.cancelled) return;
             // Loop continues: re-acquire slot and retry
@@ -519,6 +525,32 @@ export class AsyncTaskManager {
 
     run().catch((err) => {
       console.warn('[apcore:async-task] Unexpected error in task runner:', err);
+    });
+  }
+
+  /**
+   * Sleep for `delayMs`, resolving early if `cancelToken` is aborted (A-D-004).
+   *
+   * The timer is cleared and the abort listener detached on whichever path
+   * resolves first, so neither leaks. A cancel issued mid-backoff resolves
+   * promptly rather than waiting out the full retry delay.
+   */
+  private _sleepUntilCancelled(delayMs: number, cancelToken: CancelToken): Promise<void> {
+    if (cancelToken.signal.aborted) {
+      return Promise.resolve();
+    }
+    return new Promise<void>((resolve) => {
+      const signal = cancelToken.signal;
+      const timer = setTimeout(() => {
+        signal.removeEventListener('abort', onAbort);
+        resolve();
+      }, delayMs);
+      const onAbort = (): void => {
+        clearTimeout(timer);
+        signal.removeEventListener('abort', onAbort);
+        resolve();
+      };
+      signal.addEventListener('abort', onAbort, { once: true });
     });
   }
 
