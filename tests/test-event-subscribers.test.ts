@@ -367,4 +367,24 @@ describe('FilterSubscriber', () => {
     await sub.onEvent(makeEvent({ eventType: 'xabz' }));
     expect(received.map(e => e.eventType)).toEqual(['xaz']);
   });
+
+  // A-D-022: FilterSubscriber must expose subscriberId/retry like the other
+  // subscriber types (Python subscribers.py accepts id + retry too).
+  it('exposes a generated subscriberId and DEFAULT_RETRY by default', () => {
+    const { delegate } = recordingDelegate();
+    const sub = new FilterSubscriber(delegate);
+    expect(typeof sub.subscriberId).toBe('string');
+    expect(sub.subscriberId.length).toBeGreaterThan(0);
+    expect(sub.retry.maxAttempts).toBe(3);
+  });
+
+  it('honors id and retry passed via the options object', () => {
+    const { delegate } = recordingDelegate();
+    const sub = new FilterSubscriber(delegate, undefined, undefined, {
+      id: 'filter-1',
+      retry: { maxAttempts: 5 },
+    });
+    expect(sub.subscriberId).toBe('filter-1');
+    expect(sub.retry.maxAttempts).toBe(5);
+  });
 });

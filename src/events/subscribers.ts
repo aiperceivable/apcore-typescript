@@ -299,14 +299,28 @@ export class StdoutSubscriber implements EventSubscriber {
 export class FilterSubscriber implements EventSubscriber {
   /** Declared subscriber kind for DLQ payloads (A-D-029). */
   readonly subscriberType = 'filter';
+  /** Stable identity for DLQ payloads and dedup (A-D-022). */
+  readonly subscriberId: string;
+  /** Retry policy applied by EventEmitter._deliver (A-D-022). */
+  readonly retry: RetryConfig;
   private readonly _delegate: EventSubscriber;
   private readonly _includeEvents: string[] | null;
   private readonly _excludeEvents: string[] | null;
 
-  constructor(delegate: EventSubscriber, includeEvents?: string[], excludeEvents?: string[]) {
+  constructor(
+    delegate: EventSubscriber,
+    includeEvents?: string[],
+    excludeEvents?: string[],
+    opts?: { id?: string; retry?: RetryConfig },
+  ) {
     this._delegate = delegate;
     this._includeEvents = includeEvents ?? null;
     this._excludeEvents = excludeEvents ?? null;
+    // Mirror the id/retry surface of the other subscriber types (A-D-022;
+    // Python subscribers.py FilterSubscriber accepts id + retry too). When
+    // retry is omitted, delivery uses DEFAULT_RETRY via EventEmitter._deliver.
+    this.subscriberId = opts?.id ?? _nextSubscriberId('filter');
+    this.retry = { ...DEFAULT_RETRY, ...(opts?.retry ?? {}) };
   }
 
   async onEvent(event: ApCoreEvent): Promise<void> {
