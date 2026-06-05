@@ -15,6 +15,7 @@ import {
   StdoutSubscriber,
   FilterSubscriber,
 } from '../src/events/subscribers.js';
+import { EventEmitter, createEvent } from '../src/events/emitter.js';
 import type { ApCoreEvent, EventSubscriber } from '../src/events/emitter.js';
 
 function makeEvent(overrides: Partial<ApCoreEvent> = {}): ApCoreEvent {
@@ -111,6 +112,161 @@ describe('WebhookSubscriber', () => {
   });
 });
 
+// Regression lock for the 4xx-vs-5xx HTTP retry contract (apcore issue #69).
+//
+// The shared conformance driver fails attempts via a generic throw, which
+// BYPASSES the subscriber's HTTP-status logic — so the 4xx-permanent /
+// 5xx-retryable distinction is unguarded in the conformance layer. This block
+// drives delivery through the real EventEmitter retry pipeline and asserts the
+// contract via HTTP-call count (the load-bearing observable).
+//
+// Verified contract (LOCKED, not changed here):
+//   * HTTP 4xx  → permanent client error → NOT retried (fetch called once),
+//                 no apcore.event.delivery_failed (DLQ) event.
+//   * HTTP 5xx  → server error → retried to maxAttempts (fetch called N times),
+//                 then a apcore.event.delivery_failed (DLQ) event is emitted.
+//
+// A WebhookSubscriber has no eventPattern (catch-all), but the emitter excludes
+// catch-all subscribers from DLQ events (A-D-026), so it never re-fetches on the
+// DLQ event. Fast retry config (1ms backoff) keeps the test sub-millisecond.
+describe('WebhookSubscriber HTTP retry contract (issue #69)', () => {
+  const FAST_RETRY = {
+    maxAttempts: 3,
+    initialBackoffMs: 1,
+    maxBackoffMs: 10,
+    backoffMultiplier: 1,
+  };
+
+  beforeEach(() => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('HTTP 4xx (400) is permanent: fetch called exactly once, no DLQ event', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ status: 400 });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const emitter = new EventEmitter();
+    const dlqEvents: ApCoreEvent[] = [];
+    emitter.subscribe({
+      eventPattern: 'apcore.event.delivery_failed',
+      onEvent: (e) => { dlqEvents.push(e); },
+    });
+    emitter.subscribe(
+      new WebhookSubscriber('https://x/y', undefined, { retry: FAST_RETRY }),
+    );
+
+    emitter.emit(createEvent('test.fourxx', null, 'info', { x: 1 }));
+    await emitter.flush();
+
+    // Core lock: a 4xx must NOT be retried.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    // 4xx returns normally (warn, no throw) → delivery succeeds → no DLQ.
+    expect(dlqEvents).toHaveLength(0);
+  });
+
+  it('HTTP 5xx (503) is retryable: fetch called maxAttempts times, then DLQ event', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ status: 503 });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const emitter = new EventEmitter();
+    const dlqEvents: ApCoreEvent[] = [];
+    emitter.subscribe({
+      eventPattern: 'apcore.event.delivery_failed',
+      onEvent: (e) => { dlqEvents.push(e); },
+    });
+    emitter.subscribe(
+      new WebhookSubscriber('https://x/y', undefined, { retry: FAST_RETRY }),
+    );
+
+    emitter.emit(createEvent('test.fivexx', null, 'info', { x: 1 }));
+    await emitter.flush();
+
+    // Core lock: a 5xx is retried to exhaustion (3 attempts).
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    // Retry exhaustion routes through the DLQ.
+    expect(dlqEvents).toHaveLength(1);
+    expect(dlqEvents[0].data['subscriber_type']).toBe('webhook');
+    expect(dlqEvents[0].data['attempt_count']).toBe(3);
+  });
+});
+
+// Regression lock for the 4xx-vs-5xx HTTP retry contract (apcore issue #69),
+// A2A variant. Mirrors the WebhookSubscriber contract block above exactly: the
+// A2ASubscriber must apply the same 5xx-retryable / 4xx-permanent distinction.
+//
+// Verified contract:
+//   * HTTP 4xx  → permanent client error → NOT retried (fetch called once),
+//                 no apcore.event.delivery_failed (DLQ) event.
+//   * HTTP 5xx  → server error → retried to maxAttempts (fetch called N times),
+//                 then a apcore.event.delivery_failed (DLQ) event is emitted
+//                 with subscriber_type === "a2a".
+describe('A2ASubscriber HTTP retry contract (issue #69)', () => {
+  const FAST_RETRY = {
+    maxAttempts: 3,
+    initialBackoffMs: 1,
+    maxBackoffMs: 10,
+    backoffMultiplier: 1,
+  };
+
+  beforeEach(() => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('HTTP 4xx (400) is permanent: fetch called exactly once, no DLQ event', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ status: 400 });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const emitter = new EventEmitter();
+    const dlqEvents: ApCoreEvent[] = [];
+    emitter.subscribe({
+      eventPattern: 'apcore.event.delivery_failed',
+      onEvent: (e) => { dlqEvents.push(e); },
+    });
+    emitter.subscribe(
+      new A2ASubscriber('https://platform/x', undefined, { retry: FAST_RETRY }),
+    );
+
+    emitter.emit(createEvent('test.fourxx', null, 'info', { x: 1 }));
+    await emitter.flush();
+
+    // Core lock: a 4xx must NOT be retried.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    // 4xx returns normally (warn, no throw) → delivery succeeds → no DLQ.
+    expect(dlqEvents).toHaveLength(0);
+  });
+
+  it('HTTP 5xx (503) is retryable: fetch called maxAttempts times, then DLQ event', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ status: 503 });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const emitter = new EventEmitter();
+    const dlqEvents: ApCoreEvent[] = [];
+    emitter.subscribe({
+      eventPattern: 'apcore.event.delivery_failed',
+      onEvent: (e) => { dlqEvents.push(e); },
+    });
+    emitter.subscribe(
+      new A2ASubscriber('https://platform/x', undefined, { retry: FAST_RETRY }),
+    );
+
+    emitter.emit(createEvent('test.fivexx', null, 'info', { x: 1 }));
+    await emitter.flush();
+
+    // Core lock: a 5xx is retried to exhaustion (3 attempts).
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    // Retry exhaustion routes through the DLQ.
+    expect(dlqEvents).toHaveLength(1);
+    expect(dlqEvents[0].data['subscriber_type']).toBe('a2a');
+    expect(dlqEvents[0].data['attempt_count']).toBe(3);
+  });
+});
+
 describe('A2ASubscriber', () => {
   beforeEach(() => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -152,12 +308,21 @@ describe('A2ASubscriber', () => {
     expect(headers['Authorization']).toBeUndefined();
   });
 
-  it('rethrows on >=400 responses so EventEmitter retry+DLQ policy applies', async () => {
+  it('rethrows on 5xx so EventEmitter retry+DLQ policy applies', async () => {
     const fetchMock = vi.fn().mockResolvedValue({ status: 500 });
     vi.stubGlobal('fetch', fetchMock);
 
     const sub = new A2ASubscriber('https://platform/x');
     await expect(sub.onEvent(makeEvent())).rejects.toThrow(/status 500/);
+  });
+
+  it('warns but does not throw on 4xx (non-retryable client error)', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ status: 404 });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const sub = new A2ASubscriber('https://platform/x');
+    await sub.onEvent(makeEvent());
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it('rethrows on fetch rejection so EventEmitter retry+DLQ policy applies', async () => {

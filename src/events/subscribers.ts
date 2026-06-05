@@ -102,11 +102,13 @@ export class WebhookSubscriber implements EventSubscriber {
  *
  * Sends a POST with `skillId="apevo.event_receiver"` and the
  * serialized event in the payload. As of v0.22.0 finding A-D-EVT-001 the
- * subscriber no longer silently swallows errors: it rethrows on any
- * status >=400 or network error so the unified `EventEmitter._deliver`
- * retry policy applies (defaults to `DEFAULT_RETRY` — 3 attempts, 100 ms
- * initial backoff, 2× multiplier, 30 s cap). After exhaustion the
- * EventEmitter routes the failure through the DLQ + `onFailure` path.
+ * subscriber no longer silently swallows errors. Mirroring
+ * `WebhookSubscriber`, it rethrows on 5xx / network errors so the unified
+ * `EventEmitter._deliver` retry policy applies (defaults to `DEFAULT_RETRY`
+ * — 3 attempts, 100 ms initial backoff, 2× multiplier, 30 s cap); after
+ * exhaustion the EventEmitter routes the failure through the DLQ +
+ * `onFailure` path. 4xx responses are treated as non-retryable: a warning
+ * is logged and the call returns normally (no retry, no DLQ).
  */
 export class A2ASubscriber implements EventSubscriber {
   /** Declared subscriber kind for DLQ payloads (A-D-029). */
@@ -182,10 +184,17 @@ export class A2ASubscriber implements EventSubscriber {
         signal: controller.signal,
       });
 
-      if (response.status >= 400) {
-        // Rethrow so the EventEmitter unified retry/DLQ policy applies.
+      if (response.status >= 500) {
+        // Server error — rethrow so the EventEmitter retry policy applies.
         throw new Error(
           `A2A delivery to ${this._platformUrl} failed with status ${response.status}`,
+        );
+      }
+      if (response.status >= 400) {
+        // Client error — non-retryable; log and return.
+        console.warn(
+          '[apcore:events]',
+          `A2A delivery to ${this._platformUrl} returned ${response.status} for event ${event.eventType}`,
         );
       }
     } finally {

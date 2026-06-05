@@ -820,6 +820,13 @@ describe('AI Error Guidance Fields', () => {
       expect(err.userFixable).toBe(true);
     });
 
+    it('explicit null userFixable overrides the per-code default', () => {
+      // ACL_DENIED resolves to userFixable=false via USER_FIXABLE_BY_CODE; an explicit
+      // null must win (mirrors Python's _UNSET-sentinel override path).
+      expect(new ACLDeniedError('a', 'b').userFixable).toBe(false);
+      expect(new ACLDeniedError('a', 'b', { userFixable: null }).userFixable).toBeNull();
+    });
+
     it('ApprovalDeniedError with AI fields', () => {
       const err = new ApprovalDeniedError({}, 'm', {
         retryable: true,

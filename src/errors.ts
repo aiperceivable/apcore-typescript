@@ -2,6 +2,44 @@
  * Error hierarchy for apcore.
  */
 
+/**
+ * Declarative `user_fixable` policy, keyed by error code (single source of
+ * truth; kept in lock-step with
+ * `apcore/conformance/fixtures/error_recovery_metadata.json` so the language
+ * SDKs agree). `true` = the caller can resolve it by changing the input or
+ * configuration they sent; `false` = governance / system / structural /
+ * transient, not resolvable by changing input. Codes absent here leave
+ * `userFixable` unset (e.g. `MODULE_EXECUTE_ERROR` — the module author supplies
+ * the recovery guidance).
+ *
+ * @internal Not part of the public package API — absent from the `index.ts` barrel
+ * (and stripped from the published `.d.ts`); exported only so the conformance test
+ * can assert fixture↔source parity. Mirrors Python's private `_USER_FIXABLE_BY_CODE`
+ * and Rust's `#[doc(hidden)]` `user_fixable_for_code`.
+ */
+export const USER_FIXABLE_BY_CODE: Readonly<Record<string, boolean>> = Object.freeze({
+  // Caller can fix by changing input/config:
+  SCHEMA_VALIDATION_ERROR: true,
+  GENERAL_INVALID_INPUT: true,
+  MODULE_NOT_FOUND: true,
+  VERSION_CONSTRAINT_INVALID: true,
+  BINDING_SCHEMA_INFERENCE_FAILED: true,
+  BINDING_SCHEMA_MODE_CONFLICT: true,
+  BINDING_STRICT_SCHEMA_INCOMPATIBLE: true,
+  DEPENDENCY_NOT_FOUND: true,
+  DEPENDENCY_VERSION_MISMATCH: true,
+  // Governance / system / structural / transient — not caller-fixable by input:
+  ACL_DENIED: false,
+  APPROVAL_DENIED: false,
+  APPROVAL_TIMEOUT: false,
+  MODULE_TIMEOUT: false,
+  MODULE_DISABLED: false,
+  CALL_DEPTH_EXCEEDED: false,
+  CIRCULAR_CALL: false,
+  CALL_FREQUENCY_EXCEEDED: false,
+  GENERAL_INTERNAL_ERROR: false,
+});
+
 export interface ErrorOptions {
   cause?: Error;
   traceId?: string;
@@ -56,7 +94,12 @@ export class ModuleError extends Error {
         ? retryable
         : (this.constructor as typeof ModuleError).DEFAULT_RETRYABLE;
     this.aiGuidance = aiGuidance ?? null;
-    this.userFixable = userFixable ?? null;
+    // Resolve user_fixable from the error code when not explicitly provided
+    // (mirrors Python's `_UNSET` sentinel). An explicit value — including an
+    // explicit `null` — wins; codes absent from the map leave it null/unset so
+    // serialization omits it sparsely.
+    this.userFixable =
+      userFixable !== undefined ? userFixable : (USER_FIXABLE_BY_CODE[code] ?? null);
     this.suggestion = suggestion ?? null;
   }
 
@@ -447,7 +490,8 @@ export class CallFrequencyExceededError extends ModuleError {
       options?.cause,
       options?.traceId,
       options?.retryable,
-      options?.aiGuidance,
+      options?.aiGuidance ??
+        `Module '${moduleId}' was called ${count} times in this chain (limit ${maxRepeat}), tripping the frequency guard. Reduce repeated calls or batch the work before retrying.`,
       options?.userFixable,
       options?.suggestion,
     );
@@ -478,7 +522,8 @@ export class InvalidInputError extends ModuleError {
       options?.cause,
       options?.traceId,
       options?.retryable,
-      options?.aiGuidance,
+      options?.aiGuidance ??
+        "The input was malformed or missing required fields. Check the values against the module's input_schema and retry with corrected input.",
       options?.userFixable,
       options?.suggestion,
     );

@@ -33,6 +33,10 @@ apcore is an AI-Perceivable module standard that makes every interface naturally
 - **Caching & pagination annotations** — `cacheable`, `cacheTtl`, `cacheKeyFields` for result caching; `paginated`, `paginationStyle` for paginated modules
 - **Config Bus** — Namespace-based configuration registry with typed access, env prefix dispatch, hot-reload, and external config mounting (`Config.registerNamespace()`, `config.namespace()`, `config.bind<T>()`, `config.mount()`)
 
+## What's New in v0.23.0
+
+- **AI error-recovery metadata at the source** (#70) — Framework errors now carry a default `userFixable` resolved per error code (`USER_FIXABLE_BY_CODE`), plus filled `aiGuidance` defaults, so the recovery contract flows to every surface (MCP/CLI/A2A) from one module/error definition instead of being backfilled per adapter. At parity with apcore-python / apcore-rust 0.23.0, locked by the shared `error_recovery_metadata.json` conformance fixture.
+
 ## What's New in v0.22.0
 
 - **`ContextKey<T>` typed context state** (#63) — Type-safe accessor for `Context.data` slots with `get`/`set`/`delete`/`exists`/`scoped`; also available via the `apcore-js/context-keys` subpath import for tree-shakeable consumers.

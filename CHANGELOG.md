@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [0.23.0] - 2026-06-05
+
+### Added
+
+- **AI error-recovery metadata is now populated at the source (#70).** Framework-deterministic errors carry a default `userFixable` resolved from the error code via the new `USER_FIXABLE_BY_CODE` policy in the `ModuleError` constructor, so the recovery contract flows to every surface (MCP/CLI/A2A) from one definition. `true` for caller-fixable codes (`SCHEMA_VALIDATION_ERROR`, `GENERAL_INVALID_INPUT`, `MODULE_NOT_FOUND`, `VERSION_CONSTRAINT_INVALID`, `BINDING_SCHEMA_INFERENCE_FAILED`, `BINDING_SCHEMA_MODE_CONFLICT`, `BINDING_STRICT_SCHEMA_INCOMPATIBLE`, `DEPENDENCY_NOT_FOUND`, `DEPENDENCY_VERSION_MISMATCH`); `false` for governance/system/structural/transient codes (`ACL_DENIED`, `APPROVAL_DENIED`, `APPROVAL_TIMEOUT`, `MODULE_TIMEOUT`, `MODULE_DISABLED`, `CALL_DEPTH_EXCEEDED`, `CIRCULAR_CALL`, `CALL_FREQUENCY_EXCEEDED`, `GENERAL_INTERNAL_ERROR`); unlisted codes (e.g. `MODULE_EXECUTE_ERROR`) leave it unset for the module author. Default `aiGuidance` filled on `InvalidInputError` and `CallFrequencyExceededError`. Explicit constructor values still override the policy; serialization stays sparse. Locked by the shared conformance fixture `error_recovery_metadata.json` — at parity with apcore-python / apcore-rust 0.23.0.
+
+
+### Fixed
+
+- **`A2ASubscriber` no longer retries 4xx responses (#69).** It previously threw on any HTTP `status >= 400`, contradicting the spec (`event-system.md`: 4xx MUST NOT be retried, for both Webhook and A2A) and diverging from `WebhookSubscriber`. `A2ASubscriber.onEvent` now mirrors Webhook: 5xx (and connection/timeout) → throw → retried → `apcore.event.delivery_failed` on exhaustion; 4xx → logged permanent, no throw, no retry, no DLQ. Per-SDK regression tests lock both subscribers' 4xx/5xx behavior.
+
+
 ## [0.22.0] - 2026-05-28
 
 ### Changed
