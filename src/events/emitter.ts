@@ -202,9 +202,11 @@ export class EventEmitter {
         subscriber_id: subscriberId,
         original_event: {
           name: originalEvent.eventType,
-          module_id: originalEvent.moduleId,
-          timestamp: originalEvent.timestamp,
           payload: originalEvent.data,
+          metadata: {
+            module_id: originalEvent.moduleId,
+            timestamp: originalEvent.timestamp,
+          },
         },
         error: { type: error.constructor?.name ?? 'Error', message: error.message },
         attempt_count: attemptCount,
