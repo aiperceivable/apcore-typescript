@@ -59,8 +59,8 @@ export class WebhookSubscriber implements EventSubscriber {
 
   async onEvent(event: ApCoreEvent): Promise<void> {
     const payload: Record<string, unknown> = {
-      eventType: event.eventType,
-      moduleId: event.moduleId,
+      event_type: event.eventType,
+      module_id: event.moduleId,
       timestamp: event.timestamp,
       severity: event.severity,
       data: event.data,
@@ -148,8 +148,8 @@ export class A2ASubscriber implements EventSubscriber {
     const payload: Record<string, unknown> = {
       skillId: this._skillId,
       event: {
-        eventType: event.eventType,
-        moduleId: event.moduleId,
+        event_type: event.eventType,
+        module_id: event.moduleId,
         timestamp: event.timestamp,
         severity: event.severity,
         data: event.data,

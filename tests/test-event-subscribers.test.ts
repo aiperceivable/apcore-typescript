@@ -51,7 +51,7 @@ describe('WebhookSubscriber', () => {
     expect(headers['Content-Type']).toBe('application/json');
     expect(headers['X-Token']).toBe('abc');
     const body = JSON.parse((init as { body: string }).body);
-    expect(body.eventType).toBe('apcore.test');
+    expect(body.event_type).toBe('apcore.test');
   });
 
   it('warns but does not throw on 4xx (non-retryable client error)', async () => {
