@@ -3,10 +3,19 @@
  */
 
 import type { Context } from '../context.js';
+import { RETRY_COUNT_BASE } from '../context-keys.js';
 import type { ModuleError } from '../errors.js';
-import { Middleware } from './base.js';
+import { Middleware, RetrySignal } from './base.js';
 
-/** Well-known context.data key prefixes for retry state. */
+/**
+ * Well-known context.data key prefixes for retry state.
+ *
+ * `CTX_RETRY_COUNT_PREFIX + moduleId` is identical to
+ * `RETRY_COUNT_BASE.scoped(moduleId).name` and stores the per-module attempt
+ * counter used by {@link RetryMiddleware}. `CTX_RETRY_DELAY_PREFIX` is retained
+ * for backward compatibility with outer retry loops that inspected the legacy
+ * advisory delay hint; it is no longer written by the built-in middleware.
+ */
 export const CTX_RETRY_COUNT_PREFIX = '_apcore.mw.retry.count.';
 export const CTX_RETRY_DELAY_PREFIX = '_apcore.mw.retry.delay_ms.';
 
@@ -26,21 +35,31 @@ const DEFAULT_RETRY_CONFIG: RetryConfig = {
   jitter: true,
 };
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /**
- * Advisory retry-hint middleware.
+ * Middleware that retries failed module executions based on error retryability.
  *
- * This middleware does NOT re-invoke the failed module. It records retry
- * state and advisory delay hints in `context.data` for outer retry loops,
- * then returns null so the original error always propagates to the caller.
+ * When `onError` is called with a retryable error (`error.retryable === true`),
+ * this middleware sleeps for a calculated backoff delay and returns a
+ * {@link RetrySignal} carrying the original inputs. The executor recognises the
+ * signal and re-runs the module; remaining middlewares' `onError` handlers are
+ * not invoked for this attempt. After `maxRetries` attempts or for
+ * non-retryable errors, it returns `null` so the error propagates.
  *
- * Context keys written on a retryable error:
- *   - `CTX_RETRY_COUNT_PREFIX + moduleId` — number of attempts so far
- *   - `CTX_RETRY_DELAY_PREFIX + moduleId` — suggested delay in ms before retry
+ * Retry state is tracked per-module in `context.data` under
+ * `_apcore.mw.retry.count.{moduleId}` (via {@link RETRY_COUNT_BASE}). The
+ * counter is cleared by `after()` on successful completion so `context.data`
+ * does not grow unbounded across long call chains that recover before the
+ * limit is hit.
  *
- * If you need real retries, wrap `Executor.call` in an outer retry loop
- * that inspects `error.retryable` and the hint values above.
+ * Cross-language parity with apcore-python `RetryMiddleware`
+ * (returns `RetrySignal`) and apcore-rust `RetryMiddleware`
+ * (returns `Ok(Some(inputs))`).
  */
-export class RetryHintMiddleware extends Middleware {
+export class RetryMiddleware extends Middleware {
   private _config: RetryConfig;
 
   constructor(config?: Partial<RetryConfig>) {
@@ -48,17 +67,17 @@ export class RetryHintMiddleware extends Middleware {
     this._config = { ...DEFAULT_RETRY_CONFIG, ...config };
   }
 
-  override onError(
+  override async onError(
     moduleId: string,
     inputs: Record<string, unknown>,
     error: Error,
     context: Context,
-  ): Record<string, unknown> | null {
+  ): Promise<RetrySignal | null> {
     const retryable = (error as ModuleError).retryable;
     if (retryable !== true) return null;
 
-    const retryKey = `${CTX_RETRY_COUNT_PREFIX}${moduleId}`;
-    const retryCount = (context.data[retryKey] as number) ?? 0;
+    const retryKey = RETRY_COUNT_BASE.scoped(moduleId);
+    const retryCount = retryKey.get(context, 0) ?? 0;
 
     if (retryCount >= this._config.maxRetries) {
       console.warn(
@@ -68,16 +87,26 @@ export class RetryHintMiddleware extends Middleware {
     }
 
     const delayMs = this._calculateDelay(retryCount);
-    context.data[retryKey] = retryCount + 1;
-    context.data[`${CTX_RETRY_DELAY_PREFIX}${moduleId}`] = delayMs;
+    retryKey.set(context, retryCount + 1);
 
     console.warn(
-      `[apcore:retry] Retryable error in '${moduleId}' (attempt ${retryCount + 1}/${this._config.maxRetries}). ` +
-        `Hint written to context.data for outer retry loop (delay: ${Math.round(delayMs)}ms).`,
+      `[apcore:retry] Retrying module '${moduleId}' (attempt ${retryCount + 1}/${this._config.maxRetries}) ` +
+        `after ${Math.round(delayMs)}ms`,
     );
 
-    // Return null so the error propagates. Returning inputs here would cause
-    // the executor to treat them as the recovered output — a silent footgun.
+    await sleep(delayMs);
+    return new RetrySignal({ ...inputs });
+  }
+
+  override after(
+    moduleId: string,
+    _inputs: Record<string, unknown>,
+    _output: Record<string, unknown>,
+    context: Context,
+  ): null {
+    // Clear the per-module retry counter on successful completion so
+    // context.data does not accumulate stale `_apcore.mw.retry.count.*` keys.
+    RETRY_COUNT_BASE.scoped(moduleId).delete(context);
     return null;
   }
 
@@ -102,6 +131,9 @@ export class RetryHintMiddleware extends Middleware {
 }
 
 /**
- * @deprecated Use {@link RetryHintMiddleware} instead. Will be removed in 1.0.0.
+ * @deprecated Use {@link RetryMiddleware} instead. This alias previously named
+ * an advisory no-op variant that only recorded hints in `context.data`; that
+ * behavior is gone — `RetryHintMiddleware` now performs real retries. Will be
+ * removed in 1.0.0.
  */
-export const RetryMiddleware = RetryHintMiddleware;
+export const RetryHintMiddleware = RetryMiddleware;
