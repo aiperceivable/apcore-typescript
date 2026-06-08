@@ -70,7 +70,24 @@ function parseAnnotations(raw: Record<string, unknown>): ModuleAnnotations {
   };
 }
 
+export interface BindingLoaderOptions {
+  /**
+   * Optional allowlist of module-path prefixes. When set, `resolveTarget`
+   * rejects (with `BindingInvalidTargetError`) any target whose module path
+   * does not start with one of these prefixes BEFORE attempting the dynamic
+   * import. Mirrors apcore-python's `trusted_package_prefixes` enforcement.
+   * When unset (the default), any importable target is permitted (back-compat).
+   */
+  trustedPackagePrefixes?: string[];
+}
+
 export class BindingLoader {
+  private readonly _trustedPackagePrefixes: readonly string[] | null;
+
+  constructor(options: BindingLoaderOptions = {}) {
+    this._trustedPackagePrefixes = options.trustedPackagePrefixes ?? null;
+  }
+
   async loadBindings(filePath: string, registry: Registry): Promise<FunctionModule[]> {
     const bindingFileDir = dirname(filePath);
 
@@ -179,6 +196,17 @@ export class BindingLoader {
 
     if (modulePath.startsWith('file:')) {
       throw new BindingInvalidTargetError(`Module path '${modulePath}' must not use file: URLs`);
+    }
+
+    // Enforce the trusted-package allowlist (when configured) BEFORE importing,
+    // so an untrusted module is never loaded. Mirrors apcore-python.
+    if (
+      this._trustedPackagePrefixes !== null &&
+      !this._trustedPackagePrefixes.some((prefix) => modulePath.startsWith(prefix))
+    ) {
+      throw new BindingInvalidTargetError(
+        `Module path '${modulePath}' is not in the trusted package prefixes allowlist`,
+      );
     }
 
     let mod: Record<string, unknown>;
