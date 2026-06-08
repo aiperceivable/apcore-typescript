@@ -2,8 +2,13 @@
  * Lightweight semver utilities and versioned storage for module version negotiation (F18).
  */
 
+import { VersionConstraintError } from '../errors.js';
+
 const SEMVER_RE = /^(\d+)(?:\.(\d+))?(?:\.(\d+))?/;
-const CONSTRAINT_RE = /^(>=|<=|>|<|\^|~|=)?(.+)$/;
+// Mirrors apcore-python version.py _CONSTRAINT_RE: an optional operator
+// followed by a digit-leading version operand. Constraints that are empty or
+// do not start with a digit (e.g. "latest", "v1.0") are rejected.
+const CONSTRAINT_RE = /^(>=|<=|>|<|\^|~|=)?(\d[\w.\-+]*)$/;
 
 /**
  * Parse a version string into a [major, minor, patch] tuple.
@@ -67,9 +72,15 @@ function checkSingleConstraint(
   constraint: string,
 ): boolean {
   constraint = constraint.trim();
+  if (constraint === '') {
+    throw new VersionConstraintError(constraint, 'constraint is empty');
+  }
   const m = CONSTRAINT_RE.exec(constraint);
   if (m === null) {
-    return false;
+    throw new VersionConstraintError(
+      constraint,
+      'operand must be a digit-leading version (e.g. "1.2.3")',
+    );
   }
   const op = m[1] || '=';
   const target = parseSemver(m[2]) ?? [0, 0, 0];
