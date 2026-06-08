@@ -168,6 +168,9 @@ const CALL_CHAIN_ERROR_MAP: Record<string, new (...args: any[]) => Error> = {
   CALL_DEPTH_EXCEEDED: CallDepthExceededError,
   CIRCULAR_CALL: CircularCallError,
   CALL_FREQUENCY_EXCEEDED: CallFrequencyExceededError,
+  // Non-positive limit floor (T-B-005): each SDK rejects with its idiomatic
+  // invalid-argument signal — Python ValueError, TS Error, Rust ModuleError.
+  INVALID_LIMIT: Error,
 };
 
 describe('apcore Conformance Suite (TypeScript)', () => {
