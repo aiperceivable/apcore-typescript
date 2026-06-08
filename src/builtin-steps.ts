@@ -600,8 +600,17 @@ export class BuiltinExecute implements Step {
    * the other SDKs.
    */
   private _readModuleTimeoutMs(mod: Record<string, unknown>): number | null {
-    const readNumber = (val: unknown): number | null =>
-      typeof val === 'number' && Number.isFinite(val) && val >= 0 ? val : null;
+    // A declared numeric timeout is honoured; a declared NEGATIVE timeout is an
+    // invalid input and MUST raise GENERAL_INVALID_INPUT (spec Edge Cases;
+    // parity with apcore-python builtin_steps.py:620). A non-numeric / absent
+    // value is treated as "not declared" → null (caller falls back to default).
+    const readNumber = (val: unknown): number | null => {
+      if (typeof val !== 'number' || !Number.isFinite(val)) return null;
+      if (val < 0) {
+        throw new InvalidInputError(`Negative timeout: ${val}`);
+      }
+      return val;
+    };
 
     const directResources = mod['resources'];
     if (directResources != null && typeof directResources === 'object') {

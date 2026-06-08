@@ -12,7 +12,7 @@ import { Executor } from '../src/executor.js';
 import { Registry } from '../src/registry/registry.js';
 import { Config } from '../src/config.js';
 import { Context } from '../src/context.js';
-import { ModuleTimeoutError } from '../src/errors.js';
+import { ModuleTimeoutError, InvalidInputError } from '../src/errors.js';
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
@@ -96,5 +96,24 @@ describe('BuiltinExecute per-module timeout (D-11)', () => {
     });
     const exec = new Executor({ registry: reg, config });
     await expect(exec.call('slow.global', {})).rejects.toBeInstanceOf(ModuleTimeoutError);
+  });
+
+  it('raises GENERAL_INVALID_INPUT for a negative declared timeout (A-D-W1)', async () => {
+    const reg = new Registry();
+    reg.register('neg.mod', {
+      id: 'neg.mod',
+      description: 'declares an invalid negative timeout',
+      inputSchema: Type.Object({}),
+      outputSchema: Type.Object({ ok: Type.Boolean() }),
+      resources: { timeout: -1 },
+      execute: async () => ({ ok: true }),
+    });
+
+    const config = new Config({ executor: { default_timeout: 5000 } });
+    const exec = new Executor({ registry: reg, config });
+
+    const error = await exec.call('neg.mod', {}).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(InvalidInputError);
+    expect((error as InvalidInputError).code).toBe('GENERAL_INVALID_INPUT');
   });
 });
