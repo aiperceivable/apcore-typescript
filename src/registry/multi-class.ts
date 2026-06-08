@@ -101,20 +101,12 @@ export function discoverMultiClass(
   }
 
   if (qualifying.length === 1) {
-    const segment = classNameToSegment(qualifying[0].name);
-    const lastBaseSegment = baseId.split('.').pop()!;
-    // Identity guarantee: when the class segment matches the file's last segment
-    // (class named after the file), preserve the bare base_id so existing IDs
-    // are not broken when multi-class mode is enabled.
-    if (segment === lastBaseSegment) {
-      return [{ moduleId: baseId, className: qualifying[0].name }];
-    }
-    // Class has a distinct name from the file — append the class segment.
-    if (!SEGMENT_RE.test(segment)) throw new InvalidSegmentError(filePath, qualifying[0].name, segment);
-    const moduleId = `${baseId}.${segment}`;
-    if (!CANONICAL_ID_RE.test(moduleId)) throw new InvalidSegmentError(filePath, qualifying[0].name, segment);
-    if (moduleId.length > MAX_MODULE_ID_LEN) throw new IdTooLongError(filePath, moduleId);
-    return [{ moduleId, className: qualifying[0].name }];
+    // Single-class identity guarantee: a file with exactly one qualifying class
+    // ALWAYS yields the bare base_id, regardless of whether the class segment
+    // matches the file stem. This matches Python multi_class.py:143 and Rust
+    // derive_module_ids, and prevents a single class from being given a
+    // distinct ".class_segment" suffix.
+    return [{ moduleId: baseId, className: qualifying[0].name }];
   }
 
   // Multi-class path: derive IDs, detect conflicts, validate
