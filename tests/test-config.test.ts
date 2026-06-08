@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { Config } from '../src/config.js';
+import { Config, _globalEnvMap, _envMapClaimed } from '../src/config.js';
 import { ConfigError, ConfigNotFoundError } from '../src/errors.js';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -273,5 +273,39 @@ describe('Config env overrides', () => {
     setEnv('APCORE_EXTENSIONS_AUTO__DISCOVER', 'false');
     const cfg = Config.fromDefaults();
     expect(cfg.get('extensions.auto_discover')).toBe(false);
+  });
+});
+
+describe('Config legacy-mode global env map (A-D-04)', () => {
+  const envKeys: string[] = [];
+
+  afterEach(() => {
+    for (const key of envKeys) {
+      delete process.env[key];
+    }
+    envKeys.length = 0;
+    _globalEnvMap.clear();
+    _envMapClaimed.clear();
+  });
+
+  function setEnv(key: string, value: string): void {
+    process.env[key] = value;
+    envKeys.push(key);
+  }
+
+  it('applies global env map in legacy mode (peer: python config.py:259)', () => {
+    Config.envMap({ PORT: 'port' });
+    setEnv('PORT', '3000');
+
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'apcore-cfg-'));
+    const yamlPath = path.join(dir, 'apcore.yaml');
+    // Legacy YAML: no top-level "apcore" mapping key.
+    fs.writeFileSync(yamlPath, 'project:\n  name: legacy-app\n');
+    try {
+      const cfg = Config.load(yamlPath, { validate: false });
+      expect(cfg.get('port')).toBe(3000);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

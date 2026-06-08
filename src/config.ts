@@ -187,6 +187,14 @@ function coerceEnvValue(value: string): unknown {
 export function applyEnvOverrides(data: Record<string, unknown>): Record<string, unknown> {
   const result = JSON.parse(JSON.stringify(data)) as Record<string, unknown>;
   const env = process.env;
+  // Global env_map (bare env var → dotted config path) applies in legacy mode
+  // too, mirroring apcore-python config.py:259 which consults _GLOBAL_ENV_MAP
+  // in the legacy env-override path before the APCORE_ prefix scan.
+  for (const [envVar, configKey] of _globalEnvMap.entries()) {
+    const envValue = env[envVar];
+    if (envValue === undefined) continue;
+    setNested(result, configKey, coerceEnvValue(envValue));
+  }
   for (const [envKey, envValue] of Object.entries(env)) {
     if (!envKey.startsWith(ENV_PREFIX) || envValue === undefined) continue;
     const suffix = envKey.slice(ENV_PREFIX.length);
