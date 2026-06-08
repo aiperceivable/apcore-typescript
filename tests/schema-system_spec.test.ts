@@ -548,7 +548,9 @@ describe('schema-system contract: Schema.content_hash', () => {
 
   it('schema_system.content_hash.property.async_false: contentHash is a synchronous callable', () => {
     const digest = contentHash(CONSTRAINT_SCHEMA);
-    expect(digest instanceof Promise).toBe(false);
+    // Cast through `unknown`: `digest` is statically typed `string`, so a direct
+    // `instanceof` is a compile error — the runtime check still proves it is not a Promise.
+    expect((digest as unknown) instanceof Promise).toBe(false);
     expect(typeof digest).toBe('string');
   });
 

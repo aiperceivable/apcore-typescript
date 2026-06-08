@@ -129,12 +129,14 @@ describe("Contract: module", () => {
   it("decorator_bindings.module.input.func_or_none.untyped_param_no_schema: missing id rejected (TS has no signature inference)", () => {
     let caught: unknown;
     try {
-      // @ts-expect-error — intentionally omit required `id` to exercise the guard.
+      // Omit `id` to exercise the runtime guard. The TS type does not require a
+      // compile error here (unlike Python signature inference), so the rejection
+      // is purely a runtime check below.
       module({
         inputSchema: InputSchema,
         outputSchema: OutputSchema,
         execute: (i) => ({ result: i }),
-      });
+      } as Parameters<typeof module>[0]);
     } catch (e) {
       caught = e;
     }

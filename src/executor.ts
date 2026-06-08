@@ -135,7 +135,14 @@ export function deepMergeChunk(
   overlay: Record<string, unknown>,
   depth = 0,
 ): void {
-  if (depth >= MAX_MERGE_DEPTH) return;
+  if (depth >= MAX_MERGE_DEPTH) {
+    // At the depth cap, replace rather than recurse to avoid stack overflow.
+    // Spec mandates right-value-wins, so shallow-assign each overlay key onto base.
+    for (const [key, value] of Object.entries(overlay)) {
+      base[key] = value;
+    }
+    return;
+  }
   for (const [key, value] of Object.entries(overlay)) {
     if (
       key in base &&
