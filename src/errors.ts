@@ -193,7 +193,7 @@ export class ConfigError extends ModuleError {
     super(
       'CONFIG_INVALID',
       message,
-      {},
+      options?.details ?? {},
       options?.cause,
       options?.traceId,
       options?.retryable,
@@ -514,9 +514,18 @@ export class CallFrequencyExceededError extends ModuleError {
 export class InvalidInputError extends ModuleError {
   static override readonly DEFAULT_RETRYABLE: boolean | null = false;
 
-  constructor(message: string = 'Invalid input', options?: ErrorOptions) {
+  /**
+   * @param code Error-code override. Defaults to `GENERAL_INVALID_INPUT`;
+   *   module-id format validation passes `INVALID_MODULE_ID` (mirrors Python's
+   *   `InvalidInputError(code=...)`).
+   */
+  constructor(
+    message: string = 'Invalid input',
+    options?: ErrorOptions,
+    code: string = 'GENERAL_INVALID_INPUT',
+  ) {
     super(
-      'GENERAL_INVALID_INPUT',
+      code,
       message,
       options?.details ?? {},
       options?.cause,
@@ -1442,6 +1451,7 @@ export class ContextBindingError extends ModuleError {
 export const ErrorCodes = Object.freeze({
   CONFIG_NOT_FOUND: 'CONFIG_NOT_FOUND',
   CONFIG_INVALID: 'CONFIG_INVALID',
+  CONFIG_KEY_RESTRICTED: 'CONFIG_KEY_RESTRICTED',
   CONFIG_NAMESPACE_DUPLICATE: 'CONFIG_NAMESPACE_DUPLICATE',
   CONFIG_NAMESPACE_RESERVED: 'CONFIG_NAMESPACE_RESERVED',
   CONFIG_ENV_PREFIX_CONFLICT: 'CONFIG_ENV_PREFIX_CONFLICT',
@@ -1468,6 +1478,7 @@ export const ErrorCodes = Object.freeze({
   CALL_FREQUENCY_EXCEEDED: 'CALL_FREQUENCY_EXCEEDED',
   GENERAL_INVALID_INPUT: 'GENERAL_INVALID_INPUT',
   GENERAL_INTERNAL_ERROR: 'GENERAL_INTERNAL_ERROR',
+  INVALID_MODULE_ID: 'INVALID_MODULE_ID',
   FUNC_MISSING_TYPE_HINT: 'FUNC_MISSING_TYPE_HINT',
   FUNC_MISSING_RETURN_TYPE: 'FUNC_MISSING_RETURN_TYPE',
   BINDING_INVALID_TARGET: 'BINDING_INVALID_TARGET',

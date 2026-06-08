@@ -6,6 +6,7 @@ import { EventEmitter } from '../src/events/emitter.js';
 import {
   ConfigError,
   InvalidInputError,
+  ModuleError,
   ModuleNotFoundError,
   ReloadFailedError,
 } from '../src/errors.js';
@@ -49,16 +50,46 @@ describe('UpdateConfigModule', () => {
   });
 
   describe('restricted keys', () => {
-    it('throws ConfigError for sys_modules.enabled', () => {
-      expect(() =>
-        mod.execute({ key: 'sys_modules.enabled', value: false, reason: 'test' }, null),
-      ).toThrow(ConfigError);
+    it('throws ModuleError(CONFIG_KEY_RESTRICTED) for sys_modules.enabled', () => {
+      let caught: unknown;
+      try {
+        mod.execute({ key: 'sys_modules.enabled', value: false, reason: 'test' }, null);
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeInstanceOf(ModuleError);
+      expect((caught as ModuleError).code).toBe('CONFIG_KEY_RESTRICTED');
     });
 
-    it('includes key name in ConfigError message', () => {
+    it('includes key name in restricted-key error message', () => {
       expect(() =>
         mod.execute({ key: 'sys_modules.enabled', value: false, reason: 'test' }, null),
       ).toThrow(/sys_modules\.enabled/);
+    });
+  });
+
+  describe('constraint enforcement', () => {
+    it('raises ConfigError on a post-set constraint violation', () => {
+      const cfg = Config.fromDefaults();
+      const constrained = new UpdateConfigModule(cfg, emitter);
+      let caught: unknown;
+      try {
+        constrained.execute({ key: 'executor.default_timeout', value: -5, reason: 'test' }, null);
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeInstanceOf(ConfigError);
+      expect((caught as ConfigError).code).toBe('CONFIG_INVALID');
+    });
+
+    it('rolls Config back to old_value on a constraint violation', () => {
+      const cfg = Config.fromDefaults();
+      const constrained = new UpdateConfigModule(cfg, emitter);
+      const oldValue = cfg.get('executor.default_timeout');
+      expect(() =>
+        constrained.execute({ key: 'executor.default_timeout', value: -5, reason: 'test' }, null),
+      ).toThrow(ConfigError);
+      expect(cfg.get('executor.default_timeout')).toBe(oldValue);
     });
   });
 

@@ -358,7 +358,7 @@ describe('Executor', () => {
     const executor = new Executor({ registry });
     const result = await executor.validate('INVALID-ID!!');
     expect(result.valid).toBe(false);
-    expect(result.errors.some((e: Record<string, unknown>) => e['code'] === 'INVALID_INPUT')).toBe(true);
+    expect(result.errors.some((e: Record<string, unknown>) => e['code'] === 'INVALID_MODULE_ID')).toBe(true);
     expect(result.checks.find((c: { check: string }) => c.check === 'module_id')?.passed).toBe(false);
   });
 

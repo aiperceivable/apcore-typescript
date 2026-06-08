@@ -18,12 +18,6 @@
  * contract verification — they never modify production source.
  *
  * Notable TS/Python divergences (asserted as the ACTUAL TS behavior, not faked):
- *   - update_config: TS `Config.set` performs NO constraint validation and the
- *     TS `UpdateConfigModule.execute` performs NO post-set constraint check or
- *     rollback. So `config_constraint` and `rollback_on_constraint` are no-ops
- *     in TS (the set succeeds). The clauses are kept but assert TS reality.
- *   - update_config restricted key: TS throws `ConfigError` (code
- *     `CONFIG_INVALID`), NOT a `ModuleError` with code `CONFIG_KEY_RESTRICTED`.
  *   - update_config sensitive redaction: TS uses the literal sentinel `'***'`.
  *   - reload_module: TS `ReloadModule.execute` is ASYNC (returns a Promise),
  *     unlike the synchronous Python implementation.
@@ -143,10 +137,9 @@ describe('Contract: system.control.update_config', () => {
     expect(result['new_value']).toEqual({ nested: [1, 2, 3] });
   });
 
-  it('system_modules.update_config.error.config_key_restricted: updating a restricted key throws (TS: ConfigError, not ModuleError/CONFIG_KEY_RESTRICTED)', () => {
-    // DIVERGENCE: Python raises ModuleError(code=CONFIG_KEY_RESTRICTED); the TS
-    // implementation throws ConfigError (which IS a ModuleError subclass) with
-    // code CONFIG_INVALID. Assert the actual TS behavior.
+  it('system_modules.update_config.error.config_key_restricted: updating a restricted key raises ModuleError(CONFIG_KEY_RESTRICTED)', () => {
+    // Aligned with apcore-python: restricted keys raise ModuleError with code
+    // CONFIG_KEY_RESTRICTED (not ConfigError/CONFIG_INVALID).
     const mod = updateModule();
     let caught: unknown;
     try {
@@ -154,32 +147,35 @@ describe('Contract: system.control.update_config', () => {
     } catch (err) {
       caught = err;
     }
-    expect(caught).toBeInstanceOf(ConfigError);
     expect(caught).toBeInstanceOf(ModuleError);
+    expect((caught as ModuleError).code).toBe('CONFIG_KEY_RESTRICTED');
+  });
+
+  it('system_modules.update_config.error.config_constraint: constraint violation raises ConfigError', () => {
+    // Aligned with apcore-python: a post-set constraint violation raises
+    // ConfigError after rolling Config back to the old value.
+    const config = makeConfig();
+    const mod = updateModule(config);
+    let caught: unknown;
+    try {
+      mod.execute({ key: 'executor.default_timeout', value: -5, reason: 'r' }, null);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(ConfigError);
     expect((caught as ModuleError).code).toBe('CONFIG_INVALID');
   });
 
-  it('system_modules.update_config.error.config_constraint: constraint violation does NOT raise in TS (Config.set is not validated)', () => {
-    // DIVERGENCE: Python raises ConfigError on a constraint violation; TS
-    // `Config.set` performs no constraint validation and the control module
-    // performs no post-set check, so the set silently succeeds.
+  it('system_modules.update_config.side_effect.rollback_on_constraint: Config is rolled back to old_value on constraint violation', () => {
+    // Aligned with apcore-python: on a constraint violation the post-set check
+    // rolls Config back to old_value before raising.
     const config = makeConfig();
     const mod = updateModule(config);
-    const result = mod.execute(
-      { key: 'executor.default_timeout', value: -5, reason: 'r' },
-      null,
-    );
-    expect(result['success']).toBe(true);
-    expect(config.get('executor.default_timeout')).toBe(-5);
-  });
-
-  it('system_modules.update_config.side_effect.rollback_on_constraint: no rollback in TS (no constraint check) — value is applied', () => {
-    // DIVERGENCE: Python rolls back to old_value on ConfigError. TS has no
-    // constraint check, so there is nothing to roll back; the new value sticks.
-    const config = makeConfig();
-    const mod = updateModule(config);
-    mod.execute({ key: 'executor.default_timeout', value: -5, reason: 'r' }, null);
-    expect(config.get('executor.default_timeout')).toBe(-5);
+    const oldValue = config.get('executor.default_timeout');
+    expect(() =>
+      mod.execute({ key: 'executor.default_timeout', value: -5, reason: 'r' }, null),
+    ).toThrow(ConfigError);
+    expect(config.get('executor.default_timeout')).toBe(oldValue);
   });
 
   it('system_modules.update_config.side_effect.set_and_emit_event: on success Config is mutated and apcore.config.updated is emitted', () => {

@@ -24,7 +24,13 @@ import type { Config } from './config.js';
 // Node-only code into the browser dependency graph.
 import { type EventEmitter, createEvent } from './events/emitter.js';
 import { Context } from './context.js';
-import { ContextBindingError, InvalidInputError, ModuleError, ModuleTimeoutError } from './errors.js';
+import {
+  ContextBindingError,
+  ErrorCodes,
+  InvalidInputError,
+  ModuleError,
+  ModuleTimeoutError,
+} from './errors.js';
 import {
   AfterMiddleware,
   BeforeMiddleware,
@@ -791,15 +797,17 @@ export class Executor {
     const checks: PreflightCheckResult[] = [];
 
     // Check 0: module_id format (before pipeline)
-    if (!MODULE_ID_PATTERN.test(moduleId)) {
+    try {
+      this._validateModuleId(moduleId);
+      checks.push({ check: 'module_id', passed: true });
+    } catch (e) {
       checks.push({
         check: 'module_id',
         passed: false,
-        error: { code: 'INVALID_INPUT', message: `Invalid module ID: "${moduleId}"` },
+        error: (e as InvalidInputError).toJSON(),
       });
       return createPreflightResult(checks);
     }
-    checks.push({ check: 'module_id', passed: true });
 
     // Run pipeline in dry_run mode — pure=false steps are skipped.
     // Issue #66: auto-bind executor on every entry (see call() for rationale).
@@ -985,6 +993,8 @@ export class Executor {
     if (!moduleId || !MODULE_ID_PATTERN.test(moduleId)) {
       throw new InvalidInputError(
         `Invalid module ID: '${moduleId}'. Must match pattern: ${MODULE_ID_PATTERN.source}`,
+        undefined,
+        ErrorCodes.INVALID_MODULE_ID,
       );
     }
   }

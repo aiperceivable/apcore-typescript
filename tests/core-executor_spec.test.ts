@@ -18,8 +18,8 @@
  *   - global_deadline distributed semantics
  *
  * NOTE on divergences (recorded in the agent report):
- *   - TS has no INVALID_MODULE_ID error code; module-id entry-guard rejection
- *     raises InvalidInputError with code GENERAL_INVALID_INPUT.
+ *   - Module-id entry-guard rejection raises InvalidInputError with code
+ *     INVALID_MODULE_ID (aligned with apcore-python).
  *   - TS Context is immutable: _withExecutor() returns a NEW bound Context
  *     instead of mutating the caller's instance, so binding is observed on the
  *     returned instance, not on the passed-in one.
@@ -111,8 +111,8 @@ describe('Contract: Executor.call', () => {
     } catch (e) {
       caught = e;
     }
-    // TS divergence: no INVALID_MODULE_ID code; entry-guard uses GENERAL_INVALID_INPUT.
-    expect((caught as InvalidInputError).code).toBe('GENERAL_INVALID_INPUT');
+    // Entry-guard raises INVALID_MODULE_ID (aligned with apcore-python).
+    expect((caught as InvalidInputError).code).toBe('INVALID_MODULE_ID');
   });
 
   it('core_executor.call.input.module_id.malformed: malformed module_id rejected at entry-guard', async () => {
@@ -124,7 +124,7 @@ describe('Contract: Executor.call', () => {
       caught = e;
     }
     expect(caught).toBeInstanceOf(InvalidInputError);
-    expect((caught as InvalidInputError).code).toBe('GENERAL_INVALID_INPUT');
+    expect((caught as InvalidInputError).code).toBe('INVALID_MODULE_ID');
   });
 
   it('core_executor.call.error.INVALID_MODULE_ID: invalid module_id raises InvalidInputError', async () => {
@@ -136,8 +136,7 @@ describe('Contract: Executor.call', () => {
       caught = e;
     }
     expect(caught).toBeInstanceOf(InvalidInputError);
-    // TS divergence: code is GENERAL_INVALID_INPUT, not INVALID_MODULE_ID.
-    expect((caught as InvalidInputError).code).toBe('GENERAL_INVALID_INPUT');
+    expect((caught as InvalidInputError).code).toBe('INVALID_MODULE_ID');
   });
 
   it('core_executor.call.error.MODULE_NOT_FOUND: valid-but-absent module raises ModuleNotFoundError', async () => {
@@ -180,7 +179,7 @@ describe('Contract: Executor.call', () => {
     // ModuleNotFoundError; the typed entry-guard error proves ordering.
     expect(caught).toBeInstanceOf(InvalidInputError);
     expect(caught).not.toBeInstanceOf(ModuleNotFoundError);
-    expect((caught as InvalidInputError).code).toBe('GENERAL_INVALID_INPUT');
+    expect((caught as InvalidInputError).code).toBe('INVALID_MODULE_ID');
   });
 
   it('core_executor.call.side_effect.2.run_pipeline: pipeline runs and returns validated output', async () => {

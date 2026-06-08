@@ -6,7 +6,13 @@ import type { Config } from '../config.js';
 import { getDefault } from '../config-defaults.js';
 import type { Context } from '../context.js';
 import type { ApCoreEvent, EventEmitter } from '../events/emitter.js';
-import { DuplicateModuleIdError, InvalidInputError, ModuleNotFoundError, StreamingInterfaceError } from '../errors.js';
+import {
+  DuplicateModuleIdError,
+  ErrorCodes,
+  InvalidInputError,
+  ModuleNotFoundError,
+  StreamingInterfaceError,
+} from '../errors.js';
 import { isStreamingModule } from '../streaming.js';
 import type { ModuleAnnotations, ModuleExample } from '../module.js';
 import { detectIdConflicts } from './conflicts.js';
@@ -169,7 +175,11 @@ export function isEphemeralModuleId(moduleId: string): boolean {
 function validateModuleId(moduleId: string, allowReserved: boolean): void {
   // 1. empty check (message byte-aligned with apcore-python and apcore-rust)
   if (!moduleId || typeof moduleId !== 'string') {
-    throw new InvalidInputError('module_id must be a non-empty string');
+    throw new InvalidInputError(
+      'module_id must be a non-empty string',
+      undefined,
+      ErrorCodes.INVALID_MODULE_ID,
+    );
   }
 
   // 2. EBNF pattern check (message byte-aligned with apcore-python and apcore-rust:
@@ -177,6 +187,8 @@ function validateModuleId(moduleId: string, allowReserved: boolean): void {
   if (!MODULE_ID_PATTERN.test(moduleId)) {
     throw new InvalidInputError(
       `Invalid module ID: '${moduleId}'. Must match pattern: ${MODULE_ID_PATTERN.source} (lowercase, digits, underscores, dots only; no hyphens)`,
+      undefined,
+      ErrorCodes.INVALID_MODULE_ID,
     );
   }
 
@@ -184,6 +196,8 @@ function validateModuleId(moduleId: string, allowReserved: boolean): void {
   if (moduleId.length > MAX_MODULE_ID_LENGTH) {
     throw new InvalidInputError(
       `Module ID exceeds maximum length of ${MAX_MODULE_ID_LENGTH}: ${moduleId.length}`,
+      undefined,
+      ErrorCodes.INVALID_MODULE_ID,
     );
   }
 
@@ -191,7 +205,11 @@ function validateModuleId(moduleId: string, allowReserved: boolean): void {
   if (!allowReserved) {
     const firstSegment = moduleId.split('.')[0];
     if (RESERVED_WORDS.has(firstSegment)) {
-      throw new InvalidInputError(`Module ID contains reserved word: '${firstSegment}'`);
+      throw new InvalidInputError(
+        `Module ID contains reserved word: '${firstSegment}'`,
+        undefined,
+        ErrorCodes.INVALID_MODULE_ID,
+      );
     }
   }
 }
@@ -454,6 +472,8 @@ export class Registry {
       `namespace is reserved for programmatically-registered modules and ` +
       `may only be used via Registry.register(). Rename the offending ` +
       `directory or extension namespace.`,
+      undefined,
+      ErrorCodes.INVALID_MODULE_ID,
     );
   }
 

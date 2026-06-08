@@ -39,8 +39,14 @@ const REQUIRED_FIELDS = [
   'project.name',
 ] as const;
 
-/** Field constraints in legacy mode: field -> [validator, errorMessage]. */
-const CONSTRAINTS: Record<string, [(v: unknown) => boolean, string]> = {
+/**
+ * Field constraints in legacy mode: field -> [validator, errorMessage].
+ *
+ * @internal Exported only so `system.control.update_config` can enforce the
+ * registered constraint after a runtime `set` (post-set check + rollback),
+ * mirroring Python's `_CONSTRAINTS`. Not part of the public package API.
+ */
+export const CONSTRAINTS: Record<string, [(v: unknown) => boolean, string]> = {
   'acl.default_effect': [(v) => v === 'allow' || v === 'deny', "must be 'allow' or 'deny'"],
   'observability.tracing.sampling_rate': [
     (v) => typeof v === 'number' && v >= 0.0 && v <= 1.0,

@@ -12,8 +12,8 @@
  *  - The TS read methods getStatus / getResult / listTasks / cleanup are all
  *    `async` (return Promises) per spec D10-003 / D-17, unlike Python's sync
  *    versions.
- *  - InvalidInputError carries code GENERAL_INVALID_INPUT, not the Python
- *    INVALID_MODULE_ID.
+ *  - Module-id format rejection raises InvalidInputError with code
+ *    INVALID_MODULE_ID (aligned with apcore-python).
  *  - get_result raises a plain Error (not KeyError / RuntimeError subtypes).
  *  - TaskInfo is a readonly interface, not a mutable dataclass — the
  *    shallow-copy contract (D-23) is observed by mutating a cast copy.
@@ -128,8 +128,8 @@ describe('AsyncTaskManager.submit', () => {
 
     // Direct validation path confirms the declared TYPE + CODE pairing.
     // DIVERGENCE: TS uses Executor.call() (the private _validateModuleId is not
-    // exposed like Python's static Executor._validate_module_id), and the code
-    // is GENERAL_INVALID_INPUT, not Python's INVALID_MODULE_ID.
+    // exposed like Python's static Executor._validate_module_id). The code is
+    // INVALID_MODULE_ID (aligned with apcore-python).
     await expect(executor.call('Bad-ID!', { x: 1 })).rejects.toBeInstanceOf(
       InvalidInputError,
     );
@@ -138,7 +138,7 @@ describe('AsyncTaskManager.submit', () => {
       throw new Error('expected InvalidInputError');
     } catch (err) {
       expect(err).toBeInstanceOf(InvalidInputError);
-      expect((err as InvalidInputError).code).toBe('GENERAL_INVALID_INPUT');
+      expect((err as InvalidInputError).code).toBe('INVALID_MODULE_ID');
     }
     await manager.shutdown();
   });

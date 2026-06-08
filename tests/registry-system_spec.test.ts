@@ -98,8 +98,7 @@ describe('Contract: Registry.register', () => {
       err = e;
     }
     expect(err).toBeInstanceOf(InvalidInputError);
-    // TS divergence: code is GENERAL_INVALID_INPUT, not INVALID_MODULE_ID.
-    expect((err as InvalidInputError).code).toBe('GENERAL_INVALID_INPUT');
+    expect((err as InvalidInputError).code).toBe('INVALID_MODULE_ID');
   });
 
   it('registry_system.register.input.module_id.malformed: hyphenated id is rejected', () => {
@@ -113,7 +112,7 @@ describe('Contract: Registry.register', () => {
       err = e;
     }
     expect(err).toBeInstanceOf(InvalidInputError);
-    expect((err as InvalidInputError).code).toBe('GENERAL_INVALID_INPUT');
+    expect((err as InvalidInputError).code).toBe('INVALID_MODULE_ID');
   });
 
   it('registry_system.register.input.module_id.reserved: reserved system.* id is rejected', () => {
@@ -126,7 +125,7 @@ describe('Contract: Registry.register', () => {
       err = e;
     }
     expect(err).toBeInstanceOf(InvalidInputError);
-    expect((err as InvalidInputError).code).toBe('GENERAL_INVALID_INPUT');
+    expect((err as InvalidInputError).code).toBe('INVALID_MODULE_ID');
   });
 
   it('registry_system.register.error.INVALID_MODULE_ID: id not starting with a letter is rejected', () => {
@@ -138,8 +137,7 @@ describe('Contract: Registry.register', () => {
       err = e;
     }
     expect(err).toBeInstanceOf(InvalidInputError);
-    // TS divergence: emits GENERAL_INVALID_INPUT, Python emits INVALID_MODULE_ID.
-    expect((err as InvalidInputError).code).toBe('GENERAL_INVALID_INPUT');
+    expect((err as InvalidInputError).code).toBe('INVALID_MODULE_ID');
   });
 
   it('registry_system.register.error.DUPLICATE_MODULE_ID: duplicate id is rejected', () => {

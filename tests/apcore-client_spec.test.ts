@@ -10,12 +10,11 @@
  *
  * Cross-language note on error CODES
  * ----------------------------------
- * The Python canonical suite asserts `InvalidInputError.code == "INVALID_MODULE_ID"`
- * for malformed / empty / duplicate module ids. The TypeScript SDK's
- * `InvalidInputError` carries the code `GENERAL_INVALID_INPUT` (see
- * `src/errors.ts`), and duplicate registration raises `DuplicateModuleIdError`
- * (`DUPLICATE_MODULE_ID`). These tests assert the REAL type + code the TS SDK
- * emits; the divergences are recorded in the task report.
+ * Malformed / empty module ids raise `InvalidInputError` with code
+ * `INVALID_MODULE_ID` (aligned with apcore-python). Duplicate registration
+ * raises `DuplicateModuleIdError` (`DUPLICATE_MODULE_ID`) — a TS-specific
+ * subclass, recorded as a divergence in the task report. These tests assert the
+ * REAL type + code the TS SDK emits.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -91,13 +90,12 @@ function makeEvent(eventType: string): ApCoreEvent {
 describe('ApCoreClient.call', () => {
   it('apcore_client.call.input.module_id.invalid_pattern: malformed module_id rejected', async () => {
     const client = clientWithModule();
-    // TS code is GENERAL_INVALID_INPUT (Python canonical: INVALID_MODULE_ID).
     await expect(client.call('!!not a valid id!!', { a: 1, b: 2 })).rejects.toThrow(
       InvalidInputError,
     );
     await client.call('!!not a valid id!!', { a: 1, b: 2 }).catch((e) => {
       expect(e).toBeInstanceOf(InvalidInputError);
-      expect((e as InvalidInputError).code).toBe('GENERAL_INVALID_INPUT');
+      expect((e as InvalidInputError).code).toBe('INVALID_MODULE_ID');
     });
   });
 
@@ -109,7 +107,7 @@ describe('ApCoreClient.call', () => {
       },
       (e) => {
         expect(e).toBeInstanceOf(InvalidInputError);
-        expect((e as InvalidInputError).code).toBe('GENERAL_INVALID_INPUT');
+        expect((e as InvalidInputError).code).toBe('INVALID_MODULE_ID');
       },
     );
   });
@@ -122,7 +120,7 @@ describe('ApCoreClient.call', () => {
       },
       (e) => {
         expect(e).toBeInstanceOf(InvalidInputError);
-        expect((e as InvalidInputError).code).toBe('GENERAL_INVALID_INPUT');
+        expect((e as InvalidInputError).code).toBe('INVALID_MODULE_ID');
       },
     );
   });
@@ -385,7 +383,7 @@ describe('APCoreClient.stream', () => {
       },
       (e) => {
         expect(e).toBeInstanceOf(InvalidInputError);
-        expect((e as InvalidInputError).code).toBe('GENERAL_INVALID_INPUT');
+        expect((e as InvalidInputError).code).toBe('INVALID_MODULE_ID');
       },
     );
   });
@@ -413,7 +411,7 @@ describe('APCoreClient.stream', () => {
       },
       (e) => {
         expect(e).toBeInstanceOf(InvalidInputError);
-        expect((e as InvalidInputError).code).toBe('GENERAL_INVALID_INPUT');
+        expect((e as InvalidInputError).code).toBe('INVALID_MODULE_ID');
       },
     );
   });
@@ -660,7 +658,7 @@ describe('APCore.module', () => {
       caught = e;
     }
     expect(caught).toBeInstanceOf(InvalidInputError);
-    expect((caught as InvalidInputError).code).toBe('GENERAL_INVALID_INPUT');
+    expect((caught as InvalidInputError).code).toBe('INVALID_MODULE_ID');
   });
 
   it('apcore_client.module.error.duplicate: duplicate id rejected on second registration', () => {
@@ -737,7 +735,7 @@ describe('APCore.register', () => {
       caught = e;
     }
     expect(caught).toBeInstanceOf(InvalidInputError);
-    expect((caught as InvalidInputError).code).toBe('GENERAL_INVALID_INPUT');
+    expect((caught as InvalidInputError).code).toBe('INVALID_MODULE_ID');
   });
 
   it('apcore_client.register.error.INVALID_MODULE_ID: duplicate id rejected on second register', () => {
