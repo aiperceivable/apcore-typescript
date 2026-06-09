@@ -72,6 +72,24 @@ export const CONSTRAINTS: Record<string, [(v: unknown) => boolean, string]> = {
     (v) => typeof v === 'number' && Number.isInteger(v) && v >= 1,
     'must be a positive integer',
   ],
+  // A-D-03: middleware circuit-breaker + sys_modules events thresholds
+  // (config-bus.md "Contract: Config.validate" value-constraints table).
+  'middleware.circuit_breaker.open_threshold': [
+    (v) => typeof v === 'number' && Number.isInteger(v) && v >= 1,
+    'must be a positive integer',
+  ],
+  'middleware.circuit_breaker.recovery_window_ms': [
+    (v) => typeof v === 'number' && v >= 0,
+    'must be a non-negative number (milliseconds)',
+  ],
+  'sys_modules.events.thresholds.error_rate': [
+    (v) => typeof v === 'number' && v >= 0.0 && v <= 1.0,
+    'must be a number in [0.0, 1.0]',
+  ],
+  'sys_modules.events.thresholds.latency_p99_ms': [
+    (v) => typeof v === 'number' && v >= 0,
+    'must be a non-negative number (milliseconds)',
+  ],
 };
 
 // ---------------------------------------------------------------------------
