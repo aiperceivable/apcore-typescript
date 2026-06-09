@@ -6,6 +6,7 @@ import {
   selectBestVersion,
   VersionedStore,
 } from '../../src/registry/version.js';
+import { VersionConstraintError } from '../../src/errors.js';
 
 describe('parseSemver', () => {
   it('returns null for non-semver strings', () => {
@@ -137,8 +138,23 @@ describe('matchesVersionHint', () => {
     expect(matchesVersionHint('2.0.0', '>=1.0.0,<2.0.0')).toBe(false);
   });
 
-  it('returns false for invalid constraint', () => {
-    expect(matchesVersionHint('1.0.0', '')).toBe(false);
+  describe('malformed constraints (A-D-19)', () => {
+    it('throws VersionConstraintError on empty constraint', () => {
+      expect(() => matchesVersionHint('1.0.0', '')).toThrow(VersionConstraintError);
+    });
+
+    it('throws VersionConstraintError on non-digit-leading constraint "latest"', () => {
+      expect(() => matchesVersionHint('1.0.0', 'latest')).toThrow(VersionConstraintError);
+    });
+
+    it('throws VersionConstraintError on non-digit-leading constraint "v1.0"', () => {
+      expect(() => matchesVersionHint('1.0.0', 'v1.0')).toThrow(VersionConstraintError);
+    });
+
+    it('still accepts a valid digit-leading constraint', () => {
+      expect(matchesVersionHint('1.0.0', '>=1.0.0')).toBe(true);
+      expect(matchesVersionHint('1.2.3', '1.2.3')).toBe(true);
+    });
   });
 });
 

@@ -260,7 +260,7 @@ export {
 export type { TaskInfo, TaskStore, ReaperHandle } from './async-task.js';
 
 // Bindings
-export { BindingLoader } from './bindings.js';
+export { BindingLoader, type BindingLoaderOptions } from './bindings.js';
 
 // Utils
 export { matchPattern, calculateSpecificity } from './utils/pattern.js';

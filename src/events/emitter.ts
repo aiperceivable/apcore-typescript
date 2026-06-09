@@ -117,14 +117,23 @@ export class EventEmitter {
       // A subscriber that omits `retry` receives the spec default policy
       // (max_attempts=3); one that explicitly sets maxAttempts:1 disables retry.
       // (event-system.md §Per-Subscriber Retry Policy; sync finding A-D-005)
-      const deliveryPromise = this._deliver(subscriber, event);
       if (this._pending.length >= this._maxPending) {
-        console.warn(
-          `[apcore:events] _pending cap (${this._maxPending}) reached — dropping async delivery for event ${event.eventType}`,
-        );
-        this._dispatchDroppedEvent(subscriber, event);
+        // A-D-06: the pending buffer is full. The event was accepted by emit(),
+        // so it MUST NOT be silently discarded (event-system.md §Overflow). Route
+        // the affected delivery through the dead-letter path with
+        // reason: "pending_overflow" instead of a log-only drop. `maxPending`
+        // remains a legitimate memory bound — we just fail through the DLQ.
+        const overflowPromise = this._emitOverflowDLQ(subscriber, event);
+        const tracked = overflowPromise.catch(() => {
+          // DLQ subscriber errors handled inside _emitOverflowDLQ
+        });
+        this._pending.push(tracked);
+        tracked.then(() => {
+          const idx = this._pending.indexOf(tracked);
+          if (idx !== -1) this._pending.splice(idx, 1);
+        });
       } else {
-        const tracked = deliveryPromise.catch(() => {
+        const tracked = this._deliver(subscriber, event).catch(() => {
           // errors handled inside _deliver
         });
         this._pending.push(tracked);
@@ -177,11 +186,31 @@ export class EventEmitter {
     }
   }
 
+  /**
+   * Route an overflowed delivery through the dead-letter path (A-D-06).
+   *
+   * When the pending buffer is at capacity, the affected delivery cannot be
+   * tracked normally, so instead of dropping it we emit
+   * `apcore.event.delivery_failed` with `reason: "pending_overflow"`. This keeps
+   * the "accepted events are never silently lost" guarantee while preserving
+   * `maxPending` as a memory bound (event-system.md §Overflow, normative).
+   */
+  private async _emitOverflowDLQ(
+    subscriber: EventSubscriber,
+    originalEvent: ApCoreEvent,
+  ): Promise<void> {
+    const error = new Error(
+      `pending buffer at capacity (${this._maxPending}) — delivery routed to dead-letter`,
+    );
+    await this._emitDLQ(subscriber, originalEvent, error, 0, 'pending_overflow');
+  }
+
   private async _emitDLQ(
     subscriber: EventSubscriber,
     originalEvent: ApCoreEvent,
     error: Error,
     attemptCount: number,
+    reason?: string,
   ): Promise<void> {
     // A-D-029: prefer the declared `subscriberType` field; fall back to the
     // constructor-name derivation only when it is absent.
@@ -211,6 +240,8 @@ export class EventEmitter {
         error: { type: error.constructor?.name ?? 'Error', message: error.message },
         attempt_count: attemptCount,
         timestamp: new Date().toISOString(),
+        // A-D-06: present only on pending-buffer overflow ("pending_overflow").
+        ...(reason !== undefined ? { reason } : {}),
       },
     );
 
@@ -225,43 +256,6 @@ export class EventEmitter {
         }
       } catch (dlqErr) {
         console.error('[apcore:events] DLQ subscriber raised:', dlqErr);
-      }
-    }
-  }
-
-  /**
-   * Synchronously dispatch an `apcore.subscriber.delivery_dropped` event to all
-   * subscribers (except the one whose delivery was dropped, to avoid feedback
-   * loops). Sync emit only — never tracked in `_pending`. (sync finding A-D-504)
-   */
-  private _dispatchDroppedEvent(
-    droppedFor: EventSubscriber,
-    originalEvent: ApCoreEvent,
-  ): void {
-    const droppedEvent = createEvent(
-      'apcore.subscriber.delivery_dropped',
-      null,
-      'warning',
-      {
-        subscriber_id: this._identifySubscriber(droppedFor),
-        event_type: originalEvent.eventType,
-        original_module_id: originalEvent.moduleId,
-      },
-    );
-    for (const sub of this._subscribers) {
-      if (sub === droppedFor) continue;
-      try {
-        const r = sub.onEvent(droppedEvent);
-        // Intentionally do not track this Promise in _pending — at-cap by design.
-        // Async handlers swallow their own errors; attach a guard so unhandled
-        // rejections don't escape.
-        if (r instanceof Promise) {
-          r.catch((err) => {
-            console.warn('[apcore:events] Subscriber failed handling delivery_dropped:', err);
-          });
-        }
-      } catch (err) {
-        console.warn('[apcore:events] Subscriber failed handling delivery_dropped:', err);
       }
     }
   }

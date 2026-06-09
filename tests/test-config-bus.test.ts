@@ -280,10 +280,18 @@ describe('Config.getTyped', () => {
     expect(result).toBe(5000);
   });
 
-  it('throws ConfigError when path is missing', () => {
+  it('throws ConfigBindError (CONFIG_BIND_ERROR) when path is missing', () => {
     const cfg = new Config({});
     expect(() => cfg.getTyped('missing.path', (v) => v))
-      .toThrow(ConfigError);
+      .toThrow(ConfigBindError);
+    expect(() => cfg.getTyped('missing.path', (v) => v))
+      .toThrowError(expect.objectContaining({ code: 'CONFIG_BIND_ERROR' }));
+  });
+
+  it('treats a null-valued key as missing and throws ConfigBindError', () => {
+    const cfg = new Config({ nullable: null });
+    expect(() => cfg.getTyped('nullable', (v) => v))
+      .toThrow(ConfigBindError);
   });
 });
 

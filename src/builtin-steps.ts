@@ -313,10 +313,15 @@ export class BuiltinApprovalGate implements Step {
 
     if ('_approval_token' in ctx.inputs) {
       const rawToken = ctx.inputs['_approval_token'];
-      const token = typeof rawToken === 'string' ? rawToken : String(rawToken ?? '');
+      // Security gate: reject a non-string token before it reaches the handler
+      // instead of coercing it (mirrors Python/Rust rejecting with
+      // GENERAL_INVALID_INPUT — the safest cross-language behavior).
+      if (typeof rawToken !== 'string') {
+        throw new InvalidInputError('_approval_token must be a string');
+      }
       const { _approval_token: _, ...rest } = ctx.inputs;
       cleanInputs = rest;
-      result = await this._handler.checkApproval(token);
+      result = await this._handler.checkApproval(rawToken);
     } else {
       const annotations = mod['annotations'];
       let ann: ModuleAnnotations;
@@ -600,8 +605,17 @@ export class BuiltinExecute implements Step {
    * the other SDKs.
    */
   private _readModuleTimeoutMs(mod: Record<string, unknown>): number | null {
-    const readNumber = (val: unknown): number | null =>
-      typeof val === 'number' && Number.isFinite(val) && val >= 0 ? val : null;
+    // A declared numeric timeout is honoured; a declared NEGATIVE timeout is an
+    // invalid input and MUST raise GENERAL_INVALID_INPUT (spec Edge Cases;
+    // parity with apcore-python builtin_steps.py:620). A non-numeric / absent
+    // value is treated as "not declared" → null (caller falls back to default).
+    const readNumber = (val: unknown): number | null => {
+      if (typeof val !== 'number' || !Number.isFinite(val)) return null;
+      if (val < 0) {
+        throw new InvalidInputError(`Negative timeout: ${val}`);
+      }
+      return val;
+    };
 
     const directResources = mod['resources'];
     if (directResources != null && typeof directResources === 'object') {

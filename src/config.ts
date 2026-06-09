@@ -72,6 +72,24 @@ export const CONSTRAINTS: Record<string, [(v: unknown) => boolean, string]> = {
     (v) => typeof v === 'number' && Number.isInteger(v) && v >= 1,
     'must be a positive integer',
   ],
+  // A-D-03: middleware circuit-breaker + sys_modules events thresholds
+  // (config-bus.md "Contract: Config.validate" value-constraints table).
+  'middleware.circuit_breaker.open_threshold': [
+    (v) => typeof v === 'number' && Number.isInteger(v) && v >= 1,
+    'must be a positive integer',
+  ],
+  'middleware.circuit_breaker.recovery_window_ms': [
+    (v) => typeof v === 'number' && v >= 0,
+    'must be a non-negative number (milliseconds)',
+  ],
+  'sys_modules.events.thresholds.error_rate': [
+    (v) => typeof v === 'number' && v >= 0.0 && v <= 1.0,
+    'must be a number in [0.0, 1.0]',
+  ],
+  'sys_modules.events.thresholds.latency_p99_ms': [
+    (v) => typeof v === 'number' && v >= 0,
+    'must be a non-negative number (milliseconds)',
+  ],
 };
 
 // ---------------------------------------------------------------------------
@@ -187,6 +205,14 @@ function coerceEnvValue(value: string): unknown {
 export function applyEnvOverrides(data: Record<string, unknown>): Record<string, unknown> {
   const result = JSON.parse(JSON.stringify(data)) as Record<string, unknown>;
   const env = process.env;
+  // Global env_map (bare env var → dotted config path) applies in legacy mode
+  // too, mirroring apcore-python config.py:259 which consults _GLOBAL_ENV_MAP
+  // in the legacy env-override path before the APCORE_ prefix scan.
+  for (const [envVar, configKey] of _globalEnvMap.entries()) {
+    const envValue = env[envVar];
+    if (envValue === undefined) continue;
+    setNested(result, configKey, coerceEnvValue(envValue));
+  }
   for (const [envKey, envValue] of Object.entries(env)) {
     if (!envKey.startsWith(ENV_PREFIX) || envValue === undefined) continue;
     const suffix = envKey.slice(ENV_PREFIX.length);
@@ -831,12 +857,14 @@ export class Config {
   /**
    * Typed get with coercion and validation.
    * Applies the coerce function to the raw value and returns the result.
-   * Throws ConfigError if the raw value is undefined.
+   * Throws ConfigBindError (CONFIG_BIND_ERROR) if the value is missing.
+   * Both `undefined` (absent key) and a stored `null` are treated as missing,
+   * mirroring Python/Rust (`if value is None`).
    */
   getTyped<T>(path: string, coerce: (v: unknown) => T): T {
     const value = this.get(path);
-    if (value === undefined) {
-      throw new ConfigError(`Missing required config path: '${path}'`);
+    if (value === undefined || value === null) {
+      throw new ConfigBindError(`No value at path '${path}'`);
     }
     return coerce(value);
   }

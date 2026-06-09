@@ -103,6 +103,44 @@ describe('BindingLoader', () => {
     });
   });
 
+  describe('trustedPackagePrefixes allowlist (A-D-10)', () => {
+    it('rejects a target outside the allowlist before importing', async () => {
+      // Write a module that WOULD import successfully if import() were reached.
+      const modPath = writeTempModule(
+        'allowlist_outside.mjs',
+        'export function greet() { return "hello"; }\n',
+      );
+      // Allowlist only permits "@trusted/" packages; the temp file path does
+      // not match, so resolveTarget must reject BEFORE the dynamic import.
+      const guarded = new BindingLoader({ trustedPackagePrefixes: ['@trusted/'] });
+      await expect(guarded.resolveTarget(`${modPath}:greet`)).rejects.toThrow(
+        BindingInvalidTargetError,
+      );
+    });
+
+    it('allows a target matching an allowed prefix', async () => {
+      const modPath = writeTempModule(
+        'allowlist_inside.mjs',
+        'export function greet() { return "ok"; }\n',
+      );
+      // Use the module's own absolute path as the allowed prefix so the import
+      // proceeds and resolves the function.
+      const guarded = new BindingLoader({ trustedPackagePrefixes: [modPath] });
+      const fn = await guarded.resolveTarget(`${modPath}:greet`);
+      expect(typeof fn).toBe('function');
+      expect(fn()).toBe('ok');
+    });
+
+    it('preserves back-compat: no allowlist permits any importable target', async () => {
+      const modPath = writeTempModule(
+        'allowlist_unset.mjs',
+        'export function greet() { return "any"; }\n',
+      );
+      const fn = await loader.resolveTarget(`${modPath}:greet`);
+      expect(fn()).toBe('any');
+    });
+  });
+
   describe('loadBindings', () => {
     it('throws BindingFileInvalidError for non-existent file', async () => {
       await expect(
@@ -123,6 +161,20 @@ describe('BindingLoader', () => {
     it('throws BindingFileInvalidError for missing bindings key', async () => {
       const yamlPath = writeTempYaml('nokey.binding.yaml', 'other_key: value\n');
       await expect(loader.loadBindings(yamlPath, registry)).rejects.toThrow(BindingFileInvalidError);
+    });
+
+    it('throws BindingFileInvalidError when the top-level root is a list', async () => {
+      const yamlPath = writeTempYaml('rootlist.binding.yaml', '- one\n- two\n');
+      await expect(loader.loadBindings(yamlPath, registry)).rejects.toThrow(
+        /Top-level must be a mapping/,
+      );
+    });
+
+    it('throws BindingFileInvalidError when the top-level root is a scalar', async () => {
+      const yamlPath = writeTempYaml('rootscalar.binding.yaml', 'just-a-string\n');
+      await expect(loader.loadBindings(yamlPath, registry)).rejects.toThrow(
+        /Top-level must be a mapping/,
+      );
     });
 
     it('throws BindingFileInvalidError for non-array bindings value', async () => {

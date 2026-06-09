@@ -94,12 +94,12 @@ export class UpdateConfigModule {
     const safeOld = isSensitive ? '***' : oldValue;
     const safeNew = isSensitive ? '***' : value;
 
-    if (this._overridesPath !== null) {
-      this._persistOverride(key, value);
-    }
-
+    // Store-XOR-path precedence (Python/Rust parity, matches toggle.ts): the
+    // pluggable store takes precedence over the legacy YAML path; never both.
     if (this._overridesStore !== null) {
       this._persistOverrideToStore(key, value);
+    } else if (this._overridesPath !== null) {
+      this._persistOverride(key, value);
     }
 
     const entry = buildAuditEntry('update_config', 'system.control.update_config', ctx, { before: safeOld, after: safeNew });

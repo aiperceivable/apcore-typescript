@@ -56,20 +56,31 @@ describe('multi-module-discovery spec contract', () => {
   // =========================================================================
   // RETURN / single-class identity guarantee
   // =========================================================================
-  it('multi_module_discovery.discover_multi_class.return.single_class_identity: single class -> bare base_id', () => {
-    // Python: one class always yields the bare base_id (no class segment).
-    // TS-actual: identity is only preserved when the class segment matches the
-    // file's last path segment. "Addition" != "math_ops", so TS APPENDS the
-    // segment -> "math.math_ops.addition". We assert TS-actual.
-    const result = discoverMultiClass(
+  it('multi_module_discovery.discover_multi_class.return.single_class_identity: single class -> bare base_id (A-D-20)', () => {
+    // A single qualifying class ALWAYS yields the bare base_id (no class
+    // segment), even when the class name differs from the file stem. This
+    // matches Python multi_class.py:143 and Rust derive_module_ids.
+    // "Addition" != stem "math_ops", yet the result must be the bare base_id.
+    const enabled = discoverMultiClass(
       'extensions/math/math_ops.ts',
       descriptors('Addition'),
       'extensions',
       true,
     );
-    expect(result).toHaveLength(1);
-    expect(result[0].moduleId).toBe('math.math_ops.addition');
-    expect(result[0].className).toBe('Addition');
+    expect(enabled).toHaveLength(1);
+    expect(enabled[0].moduleId).toBe('math.math_ops');
+    expect(enabled[0].className).toBe('Addition');
+
+    // Same guarantee with multi-class mode disabled.
+    const disabled = discoverMultiClass(
+      'extensions/math/math_ops.ts',
+      descriptors('Addition'),
+      'extensions',
+      false,
+    );
+    expect(disabled).toHaveLength(1);
+    expect(disabled[0].moduleId).toBe('math.math_ops');
+    expect(disabled[0].className).toBe('Addition');
   });
 
   it('multi_module_discovery.discover_multi_class.return.two_class_distinct_ids: two classes -> distinct suffixed IDs', () => {

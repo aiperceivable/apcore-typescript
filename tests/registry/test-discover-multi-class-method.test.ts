@@ -189,28 +189,17 @@ describe('discoverMultiClass — edge branches', () => {
     expect(result).toEqual([{ moduleId: 'email.sender', className: 'A' }]);
   });
 
-  it('throws InvalidSegmentError for a single class whose segment is not a valid identifier', () => {
-    expect(() =>
-      discoverMultiClass(
-        'extensions/email/sender.ts',
-        [{ name: '__', implementsModule: true }],
-        'extensions',
-        true,
-      ),
-    ).toThrow(InvalidSegmentError);
-  });
-
-  it('throws IdTooLongError for a single class whose appended id exceeds 192 chars', () => {
-    const longSegment = 'a'.repeat(220);
-    const filePath = `extensions/${longSegment}/file.ts`;
-    expect(() =>
-      discoverMultiClass(
-        filePath,
-        [{ name: 'Other', implementsModule: true }],
-        'extensions',
-        true,
-      ),
-    ).toThrow(IdTooLongError);
+  it('returns bare base_id for a single class regardless of its name (A-D-20)', () => {
+    // Single-class identity guarantee: no class segment is derived or validated,
+    // so a class name that would snake_case to an invalid segment is irrelevant.
+    // Matches Python multi_class.py:143 / Rust derive_module_ids.
+    const result = discoverMultiClass(
+      'extensions/email/sender.ts',
+      [{ name: '__', implementsModule: true }],
+      'extensions',
+      true,
+    );
+    expect(result).toEqual([{ moduleId: 'email.sender', className: '__' }]);
   });
 
   it('throws ModuleIdConflictError when two classes derive the same segment', () => {

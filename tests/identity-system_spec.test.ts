@@ -250,3 +250,20 @@ describe('identity-system contract: ContextFactory.create_context', () => {
     expect(typeof (notAFactory as Partial<ContextFactory>).createContext).not.toBe('function');
   });
 });
+
+describe('Identity.getAttr null-preservation (D-03)', () => {
+  it('returns a stored null instead of the default', () => {
+    const ident = createIdentity('u-1', 'user', [], { maybe: null });
+    expect(ident.getAttr('maybe', 'fallback')).toBeNull();
+  });
+
+  it('returns the default for an absent key', () => {
+    const ident = createIdentity('u-1', 'user', [], {});
+    expect(ident.getAttr('missing', 'fallback')).toBe('fallback');
+  });
+
+  it('returns a stored value as-is', () => {
+    const ident = createIdentity('u-1', 'user', [], { dept: 'eng' });
+    expect(ident.getAttr('dept', 'fallback')).toBe('eng');
+  });
+});

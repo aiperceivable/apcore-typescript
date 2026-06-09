@@ -180,47 +180,46 @@ describe('EventEmitter', () => {
     expect(round2Done).toBe(false);
   });
 
-  it('emits delivery_dropped event instead of silently dropping when _pending cap is reached (sync A-D-504)', async () => {
-    const warnMessages: string[] = [];
-    const origWarn = console.warn;
-    console.warn = (...args: unknown[]) => { warnMessages.push(String(args[0])); };
+  it('routes overflow through the DLQ (reason "pending_overflow") instead of silently dropping when _pending cap is reached (A-D-06)', async () => {
+    const emitter = new EventEmitter(2); // cap of 2
+    let resolved = 0;
+    // Subscriber that holds 50ms async delivery
+    const slowSubscriber: EventSubscriber = {
+      subscriberId: 'slow',
+      eventPattern: 'test_event',
+      retry: { maxAttempts: 1 }, // single attempt — isolate cap behavior from retry
+      onEvent: () => new Promise<void>((r) => setTimeout(() => { resolved++; r(); }, 50)),
+    };
+    emitter.subscribe(slowSubscriber);
 
-    try {
-      const emitter = new EventEmitter(2); // cap of 2
-      let resolved = 0;
-      // Subscriber that holds 50ms async delivery
-      const slowSubscriber: EventSubscriber = {
-        eventPattern: 'test_event',
-        retry: { maxAttempts: 1 }, // single attempt — isolate cap behavior from retry
-        onEvent: () => new Promise<void>((r) => setTimeout(() => { resolved++; r(); }, 50)),
-      };
-      emitter.subscribe(slowSubscriber);
+    // DLQ observer: explicitly scoped (non-wildcard) so it receives the
+    // dead-letter event per A-D-026. The DLQ emission is tracked in _pending,
+    // but its delivery to this synchronous observer completes promptly.
+    const dlqEvents: ApCoreEvent[] = [];
+    emitter.subscribe({
+      eventPattern: 'apcore.event.delivery_failed',
+      onEvent: (e) => { dlqEvents.push(e); },
+    });
 
-      // Drop-event observer: only receives delivery_dropped events (dispatched synchronously,
-      // never tracked in _pending), so it does not consume any of the cap=2 budget.
-      const droppedEvents: ApCoreEvent[] = [];
-      emitter.subscribe({
-        eventPattern: 'apcore.subscriber.delivery_dropped',
-        onEvent: (e) => { droppedEvents.push(e); },
-      });
+    // First two slow subscriber promises occupy _pending (cap=2).
+    emitter.emit(createEvent('test_event', null, 'info', {}));
+    emitter.emit(createEvent('test_event', null, 'info', {}));
+    // Third triggers overflow on the slow subscriber — expect a DLQ event,
+    // NOT a silent drop.
+    emitter.emit(createEvent('test_event', null, 'info', { round: 3 }));
 
-      // First two slow subscriber promises occupy _pending (cap=2).
-      emitter.emit(createEvent('test_event', null, 'info', {}));
-      emitter.emit(createEvent('test_event', null, 'info', {}));
-      // Third triggers drop on the slow subscriber — expect a structured event.
-      emitter.emit(createEvent('test_event', null, 'info', { round: 3 }));
+    // Let the synchronous DLQ emission settle.
+    await Promise.resolve();
+    await Promise.resolve();
 
-      expect(droppedEvents.length).toBeGreaterThan(0);
-      const dropped = droppedEvents[0];
-      expect(dropped.severity).toBe('warning');
-      expect(dropped.data['event_type']).toBe('test_event');
-      expect(dropped.data['subscriber_id']).toBeTruthy();
+    expect(dlqEvents.length).toBeGreaterThan(0);
+    const dlq = dlqEvents[0];
+    expect(dlq.eventType).toBe('apcore.event.delivery_failed');
+    expect(dlq.data['reason']).toBe('pending_overflow');
+    expect(dlq.data['subscriber_id']).toBe('slow');
 
-      await emitter.flush();
-      expect(resolved).toBe(2); // only 2 tracked, 1 dropped — but as a visible event
-    } finally {
-      console.warn = origWarn;
-    }
+    await emitter.flush();
+    expect(resolved).toBe(2); // only 2 tracked-and-delivered; the 3rd failed through the DLQ
   });
 
   it('flush defaults to a finite 5000ms deadline rather than 0=infinite (sync A-D-503)', async () => {

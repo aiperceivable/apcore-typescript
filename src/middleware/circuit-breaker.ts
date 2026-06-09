@@ -2,7 +2,7 @@
  * CircuitBreakerMiddleware — per-(module_id, caller_id) rolling-window circuit breaker (Issue #42).
  *
  * State machine:
- *   CLOSED  → (error_rate >= open_threshold, window full) → OPEN
+ *   CLOSED  → (error_rate >= open_threshold, samples >= min_samples) → OPEN
  *   OPEN    → (recovery_window_ms elapsed)                → HALF_OPEN
  *   HALF_OPEN → (probe success)                           → CLOSED  (emits apcore.circuit.closed)
  *   HALF_OPEN → (probe failure)                           → OPEN    (emits apcore.circuit.opened)
@@ -65,8 +65,13 @@ export interface CircuitBreakerOptions {
   openThreshold?: number;
   /** Milliseconds before OPEN transitions to HALF_OPEN. Default: 30000 */
   recoveryWindowMs?: number;
-  /** Number of recent calls tracked in the rolling window. Default: 10 */
+  /** Number of recent calls tracked in the rolling window. Default: 20 */
   windowSize?: number;
+  /**
+   * Minimum number of observations in the window before the circuit may open.
+   * Decoupled from windowSize for parity with Python/Rust. Default: 5
+   */
+  minSamples?: number;
   /** Optional EventEmitter to receive circuit state-change events. */
   emitter?: { emit(event: ApCoreEvent): void };
   /** Middleware priority (0–1000). Default: 100 */
@@ -77,6 +82,7 @@ export class CircuitBreakerMiddleware extends Middleware {
   private readonly _openThreshold: number;
   private readonly _recoveryWindowMs: number;
   private readonly _windowSize: number;
+  private readonly _minSamples: number;
   private readonly _emitter: { emit(event: ApCoreEvent): void } | null;
   private readonly _circuits = new Map<string, CircuitRecord>();
 
@@ -84,7 +90,8 @@ export class CircuitBreakerMiddleware extends Middleware {
     super(options.priority ?? 100);
     this._openThreshold = options.openThreshold ?? 0.5;
     this._recoveryWindowMs = options.recoveryWindowMs ?? 30000;
-    this._windowSize = options.windowSize ?? 10;
+    this._windowSize = options.windowSize ?? 20;
+    this._minSamples = options.minSamples ?? 5;
     this._emitter = options.emitter ?? null;
   }
 
@@ -212,7 +219,7 @@ export class CircuitBreakerMiddleware extends Middleware {
       context.data[CTX_CIRCUIT_STATE] = CircuitBreakerState.OPEN;
     } else if (record.state === CircuitBreakerState.CLOSED) {
       if (
-        record.window.length >= this._windowSize &&
+        record.window.length >= this._minSamples &&
         record.window.errorRate >= this._openThreshold
       ) {
         this._openCircuit(moduleId, callerId, record);
