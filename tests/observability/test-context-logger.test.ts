@@ -63,6 +63,24 @@ describe('ContextLogger', () => {
     expect(parsed.extra._secret_token).toBe('abc123');
   });
 
+  it('redacts a configured sensitive key (e.g. password) in extra', () => {
+    const { output, lines } = createBufferOutput();
+    const logger = new ContextLogger({ output });
+    logger.info('login', { password: 'x', user: 'bob' });
+    const parsed = JSON.parse(lines[0]);
+    expect(parsed.extra.password).toBe('***REDACTED***');
+    expect(parsed.extra.user).toBe('bob');
+  });
+
+  it('redacts a configured sensitive key nested inside extra', () => {
+    const { output, lines } = createBufferOutput();
+    const logger = new ContextLogger({ output });
+    logger.info('login', { creds: { password: 'x', user: 'bob' } });
+    const parsed = JSON.parse(lines[0]);
+    expect(parsed.extra.creds.password).toBe('***REDACTED***');
+    expect(parsed.extra.creds.user).toBe('bob');
+  });
+
   it('redacts _secret_ keys nested inside objects', () => {
     const { output, lines } = createBufferOutput();
     const logger = new ContextLogger({ output });

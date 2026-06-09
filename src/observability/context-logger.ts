@@ -20,6 +20,13 @@ import { Middleware } from '../middleware/base.js';
  * `apiKey` is kept alongside `api_key` / `apikey` for camelCase parity
  * because TypeScript's `matchPattern` is case-sensitive.
  */
+/**
+ * Maximum recursion depth for nested redaction. Matches the spec's schema
+ * validation depth limit (32) so the redactor can never run away on a
+ * deeply-nested or cyclic structure.
+ */
+const MAX_REDACTION_DEPTH = 32;
+
 export const DEFAULT_REDACTION_FIELD_PATTERNS: readonly string[] = [
   '_secret_*',
   'password',
@@ -218,6 +225,15 @@ export class RedactionConfig {
     });
   }
 
+  /**
+   * Default redaction config so callers that don't supply one still get the
+   * standard sensitive-key redaction (`_secret_*`, password, token, …).
+   * Mirrors apcore-python's `RedactionConfig.default()`.
+   */
+  static default(): RedactionConfig {
+    return new RedactionConfig({ fieldPatterns: [...DEFAULT_REDACTION_FIELD_PATTERNS] });
+  }
+
   /** Apply redaction rules to a flat object of field name → value. */
   apply(obj: Record<string, unknown>): Record<string, unknown> {
     const result: Record<string, unknown> = {};
@@ -229,6 +245,26 @@ export class RedactionConfig {
       }
     }
     return result;
+  }
+
+  /**
+   * Recursively redact a value: any key matching a sensitive-key pattern is
+   * replaced; nested objects and arrays are descended (depth-bounded). Mirrors
+   * apcore-python's `_redact_secrets_recursive`.
+   */
+  redact(value: unknown, depth: number = 0): unknown {
+    if (depth > MAX_REDACTION_DEPTH) return value;
+    if (Array.isArray(value)) {
+      return value.map((item) => this.redact(item, depth + 1));
+    }
+    if (value !== null && typeof value === 'object') {
+      const result: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+        result[k] = this._shouldRedact(k, v) ? this.replacement : this.redact(v, depth + 1);
+      }
+      return result;
+    }
+    return value;
   }
 
   private _shouldRedact(fieldName: string, value: unknown): boolean {
@@ -279,19 +315,6 @@ const LEVELS: Record<string, number> = {
   fatal: 50,
 };
 
-const REDACTED = '***REDACTED***';
-
-function deepRedact(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(deepRedact);
-  if (value !== null && typeof value === 'object') {
-    const result: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      result[k] = k.startsWith('_secret_') ? REDACTED : deepRedact(v);
-    }
-    return result;
-  }
-  return value;
-}
 
 interface WritableOutput {
   write(s: string): void;
@@ -303,6 +326,7 @@ export class ContextLogger {
   private _level: string;
   private _levelValue: number;
   private _redactSensitive: boolean;
+  private _redaction: RedactionConfig;
   private _output: WritableOutput;
   private _traceId: string | null = null;
   private _moduleId: string | null = null;
@@ -313,6 +337,7 @@ export class ContextLogger {
     format?: string;
     level?: string;
     redactSensitive?: boolean;
+    redaction?: RedactionConfig;
     output?: WritableOutput;
   }) {
     this._name = options?.name ?? 'apcore';
@@ -320,6 +345,10 @@ export class ContextLogger {
     this._level = options?.level ?? 'info';
     this._levelValue = LEVELS[this._level] ?? 20;
     this._redactSensitive = options?.redactSensitive ?? true;
+    // Config-driven redaction. When no explicit config is supplied, fall back
+    // to the default sensitive-key set so legacy callers still get `_secret_*`
+    // (and the standard keys: password, token, …) redacted out of the box.
+    this._redaction = options?.redaction ?? RedactionConfig.default();
     // Default output uses console.error for universal compatibility (Node.js + browser)
     this._output = options?.output ?? { write: (s: string) => console.error(s) };
   }
@@ -331,6 +360,7 @@ export class ContextLogger {
       format?: string;
       level?: string;
       redactSensitive?: boolean;
+      redaction?: RedactionConfig;
       output?: WritableOutput;
     },
   ): ContextLogger {
@@ -348,7 +378,7 @@ export class ContextLogger {
 
     let redactedExtra = extra ?? null;
     if (extra != null && this._redactSensitive) {
-      redactedExtra = deepRedact(extra) as Record<string, unknown>;
+      redactedExtra = this._redaction.redact(extra) as Record<string, unknown>;
     }
 
     const now = new Date();
