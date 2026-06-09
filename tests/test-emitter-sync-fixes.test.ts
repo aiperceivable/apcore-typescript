@@ -3,6 +3,8 @@
  *   A-D-028 — emit() is a no-op after shutdown().
  *   A-D-026 — DLQ events are not delivered to catch-all ('*'/no-pattern) subscribers.
  *   A-D-029 — DLQ subscriber_type comes from a declared subscriberType field.
+ *   A-D-06  — pending-buffer overflow routes through the DLQ (reason: "pending_overflow"),
+ *             never a silent console.warn drop.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -117,5 +119,57 @@ describe('DLQ subscriber_type from declared field (A-D-029)', () => {
 
     expect(dlq).toHaveLength(1);
     expect(dlq[0].data['subscriber_type']).toBe('my-custom-kind');
+  });
+});
+
+describe('pending-buffer overflow routes through DLQ (A-D-06)', () => {
+  it('emits apcore.event.delivery_failed with reason "pending_overflow" on overflow', async () => {
+    // maxPending=1 so the second tracked delivery in a single emit() overflows.
+    const emitter = new EventEmitter(1);
+    const dlq: ApCoreEvent[] = [];
+    // DLQ recorder scoped explicitly so it receives the dead-letter event.
+    emitter.subscribe({
+      eventPattern: 'apcore.event.delivery_failed',
+      onEvent: (e) => {
+        dlq.push(e);
+      },
+    });
+
+    // A subscriber whose delivery never settles, so its tracked promise stays
+    // in _pending and fills the buffer to capacity.
+    let release: (() => void) | undefined;
+    const blocker = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    emitter.subscribe({
+      subscriberId: 'slow-1',
+      eventPattern: 'test.overflow',
+      async onEvent() {
+        await blocker;
+      },
+    });
+    // A second subscriber whose delivery would push _pending past maxPending.
+    emitter.subscribe({
+      subscriberId: 'slow-2',
+      eventPattern: 'test.overflow',
+      async onEvent() {
+        await blocker;
+      },
+    });
+
+    emitter.emit(createEvent('test.overflow', null, 'info', {}));
+
+    // The overflowed delivery must be routed through the DLQ, NOT silently dropped.
+    // Allow the synchronous DLQ emission microtasks to settle.
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(dlq).toHaveLength(1);
+    expect(dlq[0].eventType).toBe('apcore.event.delivery_failed');
+    expect(dlq[0].data['reason']).toBe('pending_overflow');
+    expect(dlq[0].data['subscriber_id']).toBe('slow-2');
+
+    if (release) release();
+    await emitter.flush();
   });
 });
