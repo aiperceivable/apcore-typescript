@@ -11,6 +11,33 @@ import {
   ReloadFailedError,
 } from '../src/errors.js';
 import type { ApCoreEvent } from '../src/events/emitter.js';
+import { InMemoryOverridesStore } from '../src/sys-modules/overrides.js';
+import { mkdtempSync, existsSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+
+describe('UpdateConfigModule store-XOR-path precedence', () => {
+  it('writes only the store when both store and path are configured', () => {
+    const config = new Config({ some: { name: 'value' } });
+    const emitter = new EventEmitter();
+    const store = new InMemoryOverridesStore();
+    const tmpDir = mkdtempSync(join(tmpdir(), 'apcore-control-'));
+    const overridesPath = join(tmpDir, 'overrides.yaml');
+    try {
+      const mod = new UpdateConfigModule(config, emitter, {
+        overridesStore: store,
+        overridesPath,
+      });
+      mod.execute({ key: 'some.name', value: 'updated', reason: 'testing' }, null);
+
+      // Store takes precedence; the legacy path file must NOT be written.
+      expect(store.load()['some.name']).toBe('updated');
+      expect(existsSync(overridesPath)).toBe(false);
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+});
 
 describe('UpdateConfigModule', () => {
   let config: Config;
