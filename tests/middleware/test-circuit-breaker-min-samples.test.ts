@@ -6,6 +6,10 @@
  * capacity. The TypeScript implementation previously gated opening on a FULL
  * window (`length >= windowSize`, default 10), so it never opened on the spec's
  * minimum-sample boundary. These tests guard the corrected behavior.
+ *
+ * The constructor also validates `open_threshold` in [0,1] and `window_size >= 1`
+ * and clamps `min_samples` down to `window_size` (parity with Python/Rust), so a
+ * breaker can always eventually open.
  */
 import { describe, expect, it } from 'vitest';
 import { Context } from '../../src/context.js';
@@ -51,15 +55,41 @@ describe('CircuitBreaker min_samples (A-D-05)', () => {
     expect(cb.getState(moduleId, 'caller')).toBe(CircuitBreakerState.CLOSED);
   });
 
-  it('defaults windowSize to 20 for parity with Python/Rust', () => {
+  it('clamps min_samples down to window_size so the breaker can still open', () => {
+    // min_samples (100) exceeds window_size (default 20): Python/Rust clamp
+    // min_samples to window_size, otherwise the breaker could never open.
     const cb = new CircuitBreakerMiddleware({ minSamples: 100 });
     const ctx = new Context('trace', 'caller', []);
     const moduleId = 'executor.payment.charge';
 
-    // 20 errors fill the default window but never reach min_samples=100,
-    // so the circuit must remain CLOSED. (Confirms default capacity is 20.)
+    // After window_size (20) failures the window is full and min_samples is
+    // clamped to 20, so the circuit OPENS.
     driveErrors(cb, moduleId, ctx, 20);
 
-    expect(cb.getState(moduleId, 'caller')).toBe(CircuitBreakerState.CLOSED);
+    expect(cb.getState(moduleId, 'caller')).toBe(CircuitBreakerState.OPEN);
+  });
+
+  it('clamps min_samples to a smaller windowSize and opens after windowSize failures', () => {
+    const cb = new CircuitBreakerMiddleware({ windowSize: 3 });
+    const ctx = new Context('trace', 'caller', []);
+    const moduleId = 'executor.payment.charge';
+
+    // Default minSamples=5 > windowSize=3 → clamped to 3; opens after 3 failures.
+    driveErrors(cb, moduleId, ctx, 3);
+
+    expect(cb.getState(moduleId, 'caller')).toBe(CircuitBreakerState.OPEN);
+  });
+
+  it('throws on an out-of-range openThreshold', () => {
+    expect(() => new CircuitBreakerMiddleware({ openThreshold: 1.5 })).toThrow(
+      /open_threshold/,
+    );
+    expect(() => new CircuitBreakerMiddleware({ openThreshold: -0.1 })).toThrow(
+      /open_threshold/,
+    );
+  });
+
+  it('throws on a window_size below 1', () => {
+    expect(() => new CircuitBreakerMiddleware({ windowSize: 0 })).toThrow(/window_size/);
   });
 });

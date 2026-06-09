@@ -88,10 +88,37 @@ export class CircuitBreakerMiddleware extends Middleware {
 
   constructor(options: CircuitBreakerOptions = {}) {
     super(options.priority ?? 100);
-    this._openThreshold = options.openThreshold ?? 0.5;
-    this._recoveryWindowMs = options.recoveryWindowMs ?? 30000;
-    this._windowSize = options.windowSize ?? 20;
-    this._minSamples = options.minSamples ?? 5;
+    const openThreshold = options.openThreshold ?? 0.5;
+    const recoveryWindowMs = options.recoveryWindowMs ?? 30000;
+    const windowSize = options.windowSize ?? 20;
+    let minSamples = options.minSamples ?? 5;
+
+    // Constructor validation + clamp — mirrors Python circuit_breaker.py:90-105.
+    if (!(openThreshold >= 0.0 && openThreshold <= 1.0)) {
+      throw new Error(`open_threshold must be in [0.0, 1.0], got ${openThreshold}`);
+    }
+    if (recoveryWindowMs < 0) {
+      throw new Error(`recovery_window_ms must be >= 0, got ${recoveryWindowMs}`);
+    }
+    if (windowSize < 1) {
+      throw new Error(`window_size must be >= 1, got ${windowSize}`);
+    }
+    if (minSamples < 1) {
+      throw new Error(`min_samples must be >= 1, got ${minSamples}`);
+    }
+    if (minSamples > windowSize) {
+      console.warn(
+        `[apcore:middleware:circuit_breaker] min_samples (${minSamples}) exceeds ` +
+          `window_size (${windowSize}); clamping min_samples to window_size. ` +
+          'Otherwise the breaker could never open.',
+      );
+      minSamples = windowSize;
+    }
+
+    this._openThreshold = openThreshold;
+    this._recoveryWindowMs = recoveryWindowMs;
+    this._windowSize = windowSize;
+    this._minSamples = minSamples;
     this._emitter = options.emitter ?? null;
   }
 
