@@ -141,16 +141,22 @@ export class Context<T = null> {
     } else {
       traceId = uuidv4().replace(/-/g, '');
     }
-    // D11-002a: Carry the inbound TraceParent through the request lifecycle so
-    // downstream TraceContext.inject() can propagate the W3C sampling decision
-    // (traceFlags) and vendor state (tracestate) instead of defaulting to "01"
-    // and dropping tracestate. Mirrors apcore-python context.py:88-94 (which
-    // stores the parsed flags+tracestate under separate keys; the TS inject()
-    // path reads the entire TraceParent under one well-known key, so we stash
-    // the object verbatim).
+    // D11-002a: Carry the inbound W3C trace_flags and tracestate through the
+    // request lifecycle so downstream TraceContext.inject() can propagate the
+    // inbound sampling decision and vendor state instead of defaulting to "01"
+    // and dropping tracestate. Mirrors apcore-python context.py: the parsed
+    // flags+tracestate are stored under two scalar keys so the in-memory shape
+    // matches across languages.
     const ctxData: Record<string, unknown> = data ?? {};
-    if (traceParent != null && !('_apcore.trace.inbound' in ctxData)) {
-      ctxData['_apcore.trace.inbound'] = traceParent;
+    if (traceParent != null) {
+      const flags = traceParent.traceFlags;
+      if (typeof flags === 'string' && flags.length === 2 && !('_apcore.trace.flags' in ctxData)) {
+        ctxData['_apcore.trace.flags'] = flags;
+      }
+      const tracestate = traceParent.tracestate;
+      if (Array.isArray(tracestate) && tracestate.length > 0 && !('_apcore.trace.state' in ctxData)) {
+        ctxData['_apcore.trace.state'] = tracestate;
+      }
     }
     return new Context<S>(
       traceId,

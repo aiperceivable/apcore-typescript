@@ -395,6 +395,25 @@ describe('TraceContext.inject() — dynamic traceFlags', () => {
     const headers = TraceContext.inject(ctx);
     expect(headers.tracestate).toBe('vendor=opaque');
   });
+
+  it('stores inbound trace state under two scalar keys (cross-language parity)', () => {
+    const inbound: TraceParent = {
+      version: '00',
+      traceId: '0af7651916cd43dd8448eb211c80319c',
+      parentId: '00f067aa0ba902b7',
+      traceFlags: '00',
+      tracestate: [['vendor', 'opaque']],
+    };
+    const ctx = Context.create(null, inbound);
+    // Two scalar keys hold the parsed state; the whole-object key is not used.
+    expect(ctx.data['_apcore.trace.flags']).toBe('00');
+    expect(ctx.data['_apcore.trace.state']).toEqual([['vendor', 'opaque']]);
+    expect(ctx.data['_apcore.trace.inbound']).toBeUndefined();
+    // Round-trips through inject via the two-key form.
+    const headers = TraceContext.inject(ctx);
+    expect(headers.traceparent.endsWith('-00')).toBe(true);
+    expect(headers.tracestate).toBe('vendor=opaque');
+  });
 });
 
 describe('TraceContext.inject() — parentId override', () => {

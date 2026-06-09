@@ -12,7 +12,14 @@ const PARENT_ID_RE = /^[0-9a-f]{16}$/;
 const TRACESTATE_KEY_RE = /^[a-z0-9][a-z0-9_\-*/@]{0,255}$/;
 /** W3C tracestate hard cap (RFC: SHOULD discard beyond 32 entries). */
 const MAX_TRACESTATE_ENTRIES = 32;
-/** Well-known key under `context.data` carrying the inbound TraceParent (if any). */
+/**
+ * Reserved keys under `context.data` carrying the parsed inbound W3C trace
+ * state. Cross-language parity: apcore-python/-rust store the flags and
+ * tracestate as two scalar keys rather than the whole TraceParent object.
+ */
+const TRACE_FLAGS_KEY = '_apcore.trace.flags';
+const TRACESTATE_KEY = '_apcore.trace.state';
+/** Legacy well-known key carrying the whole inbound TraceParent (back-compat). */
 const INBOUND_KEY = '_apcore.trace.inbound';
 
 export interface TraceParent {
@@ -74,14 +81,20 @@ export class TraceContext {
       }
     }
 
+    // Read the parsed inbound trace state from the two scalar keys, falling
+    // back to a legacy whole-TraceParent stash for back-compat.
     const inbound = context.data[INBOUND_KEY] as TraceParent | undefined;
-    const flags = inbound?.traceFlags ?? '01';
+    const flags =
+      (context.data[TRACE_FLAGS_KEY] as string | undefined) ?? inbound?.traceFlags ?? '01';
 
     const headers: Record<string, string> = {
       traceparent: `00-${traceIdHex}-${chosenParent}-${flags}`,
     };
 
-    const stateEntries = inbound?.tracestate ?? [];
+    const stateEntries =
+      (context.data[TRACESTATE_KEY] as ReadonlyArray<readonly [string, string]> | undefined) ??
+      inbound?.tracestate ??
+      [];
     if (stateEntries.length > 0) {
       headers.tracestate = TraceContext.formatTracestate(stateEntries);
     }

@@ -3317,11 +3317,9 @@ describe('apcore Conformance Suite (TypeScript)', () => {
             };
             const ctx = Context.create(null, tp as any);
             expect(ctx.traceId).toBe(tc.expected.trace_id);
-            // Tracestate is preserved via the stashed inbound TraceParent
-            // (the `_apcore.trace.inbound` data slot).
-            const inbound = ctx.data['_apcore.trace.inbound'] as any;
-            expect(inbound).toBeDefined();
-            expect(inbound.tracestate).toEqual(tp.tracestate);
+            // Tracestate is preserved via the two scalar keys (cross-language
+            // parity: `_apcore.trace.flags` + `_apcore.trace.state`).
+            expect(ctx.data['_apcore.trace.state']).toEqual(tp.tracestate);
             break;
           }
           default:
