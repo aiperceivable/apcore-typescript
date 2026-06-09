@@ -857,12 +857,14 @@ export class Config {
   /**
    * Typed get with coercion and validation.
    * Applies the coerce function to the raw value and returns the result.
-   * Throws ConfigError if the raw value is undefined.
+   * Throws ConfigBindError (CONFIG_BIND_ERROR) if the value is missing.
+   * Both `undefined` (absent key) and a stored `null` are treated as missing,
+   * mirroring Python/Rust (`if value is None`).
    */
   getTyped<T>(path: string, coerce: (v: unknown) => T): T {
     const value = this.get(path);
-    if (value === undefined) {
-      throw new ConfigError(`Missing required config path: '${path}'`);
+    if (value === undefined || value === null) {
+      throw new ConfigBindError(`No value at path '${path}'`);
     }
     return coerce(value);
   }
