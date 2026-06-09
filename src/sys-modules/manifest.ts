@@ -28,6 +28,7 @@ export class ManifestModule {
       output_schema: { type: 'object' as const, description: 'Module output JSON Schema' },
       annotations: { type: 'object' as const, description: 'Module annotations' },
       tags: { type: 'array' as const, description: 'Module tags' },
+      dependencies: { type: 'array' as const, description: 'Module dependencies' },
       metadata: { type: 'object' as const, description: 'Additional metadata' },
     },
     required: ['module_id', 'description'],
@@ -65,8 +66,15 @@ export class ManifestModule {
       output_schema: descriptor.outputSchema,
       annotations: descriptor.annotations,
       tags: descriptor.tags,
+      dependencies: this._getDependencies(descriptor.metadata),
       metadata: descriptor.metadata ?? {},
     };
+  }
+
+  /** Retrieve dependencies from module metadata (Python/Rust parity). */
+  private _getDependencies(metadata: Record<string, unknown> | undefined): unknown[] {
+    const deps = metadata?.['dependencies'];
+    return Array.isArray(deps) ? deps : [];
   }
 
   private _computeSourcePath(moduleId: string): string | null {

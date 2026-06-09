@@ -22,6 +22,7 @@ function createDummyModule(overrides: Record<string, unknown> = {}): Record<stri
       streaming: false,
     },
     execute: overrides['execute'] ?? (() => ({ result: true })),
+    metadata: overrides['metadata'] ?? {},
   };
 }
 
@@ -94,6 +95,23 @@ describe('ManifestModule', () => {
     expect(result['annotations']).toEqual(annotations);
     expect(result['tags']).toEqual(['search', 'query']);
     expect(result['metadata']).toEqual({});
+  });
+
+  it('includes a dependencies field (empty by default)', () => {
+    const manifest = new ManifestModule(registry);
+    const result = manifest.execute({ module_id: 'system.test_mod' }, null);
+    expect(result['dependencies']).toEqual([]);
+  });
+
+  it('surfaces dependencies declared in module metadata', () => {
+    const deps = [{ module_id: 'system.other', version: '>=1.0.0' }];
+    registry.registerInternal(
+      'system.with_deps',
+      createDummyModule({ metadata: { dependencies: deps } }),
+    );
+    const manifest = new ManifestModule(registry);
+    const result = manifest.execute({ module_id: 'system.with_deps' }, null);
+    expect(result['dependencies']).toEqual(deps);
   });
 
   it('includes source_path when config has project.source_root', () => {
