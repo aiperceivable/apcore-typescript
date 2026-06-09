@@ -415,13 +415,34 @@ describe('FileSubscriber', () => {
     expect(fs.existsSync(`${filePath}.1`)).toBe(false);
   });
 
-  it('logs and swallows write errors instead of throwing', async () => {
+  it('rethrows write errors so they reach retry/DLQ', async () => {
     const warn = vi.spyOn(console, 'warn');
     // Plant a directory at the target path so writeFileSync fails with EISDIR.
     fs.mkdirSync(filePath, { recursive: true });
     const sub = new FileSubscriber(filePath, true, 'json');
-    await expect(sub.onEvent(makeEvent())).resolves.toBeUndefined();
+    await expect(sub.onEvent(makeEvent())).rejects.toThrow();
     expect(warn).toHaveBeenCalled();
+  });
+
+  it('a failing file write produces a delivery_failed DLQ event', async () => {
+    // Plant a directory at the target path so writeFileSync fails with EISDIR.
+    fs.mkdirSync(filePath, { recursive: true });
+    const emitter = new EventEmitter();
+    const dlqEvents: ApCoreEvent[] = [];
+    emitter.subscribe({
+      eventPattern: 'apcore.event.delivery_failed',
+      onEvent: (e) => { dlqEvents.push(e); },
+    });
+    const sub = new FileSubscriber(filePath, true, 'json', undefined, 'file-sub-1');
+    emitter.subscribe({
+      subscriberId: 'file-sub-1',
+      retry: { maxAttempts: 1, initialBackoffMs: 1, maxBackoffMs: 10, backoffMultiplier: 1 },
+      onEvent: (e) => sub.onEvent(e),
+    });
+    emitter.emit(createEvent('test.event', null, 'info', {}));
+    await emitter.flush();
+    expect(dlqEvents.length).toBe(1);
+    expect(dlqEvents[0].data['subscriber_id']).toBe('file-sub-1');
   });
 });
 

@@ -252,6 +252,9 @@ export class FileSubscriber implements EventSubscriber {
         `FileSubscriber failed to write event ${event.eventType} to ${this._path}:`,
         err,
       );
+      // Surface the failure so it reaches the emitter's retry/DLQ path
+      // (mirrors Python/Rust, which re-raise after logging).
+      throw err;
     }
   }
 }
