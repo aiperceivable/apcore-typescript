@@ -302,6 +302,20 @@ describe('BuiltinApprovalGate', () => {
     expect(handler.checkApproval).toHaveBeenCalledWith('tok123');
     expect(pctx.inputs).not.toHaveProperty('_approval_token');
   });
+
+  it('rejects a non-string _approval_token with GENERAL_INVALID_INPUT', async () => {
+    const handler = makeMockApprovalHandler(createApprovalResult({ status: 'approved' }));
+    const step = new BuiltinApprovalGate(handler);
+    const mod = makeModule({ annotations: { requiresApproval: true } });
+    const pctx = makePipelineContext({
+      module: mod,
+      inputs: { key: 'value', _approval_token: 12345 },
+    });
+    await expect(step.execute(pctx)).rejects.toMatchObject({
+      code: 'GENERAL_INVALID_INPUT',
+    });
+    expect(handler.checkApproval).not.toHaveBeenCalled();
+  });
 });
 
 // ---------------------------------------------------------------------------

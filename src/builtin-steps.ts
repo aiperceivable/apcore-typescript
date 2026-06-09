@@ -313,10 +313,15 @@ export class BuiltinApprovalGate implements Step {
 
     if ('_approval_token' in ctx.inputs) {
       const rawToken = ctx.inputs['_approval_token'];
-      const token = typeof rawToken === 'string' ? rawToken : String(rawToken ?? '');
+      // Security gate: reject a non-string token before it reaches the handler
+      // instead of coercing it (mirrors Python/Rust rejecting with
+      // GENERAL_INVALID_INPUT — the safest cross-language behavior).
+      if (typeof rawToken !== 'string') {
+        throw new InvalidInputError('_approval_token must be a string');
+      }
       const { _approval_token: _, ...rest } = ctx.inputs;
       cleanInputs = rest;
-      result = await this._handler.checkApproval(token);
+      result = await this._handler.checkApproval(rawToken);
     } else {
       const annotations = mod['annotations'];
       let ann: ModuleAnnotations;
