@@ -15,6 +15,18 @@ describe('ErrorCodeRegistry', () => {
     expect(() => reg.register('my.module', new Set([ErrorCodes.MODULE_NOT_FOUND]))).toThrow(ErrorCodeCollisionError);
   });
 
+  it('protects PIPELINE_STEP_ERROR / PIPELINE_STEP_NOT_FOUND as framework codes', () => {
+    expect(ErrorCodes.PIPELINE_STEP_ERROR).toBe('PIPELINE_STEP_ERROR');
+    expect(ErrorCodes.PIPELINE_STEP_NOT_FOUND).toBe('PIPELINE_STEP_NOT_FOUND');
+    const reg = new ErrorCodeRegistry();
+    expect(() => reg.register('my.module', new Set([ErrorCodes.PIPELINE_STEP_ERROR]))).toThrow(
+      ErrorCodeCollisionError,
+    );
+    expect(() =>
+      reg.register('my.module', new Set([ErrorCodes.PIPELINE_STEP_NOT_FOUND])),
+    ).toThrow(ErrorCodeCollisionError);
+  });
+
   it('throws on collision with reserved prefix', () => {
     const reg = new ErrorCodeRegistry();
     expect(() => reg.register('my.module', new Set(['MODULE_CUSTOM']))).toThrow(ErrorCodeCollisionError);
