@@ -46,49 +46,78 @@ const REQUIRED_FIELDS = [
  * registered constraint after a runtime `set` (post-set check + rollback),
  * mirroring Python's `_CONSTRAINTS`. Not part of the public package API.
  */
+/**
+ * Type guard mirroring Python's `isinstance(v, (int, float)) and not isinstance(v, bool)`.
+ * In JS `typeof true === 'number'` is false, but values may arrive as booleans;
+ * exclude them and NaN so numeric constraints behave like Python.
+ */
+function isNumber(v: unknown): v is number {
+  return typeof v === 'number' && !Number.isNaN(v);
+}
+
+/**
+ * Type guard mirroring Python's `isinstance(v, int) and not isinstance(v, bool)`.
+ * Booleans are excluded (`typeof true === 'boolean'` already rules them out).
+ */
+function isInteger(v: unknown): v is number {
+  return typeof v === 'number' && Number.isInteger(v);
+}
+
 export const CONSTRAINTS: Record<string, [(v: unknown) => boolean, string]> = {
   'acl.default_effect': [(v) => v === 'allow' || v === 'deny', "must be 'allow' or 'deny'"],
   'observability.tracing.sampling_rate': [
-    (v) => typeof v === 'number' && v >= 0.0 && v <= 1.0,
+    (v) => isNumber(v) && v >= 0.0 && v <= 1.0,
     'must be a number in [0.0, 1.0]',
   ],
   'extensions.max_depth': [
-    (v) => typeof v === 'number' && Number.isInteger(v) && v >= 1 && v <= 16,
+    (v) => isInteger(v) && v >= 1 && v <= 16,
     'must be an integer in [1, 16]',
   ],
   'executor.default_timeout': [
-    (v) => typeof v === 'number' && Number.isInteger(v) && v >= 0,
+    (v) => isInteger(v) && v >= 0,
     'must be a non-negative integer (milliseconds)',
   ],
   'executor.global_timeout': [
-    (v) => typeof v === 'number' && Number.isInteger(v) && v >= 0,
+    (v) => isInteger(v) && v >= 0,
     'must be a non-negative integer (milliseconds)',
   ],
-  'executor.max_call_depth': [
-    (v) => typeof v === 'number' && Number.isInteger(v) && v >= 1,
+  'executor.max_call_depth': [(v) => isInteger(v) && v >= 1, 'must be a positive integer'],
+  'executor.max_module_repeat': [(v) => isInteger(v) && v >= 1, 'must be a positive integer'],
+  'sys_modules.error_history.max_entries_per_module': [
+    (v) => isInteger(v) && v >= 1,
     'must be a positive integer',
   ],
-  'executor.max_module_repeat': [
-    (v) => typeof v === 'number' && Number.isInteger(v) && v >= 1,
+  'sys_modules.error_history.max_total_entries': [
+    (v) => isInteger(v) && v >= 1,
     'must be a positive integer',
   ],
   // A-D-03: middleware circuit-breaker + sys_modules events thresholds
   // (config-bus.md "Contract: Config.validate" value-constraints table).
-  'middleware.circuit_breaker.open_threshold': [
-    (v) => typeof v === 'number' && Number.isInteger(v) && v >= 1,
-    'must be a positive integer',
-  ],
-  'middleware.circuit_breaker.recovery_window_ms': [
-    (v) => typeof v === 'number' && v >= 0,
-    'must be a non-negative number (milliseconds)',
-  ],
+  // Mirrors Python `_CONSTRAINTS` exactly (src/apcore/config.py).
   'sys_modules.events.thresholds.error_rate': [
-    (v) => typeof v === 'number' && v >= 0.0 && v <= 1.0,
+    (v) => isNumber(v) && v >= 0.0 && v <= 1.0,
     'must be a number in [0.0, 1.0]',
   ],
   'sys_modules.events.thresholds.latency_p99_ms': [
-    (v) => typeof v === 'number' && v >= 0,
-    'must be a non-negative number (milliseconds)',
+    (v) => isNumber(v) && v > 0,
+    'must be a positive number',
+  ],
+  // open_threshold is an ERROR RATE in [0.0, 1.0] (default 0.5), NOT a count.
+  'middleware.circuit_breaker.open_threshold': [
+    (v) => isNumber(v) && v >= 0.0 && v <= 1.0,
+    'must be a number in [0.0, 1.0]',
+  ],
+  'middleware.circuit_breaker.recovery_window_ms': [
+    (v) => isInteger(v) && v >= 0,
+    'must be a non-negative integer (milliseconds)',
+  ],
+  'middleware.circuit_breaker.window_size': [
+    (v) => isInteger(v) && v >= 1,
+    'must be a positive integer',
+  ],
+  'middleware.circuit_breaker.min_samples': [
+    (v) => isInteger(v) && v >= 1,
+    'must be a positive integer',
   ],
 };
 

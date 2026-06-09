@@ -143,9 +143,10 @@ describe('Config.validate', () => {
   });
 
   // A-D-03 — config-bus.md "Contract: Config.validate" constraint set.
+  // open_threshold is an ERROR RATE in [0.0, 1.0] (default 0.5), NOT a count.
   it('rejects out-of-range middleware.circuit_breaker.open_threshold with CONFIG_INVALID', () => {
     const cfg = Config.fromDefaults();
-    cfg.set('middleware.circuit_breaker.open_threshold', 0);
+    cfg.set('middleware.circuit_breaker.open_threshold', 1.5);
     try {
       cfg.validate();
       throw new Error('expected validate() to throw');
@@ -153,6 +154,54 @@ describe('Config.validate', () => {
       expect(e).toBeInstanceOf(ConfigError);
       expect((e as ConfigError).code).toBe('CONFIG_INVALID');
       expect((e as ConfigError).message).toContain('middleware.circuit_breaker.open_threshold');
+    }
+  });
+
+  it('rejects integer-count open_threshold of 5 (it is a rate, not a count)', () => {
+    const cfg = Config.fromDefaults();
+    cfg.set('middleware.circuit_breaker.open_threshold', 5);
+    expect(() => cfg.validate()).toThrow('middleware.circuit_breaker.open_threshold');
+  });
+
+  it('rejects boolean open_threshold', () => {
+    const cfg = Config.fromDefaults();
+    cfg.set('middleware.circuit_breaker.open_threshold', true);
+    expect(() => cfg.validate()).toThrow('middleware.circuit_breaker.open_threshold');
+  });
+
+  it('accepts open_threshold boundary values 0.0 and 1.0', () => {
+    const cfg0 = Config.fromDefaults();
+    cfg0.set('middleware.circuit_breaker.open_threshold', 0);
+    expect(() => cfg0.validate()).not.toThrow();
+
+    const cfg1 = Config.fromDefaults();
+    cfg1.set('middleware.circuit_breaker.open_threshold', 1.0);
+    expect(() => cfg1.validate()).not.toThrow();
+  });
+
+  it('rejects middleware.circuit_breaker.window_size of 0 with CONFIG_INVALID', () => {
+    const cfg = Config.fromDefaults();
+    cfg.set('middleware.circuit_breaker.window_size', 0);
+    try {
+      cfg.validate();
+      throw new Error('expected validate() to throw');
+    } catch (e) {
+      expect(e).toBeInstanceOf(ConfigError);
+      expect((e as ConfigError).code).toBe('CONFIG_INVALID');
+      expect((e as ConfigError).message).toContain('middleware.circuit_breaker.window_size');
+    }
+  });
+
+  it('rejects middleware.circuit_breaker.min_samples of 0 with CONFIG_INVALID', () => {
+    const cfg = Config.fromDefaults();
+    cfg.set('middleware.circuit_breaker.min_samples', 0);
+    try {
+      cfg.validate();
+      throw new Error('expected validate() to throw');
+    } catch (e) {
+      expect(e).toBeInstanceOf(ConfigError);
+      expect((e as ConfigError).code).toBe('CONFIG_INVALID');
+      expect((e as ConfigError).message).toContain('middleware.circuit_breaker.min_samples');
     }
   });
 
@@ -169,10 +218,30 @@ describe('Config.validate', () => {
     }
   });
 
+  it('rejects sys_modules.events.thresholds.latency_p99_ms of 0 (must be > 0)', () => {
+    const cfg = Config.fromDefaults();
+    cfg.set('sys_modules.events.thresholds.latency_p99_ms', 0);
+    expect(() => cfg.validate()).toThrow('sys_modules.events.thresholds.latency_p99_ms');
+  });
+
+  it('rejects new sys_modules.error_history integer constraints (< 1)', () => {
+    const cfg = Config.fromDefaults();
+    cfg.set('sys_modules.error_history.max_entries_per_module', 0);
+    expect(() => cfg.validate()).toThrow('sys_modules.error_history.max_entries_per_module');
+
+    const cfg2 = Config.fromDefaults();
+    cfg2.set('sys_modules.error_history.max_total_entries', 0);
+    expect(() => cfg2.validate()).toThrow('sys_modules.error_history.max_total_entries');
+  });
+
   it('passes for a fully-valid config that exercises the new constraints', () => {
     const cfg = Config.fromDefaults();
-    cfg.set('middleware.circuit_breaker.open_threshold', 5);
+    cfg.set('middleware.circuit_breaker.open_threshold', 0.5);
     cfg.set('middleware.circuit_breaker.recovery_window_ms', 60000);
+    cfg.set('middleware.circuit_breaker.window_size', 20);
+    cfg.set('middleware.circuit_breaker.min_samples', 5);
+    cfg.set('sys_modules.error_history.max_entries_per_module', 50);
+    cfg.set('sys_modules.error_history.max_total_entries', 500);
     cfg.set('sys_modules.events.thresholds.error_rate', 0.1);
     cfg.set('sys_modules.events.thresholds.latency_p99_ms', 5000);
     expect(() => cfg.validate()).not.toThrow();
