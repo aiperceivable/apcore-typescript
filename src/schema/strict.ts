@@ -15,7 +15,10 @@ export function applyLlmDescriptions(node: unknown): void {
   if (typeof node !== 'object' || node === null || Array.isArray(node)) return;
 
   const obj = node as Record<string, unknown>;
-  if ('x-llm-description' in obj) {
+  // Only substitute when a description already exists; never inject a
+  // description onto a node that lacked one (Python/Rust parity — avoids
+  // fabricating descriptions the spec did not declare).
+  if ('x-llm-description' in obj && 'description' in obj) {
     obj['description'] = obj['x-llm-description'];
   }
 

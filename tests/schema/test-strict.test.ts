@@ -101,6 +101,29 @@ describe('applyLlmDescriptions', () => {
     applyLlmDescriptions(schema);
     expect(schema['description']).toBe('Original');
   });
+
+  it('does not inject a description when only x-llm-description is present', () => {
+    const schema: Record<string, unknown> = {
+      type: 'string',
+      'x-llm-description': 'LLM only',
+    };
+    applyLlmDescriptions(schema);
+    expect('description' in schema).toBe(false);
+  });
+
+  it('does not gain a description after strict export when only x-llm-description present', () => {
+    const schema = {
+      type: 'object',
+      properties: {
+        name: { type: 'string', 'x-llm-description': 'Name for LLM' },
+      },
+      required: ['name'],
+    };
+    applyLlmDescriptions(schema);
+    const result = toStrictSchema(schema);
+    const props = result['properties'] as Record<string, Record<string, unknown>>;
+    expect('description' in props['name']).toBe(false);
+  });
 });
 
 describe('toStrictSchema - definitions and combinators', () => {
@@ -270,7 +293,7 @@ describe('applyLlmDescriptions - definitions and combinators', () => {
   it('recurses into items', () => {
     const schema: Record<string, unknown> = {
       type: 'array',
-      items: { 'x-llm-description': 'item desc' },
+      items: { description: 'orig', 'x-llm-description': 'item desc' },
     };
     applyLlmDescriptions(schema);
     const items = schema['items'] as Record<string, unknown>;
@@ -280,8 +303,8 @@ describe('applyLlmDescriptions - definitions and combinators', () => {
   it('recurses into oneOf/anyOf/allOf', () => {
     const schema: Record<string, unknown> = {
       oneOf: [
-        { 'x-llm-description': 'variant A' },
-        { 'x-llm-description': 'variant B' },
+        { description: 'a', 'x-llm-description': 'variant A' },
+        { description: 'b', 'x-llm-description': 'variant B' },
       ],
     };
     applyLlmDescriptions(schema);
@@ -290,12 +313,12 @@ describe('applyLlmDescriptions - definitions and combinators', () => {
     expect(oneOf[1]['description']).toBe('variant B');
   });
 
-  it('sets description even when no prior description exists', () => {
+  it('does not set a description when no prior description exists', () => {
     const schema: Record<string, unknown> = {
       'x-llm-description': 'brand new',
     };
     applyLlmDescriptions(schema);
-    expect(schema['description']).toBe('brand new');
+    expect('description' in schema).toBe(false);
   });
 });
 
