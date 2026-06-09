@@ -956,18 +956,7 @@ describe('apcore Conformance Suite (TypeScript)', () => {
         const result = discoverMultiClass(file_path, descriptors, extensions_root, multi_class_enabled);
         const moduleIds = result.map(r => r.moduleId);
 
-        // A-D-20 cross-language divergence: the `full_id_grammar_valid` fixture
-        // declares a single qualifying class (`Addition`) yet expects the
-        // appended id `executor.math.arithmetic.addition`. This contradicts the
-        // authoritative single-class identity guarantee in apcore-python
-        // (multi_class.py:143-145 → bare base_id) and apcore-rust
-        // (derive_module_ids → bare base_id). The fixture is stale; assert the
-        // canonical bare base_id instead.
-        const expectedModuleIds =
-          tc.id === 'full_id_grammar_valid'
-            ? ['executor.math.arithmetic']
-            : tc.expected.module_ids;
-        expect(moduleIds).toEqual(expectedModuleIds);
+        expect(moduleIds).toEqual(tc.expected.module_ids);
 
         if (tc.expected.grammar_valid === true) {
           for (const id of moduleIds) {
