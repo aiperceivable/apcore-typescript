@@ -163,6 +163,20 @@ describe('BindingLoader', () => {
       await expect(loader.loadBindings(yamlPath, registry)).rejects.toThrow(BindingFileInvalidError);
     });
 
+    it('throws BindingFileInvalidError when the top-level root is a list', async () => {
+      const yamlPath = writeTempYaml('rootlist.binding.yaml', '- one\n- two\n');
+      await expect(loader.loadBindings(yamlPath, registry)).rejects.toThrow(
+        /Top-level must be a mapping/,
+      );
+    });
+
+    it('throws BindingFileInvalidError when the top-level root is a scalar', async () => {
+      const yamlPath = writeTempYaml('rootscalar.binding.yaml', 'just-a-string\n');
+      await expect(loader.loadBindings(yamlPath, registry)).rejects.toThrow(
+        /Top-level must be a mapping/,
+      );
+    });
+
     it('throws BindingFileInvalidError for non-array bindings value', async () => {
       const yamlPath = writeTempYaml('notarray.binding.yaml', 'bindings: "not an array"\n');
       await expect(loader.loadBindings(yamlPath, registry)).rejects.toThrow(BindingFileInvalidError);

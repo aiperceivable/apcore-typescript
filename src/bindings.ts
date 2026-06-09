@@ -109,6 +109,10 @@ export class BindingLoader {
       throw new BindingFileInvalidError(filePath, 'File is empty');
     }
 
+    if (typeof data !== 'object' || Array.isArray(data)) {
+      throw new BindingFileInvalidError(filePath, 'Top-level must be a mapping');
+    }
+
     const dataObj = data as Record<string, unknown>;
 
     const specVersion = dataObj['spec_version'] as string | undefined;
