@@ -34,7 +34,9 @@ export class Identity {
    * is lazy-loaded (future extension).
    */
   getAttr<T = unknown>(key: string, defaultValue?: T): T | undefined {
-    return (this.attrs[key] as T) ?? defaultValue;
+    // Presence check so a stored `null` is returned as null rather than
+    // coalesced to the default (Python/Rust parity: `attrs.get(key, default)`).
+    return key in this.attrs ? (this.attrs[key] as T) : defaultValue;
   }
 }
 
