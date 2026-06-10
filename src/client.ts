@@ -14,7 +14,8 @@ import type { Middleware } from './middleware/index.js';
 import type { ModuleAnnotations, ModuleExample, PreflightResult } from './module.js';
 import type { MetricsCollector } from './observability/metrics.js';
 import { Registry } from './registry/registry.js';
-import type { SysModulesContext } from './sys-modules/registration.js';
+import type { RegisterSysModulesOptions, SysModulesContext } from './sys-modules/registration.js';
+import { ToggleState } from './sys-modules/toggle.js';
 
 /**
  * Optional Node-side hook that auto-registers system modules when an
@@ -31,6 +32,7 @@ type SysModulesInstaller = (
   executor: Executor,
   config: Config,
   metricsCollector?: MetricsCollector | null,
+  options?: RegisterSysModulesOptions,
 ) => SysModulesContext;
 let _sysModulesInstaller: SysModulesInstaller | null = null;
 
@@ -44,6 +46,14 @@ export interface APCoreOptions {
   executor?: Executor;
   config?: Config;
   metricsCollector?: MetricsCollector;
+  /**
+   * Per-instance ToggleState (Issue #71). Each APCore instance owns one
+   * ToggleState that is injected into both the toggle module (write path)
+   * and the Executor's pipeline lookup (read path), so disabling a module
+   * is isolated to this instance and survives reload. Defaults to a fresh
+   * `new ToggleState()`. Ignored when a pre-built `executor` is supplied.
+   */
+  toggleState?: ToggleState;
 }
 
 export interface ModuleOptions {
@@ -72,11 +82,18 @@ export class APCore {
   readonly executor: Executor;
   readonly config: Config | null;
   readonly metricsCollector: MetricsCollector | null;
+  /**
+   * Per-instance ToggleState (Issue #71). Shared between the toggle module
+   * (write path, via the sys-modules installer) and the Executor's pipeline
+   * lookup (read path) so toggles are isolated to this instance.
+   */
+  private readonly _toggleState: ToggleState;
   private _sysModulesContext: SysModulesContext = {};
 
   constructor(options?: APCoreOptions) {
     this.registry = options?.registry ?? new Registry();
     this.config = options?.config ?? null;
+    this._toggleState = options?.toggleState ?? new ToggleState();
 
     this.metricsCollector = options?.metricsCollector ?? null;
     this.executor =
@@ -84,6 +101,9 @@ export class APCore {
       new Executor({
         registry: this.registry,
         config: this.config,
+        // Read path: the pipeline's BuiltinModuleLookup observes this same
+        // ToggleState instance (Issue #71).
+        toggleState: this._toggleState,
       });
 
     // Auto-register sys modules if config is provided AND the Node-side
@@ -97,8 +117,20 @@ export class APCore {
         this.executor,
         this.config,
         options?.metricsCollector,
+        // Write path: ToggleFeatureModule mutates this same ToggleState
+        // instance (Issue #71).
+        { toggleState: this._toggleState },
       );
     }
+  }
+
+  /**
+   * The per-instance ToggleState backing this client's enable/disable calls
+   * and pipeline disabled-module checks (Issue #71). Exposed for inspection
+   * and conformance testing; mutate via {@link disable}/{@link enable}.
+   */
+  get toggleState(): ToggleState {
+    return this._toggleState;
   }
 
   /**

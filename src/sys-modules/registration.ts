@@ -19,6 +19,7 @@ import { PlatformNotifyMiddleware } from '../middleware/platform-notify.js';
 import { HealthSummaryModule, HealthModule } from './health.js';
 import { ManifestFullModule, ManifestModule } from './manifest.js';
 import { ToggleFeatureModule } from './toggle.js';
+import type { ToggleState } from './toggle.js';
 import { UpdateConfigModule, ReloadModule } from './control.js';
 import { UsageSummaryModule, UsageModule } from './usage.js';
 
@@ -213,6 +214,14 @@ export interface RegisterSysModulesOptions {
   /** Pluggable persistent override store (Issue #45.1). */
   overridesStore?: OverridesStore;
   auditStore?: AuditStore;
+  /**
+   * Per-instance ToggleState (Issue #71). When provided, the toggle module
+   * (write path) shares this instance with the Executor's pipeline lookup
+   * (read path) so disabling a module is isolated to the owning APCore
+   * instance. When omitted, ToggleFeatureModule falls back to the
+   * module-level DEFAULT_TOGGLE_STATE.
+   */
+  toggleState?: ToggleState;
 }
 
 /**
@@ -243,6 +252,9 @@ export function registerSysModules(
   const overridesPath = options?.overridesPath ?? null;
   const overridesStore = options?.overridesStore ?? null;
   const auditStore = options?.auditStore ?? null;
+  // Per-instance ToggleState (Issue #71): undefined here lets
+  // ToggleFeatureModule fall back to DEFAULT_TOGGLE_STATE.
+  const toggleState = options?.toggleState ?? undefined;
 
   // §9.15.3: prefer config.namespace('sys_modules') in namespace mode
   const sysCfg = _resolveSysCfg(config);
@@ -353,7 +365,7 @@ export function registerSysModules(
     reg('system.control.toggle_feature', new ToggleFeatureModule(
       registry,
       eventEmitter,
-      undefined,
+      toggleState,
       auditStore ?? undefined,
       overridesStore ?? undefined,
     ));

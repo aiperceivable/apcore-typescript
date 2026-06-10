@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [0.24.0] - 2026-06-10
+
+### Added
+
+- **Per-instance `ToggleState` isolation (#71).** Each `APCore` instance now owns one `ToggleState` (`new APCore({ toggleState? })`, exposed read-only via `client.toggleState`) that is injected into BOTH the write path (`ToggleFeatureModule` / `system.control.toggle_feature`) and the read path (`Executor` → `BuiltinModuleLookup`). Disabling a module on one instance no longer affects another instance in the same process, and a disable survives a reload of its own instance (the `ToggleState` lives outside the `Registry`). `registerSysModules` accepts a `toggleState` option and forwards it to `ToggleFeatureModule`; `APCore` constructs and threads the same instance into both the `Executor` and the sys-modules installer. The module-level `DEFAULT_TOGGLE_STATE` remains the fallback for no-injection paths (direct `Executor` / `ToggleFeatureModule` construction without a `toggleState`). Re-scopes A-D-12 from process-global to instance-scoped. Locked by the shared conformance fixture `toggle_state_isolation.json`.
+- **Agent-governance conformance coverage (#72).** New conformance drivers wire the canonical fixtures `toggle_state_isolation.json` (4 cases) and `acl_agent_scoping.json` (19 cases). The ACL fixture locks the AI-agent tool-governance scenario (`@external` < `reader` < `data_admin` privilege gradient, role + `max_call_depth` conditions, first-match-wins) as a cross-language contract; all decisions match with no ACL-engine change required (`max_call_depth` is inclusive — depth == cap is allowed).
+
+
 ## [0.23.0] - 2026-06-10
 
 ### Changed (breaking)
