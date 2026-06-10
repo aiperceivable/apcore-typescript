@@ -12,8 +12,8 @@
  * SIGNATURE / BEHAVIOUR NOTES (TS vs Python canonical intent):
  *  - The real TS `guardCallChain` takes the call chain directly
  *    (`moduleId`, `callChain`) with positional (not keyword-only) limit params
- *    `maxCallDepth` / `maxModuleRepeat`. The contract-only `context` input has
- *    no TS binding -> recorded as a documented skip.
+ *    `maxCallDepth` / `maxModuleRepeat`, matching the corrected Contract
+ *    `### Inputs` (module_id, call_chain) in call-chain-guard.md.
  *  - Input-floor violations throw a plain `Error` (not a typed/ValueError),
  *    with the camelCase param name in the message.
  *  - Error `details` keys are camelCase: `depth`, `maxDepth`, `count`,
@@ -64,11 +64,6 @@ describe('call-chain-guard: input validation', () => {
     // TS has no runtime "missing required positional" error; omitting moduleId
     // is a compile-time type error, not a runtime TypeError. No runtime symbol
     // mirrors Python's binding-level TypeError, so this clause is a gap.
-  });
-
-  it.skip('call_chain_guard.guard_call_chain.input.context.required: missing symbol context (contract gap)', () => {
-    // The TS guardCallChain takes callChain directly rather than a Context
-    // object; the contract ### Inputs `context` parameter has no TS binding.
   });
 });
 
