@@ -19,6 +19,11 @@ node examples/simple-client.ts
 | [`global-client.ts`](global-client.ts) | Module-level client pattern — minimal boilerplate. | `node examples/global-client.ts` |
 | [`cancel-token.ts`](cancel-token.ts) | Cooperative cancellation: cancel a long-running module via `CancelToken`. | `node examples/cancel-token.ts` |
 | [`pipeline-demo.ts`](pipeline-demo.ts) | The 11-step `ExecutionStrategy` pipeline — introspection, step-middleware tracing, and orchestration via `insertAfter` / `replace`. See note below. | `node examples/pipeline-demo.ts` |
+| [`acl-agent-governance.ts`](acl-agent-governance.ts) | End-to-end AI-agent tool governance (issue #72): registers real tools, wires a default-deny ACL into `APCore`, has agents of different roles actually call the tools (allowed → real result, denied → `ACLDeniedError`), and prints the audit trail. Self-checks every decision against the cross-language contract. | `node examples/acl-agent-governance.ts` |
+| [`approval.ts`](approval.ts) | Human-in-the-loop approval gate: a `requiresApproval` tool, an `ApprovalHandler` that approves/rejects per request, calls that execute or throw `ApprovalDeniedError`. Companion to the ACL demo (ACL = who may call; approval = sensitive-op gate). | `node examples/approval.ts` |
+| [`feature-toggle.ts`](feature-toggle.ts) | Runtime feature toggle: `disable()` / `enable()` a tool (blocked calls throw `ModuleDisabledError`), plus per-instance `ToggleState` isolation across two `APCore` instances (issue #71). | `node examples/feature-toggle.ts` |
+| [`middleware.ts`](middleware.ts) | User-facing `useBefore` / `useAfter` middleware: a before hook augments inputs, an after hook transforms output, with an ordered trace proving hook order. | `node examples/middleware.ts` |
+| [`events.ts`](events.ts) | Lifecycle event bus: enable `sys_modules.events`, subscribe via `on(...)`, and observe `apcore.registry.module_registered` / `apcore.module.toggled` events as the tool is registered, called, and toggled. | `node examples/events.ts` |
 
 ### Module reference files
 
