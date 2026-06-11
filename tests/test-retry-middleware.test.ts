@@ -1,9 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { Type } from '@sinclair/typebox';
 import { RetryMiddleware, RetryHintMiddleware } from '../src/middleware/retry.js';
-import { RetrySignal } from '../src/middleware/base.js';
+import { Middleware, RetrySignal } from '../src/middleware/base.js';
 import { ModuleError, ModuleTimeoutError } from '../src/errors.js';
 import { Context } from '../src/context.js';
+import { Config } from '../src/config.js';
 import { Executor } from '../src/executor.js';
 import { Registry } from '../src/registry/registry.js';
 import { FunctionModule } from '../src/decorator.js';
@@ -179,5 +180,95 @@ describe('RetryMiddleware', () => {
 
   it('RetryHintMiddleware is a deprecated alias for RetryMiddleware', () => {
     expect(RetryHintMiddleware).toBe(RetryMiddleware);
+  });
+
+  it('A-D-011: a retryable error thrown in before() retries exactly maxRetries times', async () => {
+    // A middleware whose before() throws a retryable error. on_error must fire
+    // exactly ONCE per attempt (the executor is the sole on_error site). The
+    // before-step must NOT also run on_error, otherwise the RetryMiddleware
+    // counter double-increments and the retry budget is halved.
+    let beforeCalls = 0;
+
+    // Lower priority than RetryMiddleware (default 100) so RetryMiddleware's
+    // before() runs first and lands in executedMiddlewares, making its
+    // onError eligible when this middleware's before() throws.
+    class ThrowingBeforeMiddleware extends Middleware {
+      constructor() {
+        super(50);
+      }
+      override before(): Record<string, unknown> {
+        beforeCalls += 1;
+        throw new ModuleTimeoutError('target', 5000); // retryable
+      }
+    }
+
+    const target = new FunctionModule({
+      execute: () => ({ ok: true }),
+      moduleId: 'target',
+      inputSchema: Type.Object({}),
+      outputSchema: Type.Object({ ok: Type.Boolean() }),
+      description: 'Never reached — before() always throws',
+    });
+    const registry = new Registry();
+    registry.register('target', target);
+    // Raise the per-module repeat limit so the 4 pipeline attempts (each of
+    // which appends 'target' to the call chain) are not cut short by the
+    // call-chain frequency guard; that lets the original retryable error
+    // surface and isolates the retry-budget assertion below.
+    const config = new Config({ executor: { max_module_repeat: 100 } });
+    const executor = new Executor({
+      registry,
+      config,
+      middlewares: [
+        new RetryMiddleware({ maxRetries: 3, baseDelayMs: 1, jitter: false }),
+        new ThrowingBeforeMiddleware(),
+      ],
+    });
+
+    await expect(executor.call('target', {})).rejects.toThrow(ModuleTimeoutError);
+    // Initial attempt + 3 retries = 4 pipeline attempts -> before() called 4x.
+    // (With the double-on_error bug, the counter advanced 2x/attempt and only
+    // ~2 attempts ran.)
+    expect(beforeCalls).toBe(4);
+  });
+
+  it('A-D-011: before()-failure recovery output is still produced by the executor', async () => {
+    // Removing the step-level on_error must not lose the recovery-output path:
+    // a middleware whose onError returns a plain object should short-circuit
+    // the call with that object as the result, even when the failure happened
+    // in another middleware's before().
+    class RecoveringMiddleware extends Middleware {
+      constructor() {
+        super(200); // runs first -> lands in executedMiddlewares
+      }
+      override onError(): Record<string, unknown> {
+        return { recovered: true };
+      }
+    }
+    class ThrowingBeforeMiddleware extends Middleware {
+      constructor() {
+        super(50);
+      }
+      override before(): Record<string, unknown> {
+        throw new ModuleError('BOOM', 'before exploded', {}, undefined, undefined, false);
+      }
+    }
+
+    const target = new FunctionModule({
+      execute: () => ({ ok: true }),
+      moduleId: 'target',
+      inputSchema: Type.Object({}),
+      outputSchema: Type.Object({ ok: Type.Boolean() }),
+      description: 'Never reached — before() throws',
+    });
+    const registry = new Registry();
+    registry.register('target', target);
+    const executor = new Executor({
+      registry,
+      middlewares: [new RecoveringMiddleware(), new ThrowingBeforeMiddleware()],
+    });
+
+    const out = await executor.call('target', {});
+    expect(out).toEqual({ recovered: true });
   });
 });

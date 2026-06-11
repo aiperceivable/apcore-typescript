@@ -16,8 +16,10 @@
  *    `### Inputs` (module_id, call_chain) in call-chain-guard.md.
  *  - Input-floor violations throw a plain `Error` (not a typed/ValueError),
  *    with the camelCase param name in the message.
- *  - Error `details` keys are camelCase: `depth`, `maxDepth`, `count`,
- *    `maxRepeat`, `moduleId`, `callChain` (Python used snake_case).
+ *  - Error `details` keys are snake_case for cross-language parity with the
+ *    spec, Python, and Rust (sync finding A-D-019): `depth`, `max_depth`,
+ *    `count`, `max_repeat`, `module_id`, `call_chain`. The public TS getters
+ *    (`maxDepth`, `moduleId`, `maxRepeat`) keep their camelCase names.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -83,9 +85,12 @@ describe('call-chain-guard: errors', () => {
     expect(caught).toBeInstanceOf(CallDepthExceededError);
     const err = caught as CallDepthExceededError;
     expect(err.code).toBe('CALL_DEPTH_EXCEEDED');
-    // TS details keys are camelCase (Python: depth / max_depth).
+    // Details keys are snake_case for cross-language parity (sync finding
+    // A-D-019): depth / max_depth / call_chain, matching Python and Rust.
     expect(err.details['depth']).toBe(6);
-    expect(err.details['maxDepth']).toBe(5);
+    expect(err.details['max_depth']).toBe(5);
+    expect(err.details['call_chain']).toEqual(chain);
+    // Public getters keep their camelCase names (stable API).
     expect(err.currentDepth).toBe(6);
     expect(err.maxDepth).toBe(5);
   });
@@ -102,7 +107,8 @@ describe('call-chain-guard: errors', () => {
     const err = caught as CircularCallError;
     expect(err.code).toBe('CIRCULAR_CALL');
     expect(err.moduleId).toBe('a');
-    expect(err.details['callChain']).toEqual(['a', 'b', 'a']);
+    expect(err.details['module_id']).toBe('a');
+    expect(err.details['call_chain']).toEqual(['a', 'b', 'a']);
   });
 
   it('call_chain_guard.guard_call_chain.error.CALL_FREQUENCY_EXCEEDED: over-frequency self-calls raise typed error', () => {
@@ -119,6 +125,11 @@ describe('call-chain-guard: errors', () => {
     expect(err.moduleId).toBe('a');
     expect(err.count).toBe(4);
     expect(err.maxRepeat).toBe(3);
+    // snake_case detail keys (sync finding A-D-019).
+    expect(err.details['module_id']).toBe('a');
+    expect(err.details['count']).toBe(4);
+    expect(err.details['max_repeat']).toBe(3);
+    expect(err.details['call_chain']).toEqual(chain);
   });
 });
 

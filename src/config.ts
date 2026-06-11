@@ -221,13 +221,34 @@ function setNested(data: Record<string, unknown>, dotPath: string, value: unknow
   current[parts[parts.length - 1]] = value;
 }
 
+// Python int()/float() grammars (used by _coerce_env_value). Python strips
+// surrounding whitespace and accepts an optional sign; int() additionally
+// accepts leading zeros but rejects decimal points and exponents (those fall
+// through to float()). We deliberately do NOT accept hex/octal/binary prefixes
+// or underscore digit separators here — env values in the wild never use them
+// and Rust's i64/f64 parse rejects them too, so excluding them keeps the three
+// SDKs aligned. Cross-language parity: apcore-python config.py `_coerce_env_value`
+// (int then float) and apcore-rust `coerce_env_value` (sync finding A-D-008).
+const PY_INT_RE = /^[+-]?[0-9]+$/;
+const PY_FLOAT_RE = /^[+-]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?$/;
+
 function coerceEnvValue(value: string): unknown {
   if (value.toLowerCase() === 'true') return true;
   if (value.toLowerCase() === 'false') return false;
-  const asInt = parseInt(value, 10);
-  if (!isNaN(asInt) && String(asInt) === value) return asInt;
-  const asFloat = parseFloat(value);
-  if (!isNaN(asFloat) && String(asFloat) === value) return asFloat;
+  const trimmed = value.trim();
+  // int(value): integral strings coerce to numbers even with leading zeros
+  // (e.g. "08") or a leading sign (e.g. "+5").
+  if (PY_INT_RE.test(trimmed)) {
+    const asInt = Number(trimmed);
+    if (Number.isFinite(asInt)) return asInt;
+  }
+  // float(value): decimals and exponent forms (e.g. "1e0") coerce to numbers.
+  if (PY_FLOAT_RE.test(trimmed)) {
+    const asFloat = Number(trimmed);
+    // Match Rust's serde_json::Number::from_f64 which rejects non-finite
+    // values; such inputs stay strings.
+    if (Number.isFinite(asFloat)) return asFloat;
+  }
   return value;
 }
 

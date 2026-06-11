@@ -128,8 +128,23 @@ function redactSecretPrefix(data: Record<string, unknown>): void {
     const value = data[key];
     if (key.startsWith('_secret_') && value !== null && value !== undefined) {
       data[key] = REDACTED_VALUE;
-    } else if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+    } else if (Array.isArray(value)) {
+      // Recurse into array elements so _secret_ keys inside objects (or
+      // deeper nested arrays) are redacted too. Mirrors apcore-python
+      // utils/redaction.py `_redact_in_list` (sync finding A-D-003).
+      redactSecretPrefixInList(value);
+    } else if (typeof value === 'object' && value !== null) {
       redactSecretPrefix(value as Record<string, unknown>);
+    }
+  }
+}
+
+function redactSecretPrefixInList(items: unknown[]): void {
+  for (const item of items) {
+    if (Array.isArray(item)) {
+      redactSecretPrefixInList(item);
+    } else if (typeof item === 'object' && item !== null) {
+      redactSecretPrefix(item as Record<string, unknown>);
     }
   }
 }

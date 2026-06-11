@@ -411,7 +411,12 @@ export class ACL {
     for (let i = 0; i < this._rules.length; i++) {
       const rule = this._rules[i];
       if (!arraysEqual(rule.callers, callers) || !arraysEqual(rule.targets, targets)) continue;
-      if (conditions !== undefined && !deepEqual(rule.conditions ?? null, conditions ?? null)) continue;
+      // Treat an explicit null the same as an omitted/undefined argument:
+      // both mean "ignore conditions when matching". Only a concrete
+      // conditions object disambiguates by deep equality. Mirrors
+      // apcore-python acl.py:631 (`conditions is not None`) and Rust
+      // (sync finding A-D-016).
+      if (conditions != null && !deepEqual(rule.conditions ?? null, conditions)) continue;
       this._rules.splice(i, 1);
       return true;
     }

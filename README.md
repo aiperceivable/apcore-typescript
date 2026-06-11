@@ -139,8 +139,10 @@ const client = new APCore({ config });
 // Now safe to call:
 await client.disable('math.add');
 await client.enable('math.add');
-client.on('apcore.module.disabled', (event) => {
-  console.log('Disabled:', event.data);
+// Enabling/disabling a module fires the canonical apcore.module.toggled event;
+// read event.data.enabled to see the new state (see examples/events.ts).
+client.on('apcore.module.toggled', (event) => {
+  console.log('Toggled:', event.data.module_id, 'enabled:', event.data.enabled);
 });
 ```
 
@@ -197,8 +199,10 @@ const result = await executor.call('example.greet', { name: 'World' });
 ```typescript
 import { Config } from 'apcore-js';
 
-// Register a namespace (class-level, shared across all Config instances)
-Config.registerNamespace('myPlugin', {
+// Register a namespace (class-level, shared across all Config instances).
+// registerNamespace takes a single options object; `name` is a field on it.
+Config.registerNamespace({
+  name: 'myPlugin',
   envPrefix: 'MY_PLUGIN',
   defaults: { timeout: 5000, retries: 3 },
   schema: {
@@ -235,7 +239,8 @@ config.mount('myPlugin', { fromFile: './my-plugin.yaml' });
 config.mount('myPlugin', { fromDict: { timeout: 10000 } });
 
 // Introspect registered namespaces
-const names = Config.registeredNamespaces(); // string[]
+// => Array<{ name: string; envPrefix: string | null; hasSchema: boolean }>
+const namespaces = Config.registeredNamespaces();
 ```
 
 ### Environment Variable Overrides

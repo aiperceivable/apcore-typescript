@@ -379,6 +379,29 @@ describe('Config env overrides', () => {
     const cfg = Config.fromDefaults();
     expect(cfg.get('extensions.auto_discover')).toBe(false);
   });
+
+  it('coerces leading-zero integer strings to numbers (A-D-008)', () => {
+    // Python int("08") == 8; the old String(parsed) === value guard kept
+    // "08" a string because String(8) !== "08".
+    setEnv('APCORE_CUSTOM_LEADING__ZERO', '08');
+    const cfg = Config.fromDefaults();
+    expect(cfg.get('custom.leading_zero')).toBe(8);
+  });
+
+  it('coerces signed integer strings to numbers (A-D-008)', () => {
+    // Python int("+5") == 5; String(5) !== "+5" under the old guard.
+    setEnv('APCORE_CUSTOM_SIGNED__INT', '+5');
+    const cfg = Config.fromDefaults();
+    expect(cfg.get('custom.signed_int')).toBe(5);
+  });
+
+  it('coerces exponent float strings to numbers (A-D-008)', () => {
+    // Python int("1e0") fails, then float("1e0") == 1.0.
+    setEnv('APCORE_CUSTOM_EXP__FLOAT', '1e0');
+    const cfg = Config.fromDefaults();
+    expect(cfg.get('custom.exp_float')).toBe(1);
+    expect(typeof cfg.get('custom.exp_float')).toBe('number');
+  });
 });
 
 describe('Config legacy-mode global env map (A-D-04)', () => {

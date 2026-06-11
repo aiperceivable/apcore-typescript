@@ -428,7 +428,9 @@ export class CallDepthExceededError extends ModuleError {
     super(
       'CALL_DEPTH_EXCEEDED',
       `Call depth ${depth} exceeds maximum ${maxDepth}`,
-      { depth, maxDepth, callChain },
+      // snake_case detail keys for cross-language parity with the spec,
+      // apcore-python, and apcore-rust (sync finding A-D-019).
+      { depth, max_depth: maxDepth, call_chain: callChain },
       options?.cause,
       options?.traceId,
       options?.retryable,
@@ -445,7 +447,7 @@ export class CallDepthExceededError extends ModuleError {
   }
 
   get maxDepth(): number {
-    return this.details['maxDepth'] as number;
+    return this.details['max_depth'] as number;
   }
 }
 
@@ -456,7 +458,8 @@ export class CircularCallError extends ModuleError {
     super(
       'CIRCULAR_CALL',
       `Circular call detected for module ${moduleId}`,
-      { moduleId, callChain },
+      // snake_case detail keys (sync finding A-D-019).
+      { module_id: moduleId, call_chain: callChain },
       options?.cause,
       options?.traceId,
       options?.retryable,
@@ -469,7 +472,7 @@ export class CircularCallError extends ModuleError {
   }
 
   get moduleId(): string {
-    return this.details['moduleId'] as string;
+    return this.details['module_id'] as string;
   }
 }
 
@@ -486,7 +489,8 @@ export class CallFrequencyExceededError extends ModuleError {
     super(
       'CALL_FREQUENCY_EXCEEDED',
       `Module ${moduleId} called ${count} times, max is ${maxRepeat}`,
-      { moduleId, count, maxRepeat, callChain },
+      // snake_case detail keys (sync finding A-D-019).
+      { module_id: moduleId, count, max_repeat: maxRepeat, call_chain: callChain },
       options?.cause,
       options?.traceId,
       options?.retryable,
@@ -499,7 +503,7 @@ export class CallFrequencyExceededError extends ModuleError {
   }
 
   get moduleId(): string {
-    return this.details['moduleId'] as string;
+    return this.details['module_id'] as string;
   }
 
   get count(): number {
@@ -507,7 +511,7 @@ export class CallFrequencyExceededError extends ModuleError {
   }
 
   get maxRepeat(): number {
-    return this.details['maxRepeat'] as number;
+    return this.details['max_repeat'] as number;
   }
 }
 

@@ -877,6 +877,49 @@ describe('Registry unregister() onUnload callback', () => {
 });
 
 /* -----------------------------------------------------------
+ * unregister() clears hot-reload/drain state (A-D-001)
+ * --------------------------------------------------------- */
+
+describe('Registry unregister() clears drain/refcount state (A-D-001)', () => {
+  it('drops stale _draining entry so re-registering the same id can be acquired', () => {
+    const registry = new Registry();
+    registry.register('drain.me', createMod('drain.me'));
+
+    // Mark the module draining (simulating an in-flight safe_unregister).
+    registry.beginDrain('drain.me');
+    expect(registry.isDraining('drain.me')).toBe(true);
+
+    // Direct unregister() (not via safe_unregister) must clear drain state.
+    expect(registry.unregister('drain.me')).toBe(true);
+    expect(registry.isDraining('drain.me')).toBe(false);
+
+    // Re-register the SAME id — acquire() must succeed (no stale draining flag).
+    registry.register('drain.me', createMod('drain.me'));
+    expect(() => registry.acquire('drain.me')).not.toThrow();
+    expect(registry.acquire('drain.me')).not.toBeNull();
+  });
+
+  it('drops stale _refCounts entry so the re-registered module starts at zero', () => {
+    const registry = new Registry();
+    registry.register('ref.me', createMod('ref.me'));
+
+    // Bump the reference count via acquire().
+    registry.acquire('ref.me');
+    expect(registry.refCount.get('ref.me')).toBe(1);
+
+    // Direct unregister() must clear the ref count.
+    expect(registry.unregister('ref.me')).toBe(true);
+    expect(registry.refCount.has('ref.me')).toBe(false);
+
+    // Re-register the same id — its ref count must start fresh at zero.
+    registry.register('ref.me', createMod('ref.me'));
+    expect(registry.refCount.has('ref.me')).toBe(false);
+    registry.acquire('ref.me');
+    expect(registry.refCount.get('ref.me')).toBe(1);
+  });
+});
+
+/* -----------------------------------------------------------
  * _triggerEvent error handling
  * --------------------------------------------------------- */
 

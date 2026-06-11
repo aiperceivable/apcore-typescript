@@ -30,7 +30,6 @@ import {
 import { DEFAULT_TOGGLE_STATE, type ToggleState } from './sys-modules/toggle.js';
 import { CTX_GLOBAL_DEADLINE, CTX_TRACING_SPANS, redactSensitive } from './executor.js';
 import { MiddlewareChainError, type MiddlewareManager } from './middleware/manager.js';
-import { RetrySignal } from './middleware/base.js';
 import type { ModuleAnnotations } from './module.js';
 import { DEFAULT_ANNOTATIONS } from './module.js';
 import type { PipelineContext, Step, StepResult } from './pipeline.js';
@@ -444,23 +443,15 @@ export class BuiltinMiddlewareBefore implements Step {
       ctx.executedMiddlewares = executedMiddlewares;
     } catch (e) {
       if (e instanceof MiddlewareChainError) {
+        // Store the executed middlewares for the executor's on_error recovery,
+        // then re-raise WITHOUT running on_error here. The executor (call()/
+        // callWithTrace()/stream paths) is the SOLE on_error site, so on_error
+        // fires exactly once per attempt. Running it here as well would
+        // double-fire stateful handlers — e.g. RetryMiddleware would
+        // double-increment its counter, halving the retry budget. Mirrors
+        // apcore-python builtin_steps.py BuiltinMiddlewareBefore's
+        // MiddlewareChainError branch (sync finding A-D-011).
         ctx.executedMiddlewares = e.executedMiddlewares;
-        // Try on_error recovery
-        const recovery = await this._middlewareManager.executeOnError(
-          ctx.moduleId,
-          ctx.inputs,
-          e.original,
-          ctx.context,
-          e.executedMiddlewares,
-        );
-        // RetrySignal is handled at the executor.call() level, not here.
-        // From a step's perspective: rethrow the original so executor.call
-        // sees it, runs on_error again, and observes the RetrySignal there.
-        // (sync finding A-D-017 — keeps the retry loop in one place.)
-        if (recovery !== null && !(recovery instanceof RetrySignal)) {
-          ctx.output = recovery;
-          return { action: 'skip_to', skipTo: 'return_result' };
-        }
         throw e.original;
       }
       throw e;

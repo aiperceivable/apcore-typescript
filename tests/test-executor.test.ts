@@ -72,6 +72,26 @@ describe('redactSensitive', () => {
     expect((result['user'] as Record<string, unknown>)['name']).toBe('Alice');
     expect((result['user'] as Record<string, unknown>)['token']).toBe(REDACTED_VALUE);
   });
+
+  it('redacts _secret_ keys nested inside array elements (A-D-003)', () => {
+    // No x-sensitive schema marker — the prefix walk alone must reach the
+    // _secret_ key inside an object nested in an array, matching Python
+    // _redact_in_list (utils/redaction.py).
+    const data = { items: [{ _secret_api_key: 'k', label: 'one' }] };
+    const schema = { properties: {} };
+    const result = redactSensitive(data, schema);
+    const items = result['items'] as Array<Record<string, unknown>>;
+    expect(items[0]['_secret_api_key']).toBe(REDACTED_VALUE);
+    expect(items[0]['label']).toBe('one');
+  });
+
+  it('recurses into nested arrays for _secret_ redaction (A-D-003)', () => {
+    const data = { groups: [[{ _secret_token: 't' }]] };
+    const schema = { properties: {} };
+    const result = redactSensitive(data, schema);
+    const groups = result['groups'] as Array<Array<Record<string, unknown>>>;
+    expect(groups[0][0]['_secret_token']).toBe(REDACTED_VALUE);
+  });
 });
 
 describe('Executor', () => {

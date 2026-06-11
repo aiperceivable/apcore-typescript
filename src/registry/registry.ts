@@ -991,6 +991,15 @@ export class Registry {
     this._schemaCache.delete(moduleId);
     this._lowercaseMap.delete(moduleId.toLowerCase());
 
+    // Clear hot-reload tracking state to avoid stale entries when unregister()
+    // is called directly (not via safeUnregister()). Otherwise a leftover
+    // _draining flag would make acquire() throw ModuleNotFoundError on a
+    // re-registered module with the same id (mirrors apcore-python
+    // registry.py:1217-1219 and apcore-rust registry.rs).
+    this._draining.delete(moduleId);
+    this._drainResolvers.delete(moduleId);
+    this._refCounts.delete(moduleId);
+
     // Call onUnload if available
     const modObj = module as Record<string, unknown>;
     if (typeof modObj['onUnload'] === 'function') {

@@ -521,6 +521,34 @@ describe('Contract: ACL.remove_rule', () => {
     expect(result).toBe(true);
   });
 
+  // acl_system.remove_rule.A-D-016.explicit_null_ignores_conditions
+  it('acl_system.remove_rule.A-D-016: explicit null conditions ignores conditions when matching', () => {
+    // A rule that HAS conditions; passing conditions: null must remove it,
+    // treating explicit null the same as omitted (Python acl.py:631 / Rust).
+    const acl = new ACL(
+      [rule(['a'], ['b'], 'allow', '', { roles: ['admin'] })],
+      'deny',
+    );
+    expect(acl.removeRule(['a'], ['b'], null)).toBe(true);
+    expect(acl.removeRule(['a'], ['b'], null)).toBe(false);
+  });
+
+  // acl_system.remove_rule.A-D-016.specific_conditions_still_disambiguate
+  it('acl_system.remove_rule.A-D-016: a specific conditions object still disambiguates', () => {
+    const acl = new ACL(
+      [
+        rule(['a'], ['b'], 'allow', '', { roles: ['admin'] }),
+        rule(['a'], ['b'], 'allow', '', { roles: ['user'] }),
+      ],
+      'deny',
+    );
+    // Targeted removal: only the user-role rule is removed.
+    expect(acl.removeRule(['a'], ['b'], { roles: ['user'] })).toBe(true);
+    expect(acl.removeRule(['a'], ['b'], { roles: ['user'] })).toBe(false);
+    // The admin-role rule survives.
+    expect(acl.removeRule(['a'], ['b'], { roles: ['admin'] })).toBe(true);
+  });
+
   // acl_system.remove_rule.property.thread_safe
   it('acl_system.remove_rule.property.thread_safe: N>=8 concurrent removals, no corruption', async () => {
     const rules = Array.from({ length: 16 }, (_, i) => rule([`svc.${i}`], ['t.*'], 'allow'));
