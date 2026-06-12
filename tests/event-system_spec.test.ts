@@ -90,12 +90,13 @@ function stubFetch(status: number): ReturnType<typeof vi.fn> {
 // ===========================================================================
 
 describe('EventEmitter.emit', () => {
-  it('event_system.emit.input.event_type.not_empty: SKIP — emit() does not validate event_type (fire-and-forget)', () => {
-    // Spec declares event_type MUST NOT be empty, but TS emit() takes an
-    // ApCoreEvent and is fire-and-forget: it enforces no validation and raises
-    // no error. The empty-event_type rule is unenforced here, identical to
-    // Python. Mirrored as a skip (rule unenforceable as a rejection contract).
-    expect(true).toBe(true); // placeholder body for the skipped clause
+  it.skip('event_system.emit.input.event_type.not_empty: emit() does not validate event_type (fire-and-forget; caller precondition)', () => {
+    // Spec (event-system.md, EventEmitter.emit) declares event_type MUST NOT be
+    // empty as a CALLER PRECONDITION, not a validated rejection: emit() takes an
+    // ApCoreEvent and is fire-and-forget — it enforces no validation and raises
+    // no error, consistent with the Contract's Errors/Properties sections and
+    // identical to Python and Rust. A real it.skip() (not a green placeholder)
+    // so cross-language tester runs do not miscount this as an enforcement pass.
   });
 
   it('event_system.emit.error.none_raised: a throwing subscriber must not surface to emit()/flush() callers', async () => {
