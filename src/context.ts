@@ -105,7 +105,7 @@ export class Context<T = null> {
    * SDKs to: `identity`, `traceParent`, `cancelToken`, `data`, `services`,
    * `globalDeadline`. `executor` and `callerId` are NOT accepted as inputs:
    *   - `executor` is bound to the Context by the Executor on first call()
-   *     (see {@link _withExecutor}); top-level Contexts created locally
+   *     (see {@link withExecutor}); top-level Contexts created locally
    *     therefore have `executor === null` until the Executor binds itself.
    *   - `callerId` is managed exclusively by {@link child}; top-level
    *     Contexts always have `callerId === null`.
@@ -173,14 +173,15 @@ export class Context<T = null> {
   }
 
   /**
-   * @internal SDK-only. Returns a new Context with `executor` bound.
+   * Contract member. Bind the Executor to this Context (copy-on-write). Not for
+   * application code. Implements apcore spec §"Contract: Executor binding to
+   * Context".
    *
    * Idempotent for the same Executor instance — returns `this` unchanged.
    * Throws {@link ContextBindingError} if the Context is already bound to a
-   * different Executor (cross-executor rebind is a programming error per
-   * apcore spec §"Contract: Executor binding to Context").
+   * different Executor (cross-executor rebind is a programming error).
    */
-  _withExecutor(executor: unknown): Context<T> {
+  withExecutor(executor: unknown): Context<T> {
     if (this.executor === executor) return this;
     if (this.executor != null) {
       throw new ContextBindingError(
@@ -202,6 +203,11 @@ export class Context<T = null> {
     );
   }
 
+  /** @deprecated Use {@link withExecutor}. Retained for older callers; will be removed in a future major. */
+  _withExecutor(executor: unknown): Context<T> {
+    return this.withExecutor(executor);
+  }
+
   /**
    * @internal SDK-only. Returns a new Context with `cancelToken` bound.
    *
@@ -209,6 +215,7 @@ export class Context<T = null> {
    * Throws {@link ContextBindingError} if the Context is already bound to a
    * different CancelToken.
    */
+  // TODO(api-surface): classify vs api-surface-conventions §6.1
   _withCancelToken(cancelToken: CancelToken): Context<T> {
     if (this.cancelToken === cancelToken) return this;
     if (this.cancelToken != null) {

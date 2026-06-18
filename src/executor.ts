@@ -214,6 +214,20 @@ function isPlainObjectChunk(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
+/**
+ * Bind the Executor to a Context, tolerating both the current public method
+ * (`withExecutor`) and the deprecated alias (`_withExecutor`). This keeps the
+ * Executor robust against foreign Context implementations (e.g. the duck-typed
+ * BridgeContext in apcore-mcp-typescript) during the deprecation window, where
+ * either name may be the only one present.
+ */
+function bindExecutorToCtx<C>(ctx: C, executor: unknown): C {
+  const c = ctx as any;
+  return (typeof c.withExecutor === 'function'
+    ? c.withExecutor(executor)
+    : c._withExecutor(executor)) as C;
+}
+
 export class Executor {
   private _registry: Registry;
   private _middlewareManager: MiddlewareManager;
@@ -417,12 +431,12 @@ export class Executor {
   ): Promise<Record<string, unknown>> {
     this._validateModuleId(moduleId);
 
-    // Issue #66: auto-bind executor to context on every entry. _withExecutor
+    // Issue #66: auto-bind executor to context on every entry. withExecutor
     // is idempotent for the same instance and raises ContextBindingError on
     // cross-executor rebind, so the rule "Executor binds itself on first call"
     // is enforced regardless of how the caller built the Context.
     let ctx = context ?? Context.create();
-    ctx = ctx._withExecutor(this);
+    ctx = bindExecutorToCtx(ctx, this);
     const pipeCtx: PipelineContext = {
       moduleId,
       inputs: inputs ?? {},
@@ -529,7 +543,7 @@ export class Executor {
 
     // Issue #66: auto-bind executor (see call() for rationale).
     let ctx = context ?? Context.create();
-    ctx = ctx._withExecutor(this);
+    ctx = bindExecutorToCtx(ctx, this);
     const pipelineCtx: PipelineContext = {
       moduleId,
       inputs: inputs ?? {},
@@ -622,7 +636,7 @@ export class Executor {
 
     // Issue #66: auto-bind executor (see call() for rationale).
     let ctx = context ?? Context.create();
-    ctx = ctx._withExecutor(this);
+    ctx = bindExecutorToCtx(ctx, this);
     const pipeCtx: PipelineContext = {
       moduleId,
       inputs: inputs ?? {},
@@ -832,7 +846,7 @@ export class Executor {
     // apcore-python executor.py and apcore-rust executor.rs).
     let validateCtx = context ?? Context.create();
     try {
-      validateCtx = validateCtx._withExecutor(this);
+      validateCtx = bindExecutorToCtx(validateCtx, this);
     } catch (e) {
       if (e instanceof ContextBindingError) {
         checks.push({

@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [0.24.1] - 2026-06-18
+### Changed
+refactor(context): rename _withExecutor to withExecutor, add deprecation alias
+
+Rename the internal `_withExecutor` method to the public `withExecutor` while retaining a deprecated alias for backward compatibility. Update all internal usages in executor.ts to use the new method name, and add a helper function to handle both method names for robust cross-context executor binding during the deprecation window. Also update JSDoc comments to reflect the new API and apcore spec references.
+
 ## [0.24.0] - 2026-06-11
 
 ### Added
