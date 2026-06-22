@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [0.25.0] - 2026-06-22
+
+### Added
+
+- **Config-driven ACL discovery (#74, D-64).** New `ACL.discover(config)` static method (Node-only, installed via the `acl-file.ts` side-effect module) resolves `acl.root` (default `./acl`) relative to the config file's directory, loads an ACL only if the resolved path exists, and returns `null` otherwise. An `acl.root` that points at a directory loads `<root>/global_acl.yaml` (the directory convention — a directory without that file is a no-op); an `acl.root` that points at a file loads that file directly. **Critical invariant:** a missing path attaches NO ACL — never a synthesized default-deny. Discovery is auto-wired in the `APCore` constructor and skipped when the caller supplies their own `Executor`. Adds new tests and `examples/acl-config-driven.ts`. Cross-language contract locked by the apcore conformance fixture `acl_root_discovery.json`. The directory-convention handling was the fix that brought TS to parity with apcore-python / apcore-rust.
+
 ## [0.24.1] - 2026-06-18
 ### Changed
 refactor(context): rename _withExecutor to withExecutor, add deprecation alias
