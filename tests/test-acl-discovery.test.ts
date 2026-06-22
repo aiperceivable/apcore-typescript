@@ -61,6 +61,33 @@ describe('ACL.discover (D-64 / #74)', () => {
     expect(acl!.check('a.mod', 'b.mod')).toBe(false);
   });
 
+  it('loads <root>/global_acl.yaml when acl.root is a directory', () => {
+    // acl.root is a directory by convention (the default "./acl"); discovery
+    // must load the conventional global_acl.yaml inside it (PROTOCOL_SPEC §3.1).
+    // Parity with apcore-python and apcore-rust. Regression: TS previously
+    // passed the directory straight to readFileSync and threw EISDIR.
+    const aclDir = join(tmpDir, 'acl');
+    mkdirSync(aclDir);
+    writeFileSync(join(aclDir, 'global_acl.yaml'), DENY_ALL_ACL);
+
+    const config = new Config({ acl: { root: aclDir } });
+    const acl = ACL.discover(config);
+
+    expect(acl).toBeInstanceOf(ACL);
+    expect(acl!.check('a.mod', 'b.mod')).toBe(false);
+  });
+
+  it('returns null when acl.root is a directory without global_acl.yaml', () => {
+    // Directory exists but has no global_acl.yaml -> no-op (null), not EISDIR
+    // and not a synthesized default-deny.
+    const aclDir = join(tmpDir, 'acl');
+    mkdirSync(aclDir);
+
+    const config = new Config({ acl: { root: aclDir } });
+
+    expect(ACL.discover(config)).toBeNull();
+  });
+
   it('returns null when acl.root does not exist (no silent default-deny)', () => {
     const missing = join(tmpDir, 'nonexistent', 'acl.yaml');
     const config = new Config({ acl: { root: missing } });

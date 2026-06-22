@@ -9,8 +9,8 @@
  * `node:fs` lives only on this leaf so the browser closure stays clean.
  */
 
-import { existsSync, readFileSync } from 'node:fs';
-import { dirname, isAbsolute, resolve } from 'node:path';
+import { existsSync, readFileSync, statSync } from 'node:fs';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 import yaml from 'js-yaml';
 import { ACL, _parseAclRule, _setAclFileLoader, _setAclDiscoverer } from './acl.js';
 import type { AclConfigLike } from './acl.js';
@@ -80,6 +80,18 @@ _setAclDiscoverer((config: AclConfigLike): ACL | null => {
   // a real ACL file is loaded (read by ACL.load from the file itself).
   if (!existsSync(rootPath)) {
     return null;
+  }
+
+  // acl.root is a directory by convention (the default "./acl"): load the
+  // conventional `<root>/global_acl.yaml` (PROTOCOL_SPEC §3.1 `acl/{scope}_acl.yaml`).
+  // A directory without that file is a no-op. acl.root MAY also point directly
+  // at a YAML file. Parity with apcore-python and apcore-rust.
+  if (statSync(rootPath).isDirectory()) {
+    const globalAcl = join(rootPath, 'global_acl.yaml');
+    if (!existsSync(globalAcl)) {
+      return null;
+    }
+    return ACL.load(globalAcl);
   }
 
   return ACL.load(rootPath);

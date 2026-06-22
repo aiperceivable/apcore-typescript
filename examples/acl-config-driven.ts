@@ -12,7 +12,7 @@
  * This script lays out a tiny throwaway project on disk so `acl.root` resolves
  * relative to the config file (the canonical anchor):
  *
- *     <tmp>/apcore.yaml            acl: { root: ./acl/global_acl.yaml, default_effect: deny }
+ *     <tmp>/apcore.yaml            acl: { root: ./acl, default_effect: deny }
  *     <tmp>/acl/global_acl.yaml    first-match-wins, default-deny policy
  *
  * It then loads the config, constructs `new APCore({ config })`, and proves the
@@ -20,9 +20,9 @@
  * result, and a denied inter-module call throws `ACLDeniedError` — with NO
  * manual `setAcl`.
  *
- * Note: in this SDK `acl.root` names the policy FILE to load (ACL.load reads a
- * single YAML file), so we point it at `./acl/global_acl.yaml` while keeping the
- * file co-located under `acl/`.
+ * `acl.root` is a directory by convention (the default is `./acl`); discovery
+ * loads the conventional `<root>/global_acl.yaml` inside it. (acl.root MAY also
+ * point directly at a YAML file.) This matches apcore-python and apcore-rust.
  *
  * Each scenario carries its expected outcome, so this script doubles as a smoke
  * test: it exits non-zero if any decision drifts from the policy.
@@ -58,7 +58,7 @@ rules:
 const APCORE_YAML = `project:
   name: acl-config-driven-demo
 acl:
-  root: ./acl/global_acl.yaml
+  root: ./acl
   default_effect: deny
 `;
 
