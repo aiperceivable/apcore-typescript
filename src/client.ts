@@ -3,6 +3,7 @@
  */
 
 import type { TSchema } from '@sinclair/typebox';
+import { ACL, _isAclDiscovererInstalled } from './acl.js';
 import type { Config } from './config.js';
 import type { Context } from './context.js';
 import { FunctionModule, module as createModule } from './decorator.js';
@@ -96,8 +97,9 @@ export class APCore {
     this._toggleState = options?.toggleState ?? new ToggleState();
 
     this.metricsCollector = options?.metricsCollector ?? null;
+    const prebuiltExecutor = options?.executor;
     this.executor =
-      options?.executor ??
+      prebuiltExecutor ??
       new Executor({
         registry: this.registry,
         config: this.config,
@@ -105,6 +107,21 @@ export class APCore {
         // ToggleState instance (Issue #71).
         toggleState: this._toggleState,
       });
+
+    // Activate config-driven ACL discovery (D-64 / issue #74). When a config
+    // is present and we built the Executor ourselves, resolve `acl.root` and
+    // attach the discovered ACL. A missing acl path returns null and attaches
+    // NOTHING — preserving "no enforcement" for projects without an acl file
+    // (never a silent empty default-deny). Skipped when a pre-built Executor
+    // was supplied so the caller's explicit ACL wiring is never clobbered, and
+    // skipped in browser bundles where the Node-only discoverer is never wired
+    // (so ACL.discover's browser-guidance throw is never hit).
+    if (this.config && prebuiltExecutor === undefined && _isAclDiscovererInstalled()) {
+      const discovered = ACL.discover(this.config);
+      if (discovered !== null) {
+        this.executor.setAcl(discovered);
+      }
+    }
 
     // Auto-register sys modules if config is provided AND the Node-side
     // installer is wired up. In browser bundles `_sysModulesInstaller`

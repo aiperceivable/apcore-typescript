@@ -10,8 +10,11 @@
  */
 
 import { existsSync, readFileSync } from 'node:fs';
+import { dirname, isAbsolute, resolve } from 'node:path';
 import yaml from 'js-yaml';
-import { ACL, _parseAclRule, _setAclFileLoader } from './acl.js';
+import { ACL, _parseAclRule, _setAclFileLoader, _setAclDiscoverer } from './acl.js';
+import type { AclConfigLike } from './acl.js';
+import { getDefault } from './config-defaults.js';
 import { ACLRuleError, ConfigNotFoundError } from './errors.js';
 
 _setAclFileLoader((yamlPath: string): ACL => {
@@ -48,4 +51,36 @@ _setAclFileLoader((yamlPath: string): ACL => {
   const acl = new ACL(rules, defaultEffect);
   acl._setYamlPath(yamlPath);
   return acl;
+});
+
+// ---------------------------------------------------------------------------
+// Config-driven ACL discovery (D-64, Recommendation A — issue #74)
+// ---------------------------------------------------------------------------
+
+_setAclDiscoverer((config: AclConfigLike): ACL | null => {
+  // Read `acl.root`, falling back to the canonical default ("./acl").
+  const rawRoot = config.get('acl.root', getDefault('acl.root'));
+  if (rawRoot === null || rawRoot === undefined) {
+    return null;
+  }
+
+  let rootPath = String(rawRoot);
+  if (!isAbsolute(rootPath)) {
+    // Anchor a relative root at the config file's directory when known,
+    // otherwise at the process CWD. Parity with apcore-python
+    // (Config.source_path) and apcore-rust (D-64).
+    const sourcePath = config.sourcePath;
+    const base = sourcePath !== null ? dirname(resolve(sourcePath)) : process.cwd();
+    rootPath = resolve(base, rootPath);
+  }
+
+  // Missing path => no enforcement. CRITICAL: do NOT synthesize an empty
+  // default-deny ACL — that would silently deny every inter-module call in
+  // every project lacking an acl file. `acl.default_effect` only applies once
+  // a real ACL file is loaded (read by ACL.load from the file itself).
+  if (!existsSync(rootPath)) {
+    return null;
+  }
+
+  return ACL.load(rootPath);
 });

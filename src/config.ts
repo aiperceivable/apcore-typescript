@@ -838,6 +838,20 @@ export class Config {
   }
 
   /**
+   * Absolute or relative path of the YAML file this config was loaded from,
+   * or `null` when the config was built from defaults / a raw object (e.g.
+   * `Config.fromDefaults()` or `new Config({...})`).
+   *
+   * Used by `ACL.discover()` to resolve `acl.root` relative to the config
+   * file's directory rather than the process CWD when the source is known.
+   * Mirrors apcore-python's `Config.source_path` and apcore-rust's
+   * `Config::source_path()` (D-64 / issue #74).
+   */
+  get sourcePath(): string | null {
+    return this._yamlPath;
+  }
+
+  /**
    * Attach external config data to a namespace.
    *
    * Exactly one of fromFile or fromDict must be provided.

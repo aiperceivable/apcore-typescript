@@ -36,6 +36,45 @@ export function _setAclFileLoader(fn: AclFileLoader | null): void {
   _aclFileLoader = fn;
 }
 
+/**
+ * Minimal structural view of a `Config` used by `ACL.discover()`.
+ *
+ * Declared structurally (rather than importing the concrete `Config`
+ * class) so `acl.ts` stays free of the `node:fs`-bearing `config.ts`
+ * module and the browser closure remains clean. The real `Config`
+ * satisfies this shape via its `get()` method and `sourcePath` getter.
+ */
+export interface AclConfigLike {
+  get(key: string, defaultValue?: unknown): unknown;
+  readonly sourcePath: string | null;
+}
+
+/**
+ * Node-side filesystem discovery for `acl.root`. Installed by the Node-only
+ * side-effect module `./acl-file.ts`; remains `null` in browser bundles so
+ * that `ACL.discover()` throws a clear runtime error instead of pulling
+ * `node:fs` / `node:path` into the browser closure.
+ */
+type AclDiscoverer = (config: AclConfigLike) => ACL | null;
+let _aclDiscoverer: AclDiscoverer | null = null;
+
+/**
+ * @internal — used by `./acl-file.ts` to install the Node-side discoverer.
+ * Pass `null` to uninstall (parity with `_setAclFileLoader`).
+ */
+export function _setAclDiscoverer(fn: AclDiscoverer | null): void {
+  _aclDiscoverer = fn;
+}
+
+/**
+ * @internal — true when the Node-side ACL discoverer has been installed.
+ * Lets the `APCore` bootstrap skip `ACL.discover()` in browser bundles
+ * (where the discoverer is never wired) instead of triggering its throw.
+ */
+export function _isAclDiscovererInstalled(): boolean {
+  return _aclDiscoverer !== null;
+}
+
 export interface ACLRule {
   callers: string[];
   targets: string[];
@@ -210,6 +249,36 @@ export class ACL {
       );
     }
     return _aclFileLoader(yamlPath);
+  }
+
+  /**
+   * Config-driven ACL discovery (D-64 / issue #74).
+   *
+   * Reads `acl.root` from `config` (defaulting to `"./acl"` when unset),
+   * resolves it relative to the directory of the config's source file when
+   * `config.sourcePath` is known — otherwise relative to the process CWD —
+   * and loads the ACL from that directory if it exists.
+   *
+   * Returns `null` when the resolved path does NOT exist. A missing path
+   * MUST NOT synthesize an empty default-deny ACL: an empty ACL would deny
+   * every inter-module call in every project lacking an `acl/` directory, a
+   * silent and severe break. Missing path = no enforcement, identical to a
+   * project that never configured an ACL. `acl.default_effect` only takes
+   * effect once an ACL is actually loaded from a file.
+   *
+   * Node-only: filesystem access lives on `./acl-file.ts`. In browser
+   * bundles the discoverer is never installed and this throws a clear
+   * runtime error (parity with {@link ACL.load}).
+   */
+  static discover(config: AclConfigLike): ACL | null {
+    if (_aclDiscoverer === null) {
+      throw new ACLRuleError(
+        'ACL.discover(config) requires the Node entry of apcore-js. The browser ' +
+          'build does not bundle the filesystem discoverer. Construct ACL ' +
+          'programmatically with `new ACL([...rules])` instead.',
+      );
+    }
+    return _aclDiscoverer(config);
   }
 
   /** @internal — used by `./acl-file.ts` to set `_yamlPath` after parsing. */
