@@ -10,7 +10,7 @@ import type { TSchema } from '@sinclair/typebox';
 import { Kind } from '@sinclair/typebox';
 import type { ACL } from './acl.js';
 import type { ApprovalHandler, ApprovalResult } from './approval.js';
-import { createApprovalRequest } from './approval.js';
+import { createApprovalRequest, createApprovalResult } from './approval.js';
 import type { Config } from './config.js';
 import { getDefault } from './config-defaults.js';
 import type { CancelToken } from './cancel.js';
@@ -29,6 +29,9 @@ import {
 } from './errors.js';
 import { DEFAULT_TOGGLE_STATE, type ToggleState } from './sys-modules/toggle.js';
 import { CTX_GLOBAL_DEADLINE, CTX_TRACING_SPANS, redactSensitive } from './executor.js';
+import { type EventEmitter, createEvent } from './events/emitter.js';
+import type { ExecutionPolicy, PolicyDecision } from './policy.js';
+import { applyDecisionToAnnotations } from './policy.js';
 import { MiddlewareChainError, type MiddlewareManager } from './middleware/manager.js';
 import type { ModuleAnnotations } from './module.js';
 import { DEFAULT_ANNOTATIONS } from './module.js';
@@ -60,8 +63,8 @@ function validateSchema(schema: TSchema, data: Record<string, unknown>, directio
   throw new SchemaValidationError(`${direction} validation failed`, result.errors as unknown as Array<Record<string, unknown>>);
 }
 
-function needsApproval(mod: Record<string, unknown>): boolean {
-  const annotations = mod['annotations'];
+function needsApproval(mod: Record<string, unknown> | null): boolean {
+  const annotations = mod?.['annotations'];
   if (annotations == null) return false;
   if (typeof annotations !== 'object') return false;
   if ('requiresApproval' in annotations) {
@@ -71,6 +74,12 @@ function needsApproval(mod: Record<string, unknown>): boolean {
     return Boolean((annotations as Record<string, unknown>)['requires_approval']);
   }
   return false;
+}
+
+function moduleIsDestructive(mod: Record<string, unknown> | null): boolean {
+  const annotations = mod?.['annotations'];
+  if (annotations == null || typeof annotations !== 'object') return false;
+  return Boolean((annotations as Record<string, unknown>)['destructive']);
 }
 
 function dictToAnnotations(dict: Record<string, unknown>): ModuleAnnotations {
@@ -251,9 +260,11 @@ export class BuiltinACLCheck implements Step {
   readonly pure = true;
 
   private _acl: ACL | null;
+  private _eventEmitter: EventEmitter | null;
 
-  constructor(acl: ACL | null) {
+  constructor(acl: ACL | null, eventEmitter: EventEmitter | null = null) {
     this._acl = acl;
+    this._eventEmitter = eventEmitter;
   }
 
   /** Update the ACL provider at runtime. */
@@ -265,11 +276,35 @@ export class BuiltinACLCheck implements Step {
     if (this._acl === null) {
       return { action: 'continue' };
     }
-    const allowed = this._acl.check(ctx.context.callerId, ctx.moduleId, ctx.context);
+    const callerId = ctx.context.callerId;
+    const allowed = this._acl.check(callerId, ctx.moduleId, ctx.context);
     if (!allowed) {
-      throw new ACLDeniedError(ctx.context.callerId, ctx.moduleId);
+      // Publish a governance event on denial (canonical name proposed in
+      // apcore#77). Guarded by dryRun so a validate() preflight probe never
+      // emits a spurious denial event. Fires only on deny — allows are
+      // high-volume and already covered by the apcore.acl.check span.
+      this._emitDenied(callerId, ctx.moduleId, ctx.context, ctx.dryRun === true);
+      throw new ACLDeniedError(callerId, ctx.moduleId);
     }
     return { action: 'continue' };
+  }
+
+  /** Emit `apcore.acl.denied` on the event bus (apcore#77) when live. */
+  private _emitDenied(
+    callerId: string | null,
+    moduleId: string,
+    ctx: Context,
+    dryRun: boolean,
+  ): void {
+    if (this._eventEmitter === null || dryRun) return;
+    this._eventEmitter.emit(
+      createEvent('apcore.acl.denied', moduleId, 'warn', {
+        module_id: moduleId,
+        caller_id: callerId,
+        reason: 'ACL denied',
+        trace_id: ctx.traceId,
+      }),
+    );
   }
 }
 
@@ -277,7 +312,19 @@ export class BuiltinACLCheck implements Step {
 // 7. BuiltinApprovalGate
 // ---------------------------------------------------------------------------
 
-/** Handles approval flow for modules that require explicit approval. */
+/** Handles approval flow for modules that require explicit approval.
+ *
+ * For modules whose annotations declare `requiresApproval=true` (or that an
+ * {@link ExecutionPolicy} gates), calls the configured ApprovalHandler, emits an
+ * audit event (tracing span event + optional event-bus event), and translates
+ * the result into either continued execution or the appropriate ApprovalError.
+ *
+ * Fail-loud governance (apcore#76): when a module needs approval but no handler
+ * is configured, the gate keeps the PROTOCOL_SPEC §7.4 skip behavior but warns
+ * once per module. With `ExecutionPolicy(strict=true)` it fails closed instead.
+ * A module whose effective `destructive` annotation is true but that no approval
+ * gate covers is also warned about once per module.
+ */
 export class BuiltinApprovalGate implements Step {
   readonly name = 'approval_gate';
   readonly description = 'Approval handler flow';
@@ -287,9 +334,18 @@ export class BuiltinApprovalGate implements Step {
   readonly pure = false;
 
   private _handler: ApprovalHandler | null;
+  private _policy: ExecutionPolicy | null;
+  private _eventEmitter: EventEmitter | null;
+  private readonly _warned = new Set<string>();
 
-  constructor(handler: ApprovalHandler | null) {
+  constructor(
+    handler: ApprovalHandler | null,
+    policy: ExecutionPolicy | null = null,
+    eventEmitter: EventEmitter | null = null,
+  ) {
     this._handler = handler;
+    this._policy = policy;
+    this._eventEmitter = eventEmitter;
   }
 
   /** Update the approval handler at runtime. */
@@ -297,13 +353,59 @@ export class BuiltinApprovalGate implements Step {
     this._handler = handler;
   }
 
+  /** Update the execution policy at runtime. */
+  setPolicy(policy: ExecutionPolicy | null): void {
+    this._policy = policy;
+  }
+
   async execute(ctx: PipelineContext): Promise<StepResult> {
-    if (this._handler === null) {
+    const mod = ctx.module as Record<string, unknown> | null;
+
+    let decision: PolicyDecision | null = null;
+    let needs: boolean;
+    let effectiveDestructive: boolean;
+    if (this._policy !== null) {
+      decision = this._policy.resolve(ctx.moduleId, mod?.['annotations'] ?? null);
+      needs = decision.needsApproval;
+      effectiveDestructive = decision.destructive;
+      if (decision.overridden) {
+        this._emitPolicyAudit(decision, ctx.context);
+      }
+    } else {
+      needs = needsApproval(mod);
+      effectiveDestructive = moduleIsDestructive(mod);
+    }
+
+    if (!needs) {
+      if (effectiveDestructive) {
+        this._warnOnce(
+          `destructive_ungated:${ctx.moduleId}`,
+          `[apcore:approval] Module '${ctx.moduleId}' is annotated destructive=true but is not ` +
+            'covered by the approval gate (requiresApproval is false and no policy gates ' +
+            'destructive modules). Consider requiresApproval=true or ' +
+            'ExecutionPolicy(gateDestructive=true). (apcore#76)',
+        );
+      }
       return { action: 'continue' };
     }
 
-    const mod = ctx.module as Record<string, unknown>;
-    if (!needsApproval(mod)) {
+    if (this._handler === null) {
+      if (this._policy !== null && this._policy.strict) {
+        const result = createApprovalResult({
+          status: 'rejected',
+          reason:
+            'Approval required but no ApprovalHandler is configured; ' +
+            'ExecutionPolicy(strict=true) fails closed',
+        });
+        this._emitAudit(result, ctx.moduleId, ctx.context);
+        throw new ApprovalDeniedError(result, ctx.moduleId);
+      }
+      this._warnOnce(
+        `no_handler:${ctx.moduleId}`,
+        `[apcore:approval] Module '${ctx.moduleId}' requires approval but no ApprovalHandler ` +
+          'is configured; the approval gate is skipped per PROTOCOL_SPEC §7.4. Configure an ' +
+          'approval handler, or ExecutionPolicy(strict=true) to fail closed. (apcore#76)',
+      );
       return { action: 'continue' };
     }
 
@@ -322,7 +424,7 @@ export class BuiltinApprovalGate implements Step {
       cleanInputs = rest;
       result = await this._handler.checkApproval(rawToken);
     } else {
-      const annotations = mod['annotations'];
+      const annotations = mod?.['annotations'];
       let ann: ModuleAnnotations;
       if (
         annotations != null &&
@@ -336,31 +438,27 @@ export class BuiltinApprovalGate implements Step {
         ann = DEFAULT_ANNOTATIONS;
       }
 
+      if (decision !== null) {
+        // Preserve the ApprovalRequest contract ("requiresApproval is guaranteed
+        // true", PROTOCOL_SPEC §7) under policy overrides: the handler sees the
+        // effective governance values, not the module's raw declaration.
+        // Reaching this point means the call needs approval, so requiresApproval
+        // is true by definition (covers rule overrides and gateDestructive).
+        ann = applyDecisionToAnnotations(ann, decision);
+      }
+
       const request = createApprovalRequest({
         moduleId: ctx.moduleId,
         arguments: ctx.inputs,
         context: ctx.context,
         annotations: ann,
-        description: (mod['description'] as string) ?? null,
-        tags: (mod['tags'] as string[]) ?? [],
+        description: (mod?.['description'] as string) ?? null,
+        tags: (mod?.['tags'] as string[]) ?? [],
       });
       result = await this._handler.requestApproval(request);
     }
 
-    // Emit audit event
-    const spansStack = ctx.context.data[CTX_TRACING_SPANS] as
-      | Array<{ events: Array<Record<string, unknown>> }>
-      | undefined;
-    if (spansStack && spansStack.length > 0) {
-      spansStack[spansStack.length - 1].events.push({
-        name: 'approval_decision',
-        module_id: ctx.moduleId,
-        status: result.status,
-        approved_by: result.approvedBy ?? '',
-        reason: result.reason ?? '',
-        approval_id: result.approvalId ?? '',
-      });
-    }
+    this._emitAudit(result, ctx.moduleId, ctx.context);
 
     if (result.status === 'approved') {
       ctx.inputs = cleanInputs;
@@ -377,6 +475,82 @@ export class BuiltinApprovalGate implements Step {
 
     // rejected or unknown
     throw new ApprovalDeniedError(result, ctx.moduleId);
+  }
+
+  /** Warn once per dedup key (module/kind pair). */
+  private _warnOnce(key: string, message: string): void {
+    if (this._warned.has(key)) return;
+    this._warned.add(key);
+    console.warn(message);
+  }
+
+  /** Audit a policy-driven override: span event + optional bus event (apcore#77). */
+  private _emitPolicyAudit(decision: PolicyDecision, ctx: Context): void {
+    const rule = decision.rule;
+    const pattern = rule ? rule.pattern : '';
+    const reason = (rule ? rule.reason : null) ?? '';
+    const spansStack = ctx.data[CTX_TRACING_SPANS] as
+      | Array<{ events: Array<Record<string, unknown>> }>
+      | undefined;
+    if (spansStack && spansStack.length > 0) {
+      spansStack[spansStack.length - 1].events.push({
+        name: 'policy_override',
+        module_id: decision.moduleId,
+        pattern,
+        requires_approval: decision.requiresApproval,
+        destructive: decision.destructive,
+        needs_approval: decision.needsApproval,
+        reason,
+      });
+    }
+    if (this._eventEmitter !== null) {
+      this._eventEmitter.emit(
+        createEvent('apcore.policy.override', decision.moduleId, 'info', {
+          module_id: decision.moduleId,
+          pattern,
+          requires_approval: decision.requiresApproval,
+          destructive: decision.destructive,
+          needs_approval: decision.needsApproval,
+          reason,
+          trace_id: ctx.traceId,
+        }),
+      );
+    }
+  }
+
+  /** Audit an approval decision: span event + optional bus event (apcore#77).
+   *
+   * Severity mirrors the outcome: approved/pending are `info`; rejected/timeout
+   * (governance interventions) are `warn`.
+   */
+  private _emitAudit(result: ApprovalResult, moduleId: string, ctx: Context): void {
+    const spansStack = ctx.data[CTX_TRACING_SPANS] as
+      | Array<{ events: Array<Record<string, unknown>> }>
+      | undefined;
+    if (spansStack && spansStack.length > 0) {
+      spansStack[spansStack.length - 1].events.push({
+        name: 'approval_decision',
+        module_id: moduleId,
+        status: result.status,
+        approved_by: result.approvedBy ?? '',
+        reason: result.reason ?? '',
+        approval_id: result.approvalId ?? '',
+      });
+    }
+    if (this._eventEmitter !== null) {
+      const severity =
+        result.status === 'approved' || result.status === 'pending' ? 'info' : 'warn';
+      this._eventEmitter.emit(
+        createEvent('apcore.approval.decision', moduleId, severity, {
+          module_id: moduleId,
+          status: result.status,
+          approved_by: result.approvedBy,
+          reason: result.reason,
+          approval_id: result.approvalId,
+          trace_id: ctx.traceId,
+        }),
+      );
+    }
   }
 }
 
@@ -752,6 +926,14 @@ export interface StandardStrategyDeps {
   approvalHandler: ApprovalHandler | null;
   middlewareManager: MiddlewareManager;
   toggleState?: ToggleState | null;
+  /** Optional ExecutionPolicy with governance overrides for the Step 5 gate (apcore#76). */
+  policy?: ExecutionPolicy | null;
+  /**
+   * Optional EventEmitter. When provided, the ACL step publishes
+   * apcore.acl.denied and the approval gate publishes apcore.approval.decision
+   * / apcore.policy.override governance events (apcore#77).
+   */
+  eventEmitter?: EventEmitter | null;
 }
 
 /** Build the standard 11-step execution strategy matching PROTOCOL_SPEC §5 pipeline.
@@ -764,8 +946,8 @@ export function buildStandardStrategy(deps: StandardStrategyDeps): ExecutionStra
     new BuiltinContextCreation(deps.config),
     new BuiltinCallChainGuard(deps.config),
     new BuiltinModuleLookup(deps.registry, deps.toggleState ?? undefined),
-    new BuiltinACLCheck(deps.acl),
-    new BuiltinApprovalGate(deps.approvalHandler),
+    new BuiltinACLCheck(deps.acl, deps.eventEmitter ?? null),
+    new BuiltinApprovalGate(deps.approvalHandler, deps.policy ?? null, deps.eventEmitter ?? null),
     new BuiltinMiddlewareBefore(deps.middlewareManager),
     new BuiltinInputValidation(),
     new BuiltinExecute(deps.config),
@@ -820,8 +1002,8 @@ export function buildPerformanceStrategy(deps: StandardStrategyDeps): ExecutionS
     new BuiltinContextCreation(deps.config),
     new BuiltinCallChainGuard(deps.config),
     new BuiltinModuleLookup(deps.registry, deps.toggleState ?? undefined),
-    new BuiltinACLCheck(deps.acl),
-    new BuiltinApprovalGate(deps.approvalHandler),
+    new BuiltinACLCheck(deps.acl, deps.eventEmitter ?? null),
+    new BuiltinApprovalGate(deps.approvalHandler, deps.policy ?? null, deps.eventEmitter ?? null),
     new BuiltinInputValidation(),
     new BuiltinExecute(deps.config),
     new BuiltinOutputValidation(),

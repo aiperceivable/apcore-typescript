@@ -100,6 +100,10 @@ export {
 } from './approval.js';
 export type { ApprovalRequest, ApprovalResult, ApprovalHandler } from './approval.js';
 
+// Execution-time governance policy (apcore#76 RFC pilot)
+export { ExecutionPolicy, PolicyRule } from './policy.js';
+export type { PolicyDecision, PolicyRuleOverrides } from './policy.js';
+
 // Errors
 export {
   ModuleError,

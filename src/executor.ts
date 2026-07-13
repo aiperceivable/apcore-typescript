@@ -7,6 +7,7 @@
 
 import type { ACL } from './acl.js';
 import type { ApprovalHandler } from './approval.js';
+import type { ExecutionPolicy } from './policy.js';
 import {
   BuiltinACLCheck,
   BuiltinApprovalGate,
@@ -234,6 +235,7 @@ export class Executor {
   private _acl: ACL | null;
   private _config: Config | null;
   private _approvalHandler: ApprovalHandler | null;
+  private _policy: ExecutionPolicy | null;
   private _toggleState: ToggleState | null;
   private _eventEmitter: EventEmitter | null;
   private _strategy: ExecutionStrategy;
@@ -249,6 +251,7 @@ export class Executor {
     acl?: ACL | null;
     config?: Config | null;
     approvalHandler?: ApprovalHandler | null;
+    policy?: ExecutionPolicy | null;
     toggleState?: ToggleState | null;
     eventEmitter?: EventEmitter | null;
   }) {
@@ -257,6 +260,7 @@ export class Executor {
     this._acl = options.acl ?? null;
     this._config = options.config ?? null;
     this._approvalHandler = options.approvalHandler ?? null;
+    this._policy = options.policy ?? null;
     this._toggleState = options.toggleState ?? null;
     this._eventEmitter = options.eventEmitter ?? null;
 
@@ -310,6 +314,8 @@ export class Executor {
       approvalHandler: this._approvalHandler,
       middlewareManager: this._middlewareManager,
       toggleState: this._toggleState,
+      policy: this._policy,
+      eventEmitter: this._eventEmitter,
     };
   }
 
@@ -343,8 +349,9 @@ export class Executor {
     acl?: ACL | null,
     config?: Config | null,
     approvalHandler?: ApprovalHandler | null,
+    policy?: ExecutionPolicy | null,
   ): Executor {
-    return new Executor({ registry, middlewares, acl, config, approvalHandler });
+    return new Executor({ registry, middlewares, acl, config, approvalHandler, policy });
   }
 
   get registry(): Registry {
@@ -388,6 +395,24 @@ export class Executor {
       console.warn(
         '[apcore:executor] setApprovalHandler() called but current strategy has no BuiltinApprovalGate step — approval will not be enforced',
       );
+    }
+  }
+
+  /**
+   * Set the execution-time governance policy for the Step 5 gate (apcore#76).
+   *
+   * Updates both the executor field and the strategy's `approval_gate` step via
+   * its `setPolicy` setter. Custom user-supplied approval steps without that
+   * setter are silently skipped — re-register the strategy to replace a custom
+   * step's policy.
+   */
+  setPolicy(policy: ExecutionPolicy | null): void {
+    this._policy = policy;
+    for (const step of this._strategy.steps) {
+      if (step.name === 'approval_gate' && step instanceof BuiltinApprovalGate) {
+        step.setPolicy(policy);
+        break;
+      }
     }
   }
 
@@ -922,7 +947,14 @@ export class Executor {
     // Detect requires_approval
     let requiresApproval = false;
     if (pipeCtx.module != null) {
-      requiresApproval = this._needsApproval(pipeCtx.module as Record<string, unknown>);
+      const mod = pipeCtx.module as Record<string, unknown>;
+      if (this._policy !== null) {
+        // Policy overrides win over declared annotations (apcore#76), so
+        // preflight reports the same verdict the gate will enforce.
+        requiresApproval = this._policy.resolve(moduleId, mod['annotations']).needsApproval;
+      } else {
+        requiresApproval = this._needsApproval(mod);
+      }
     }
 
     // Module-level preflight (optional)

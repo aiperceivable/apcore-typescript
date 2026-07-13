@@ -11,6 +11,7 @@ import { SysModulesDisabledError } from './errors.js';
 import type { ApCoreEvent, EventSubscriber } from './events/emitter.js';
 import { EventEmitter } from './events/emitter.js';
 import { Executor } from './executor.js';
+import type { ExecutionPolicy } from './policy.js';
 import type { Middleware } from './middleware/index.js';
 import type { ModuleAnnotations, ModuleExample, PreflightResult } from './module.js';
 import type { MetricsCollector } from './observability/metrics.js';
@@ -55,6 +56,13 @@ export interface APCoreOptions {
    * `new ToggleState()`. Ignored when a pre-built `executor` is supplied.
    */
   toggleState?: ToggleState;
+  /**
+   * Optional ExecutionPolicy with execution-time governance overrides
+   * (apcore#76 RFC pilot). Applied to the auto-created Executor's approval
+   * gate. Ignored when the caller supplies their own `executor` — wire the
+   * policy on that Executor directly (parity with config-driven ACL discovery).
+   */
+  policy?: ExecutionPolicy;
 }
 
 export interface ModuleOptions {
@@ -106,6 +114,8 @@ export class APCore {
         // Read path: the pipeline's BuiltinModuleLookup observes this same
         // ToggleState instance (Issue #71).
         toggleState: this._toggleState,
+        // Execution-time governance overrides for the approval gate (apcore#76).
+        policy: options?.policy ?? null,
       });
 
     // Activate config-driven ACL discovery (D-64 / issue #74). When a config

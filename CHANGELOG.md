@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [0.26.0] - 2026-07-13
+
+### Added
+
+- **Execution-time governance policy (#76 RFC pilot).** New `ExecutionPolicy` and `PolicyRule` classes plus a `PolicyDecision` type (exported from the package root) let a platform operator override the governance annotations of already-registered modules at execution time — independent of how they were registered. A policy attaches to the `Executor` via a new `policy` option (also on `Executor.fromRegistry` and the `APCore` facade) and the runtime `Executor.setPolicy()` setter, and is consulted by the approval gate (Step 5). Pattern matching reuses the ACL wildcard semantics (Algorithm A08) and specificity scoring (Algorithm A10) via `utils/pattern`; on a specificity tie the more restrictive rule wins. A matched rule overrides the module's own declared/scanned `requiresApproval` / `destructive` annotations, and every policy-driven override is recorded in the audit trail (tracing span event + optional bus event). `ExecutionPolicy.fromObject` parses a parsed YAML/JSON governance document **strictly** — unknown keys throw so a typo cannot silently disable a control. `Executor.validate()` preflight now reports the same `requiresApproval` verdict the gate will enforce under a policy. When the gate is policy-forced, the `ApprovalRequest.annotations` handed to the handler carries the **effective** governance values, preserving the "requiresApproval is guaranteed true" contract (PROTOCOL_SPEC §7). Adds `tests/policy.test.ts` and `examples/execution-policy.ts`.
+
+- **Governance events on the event bus (#77 pilot).** When the `Executor` has an `eventEmitter`, the governance chain now publishes three canonical events: `apcore.approval.decision` on every approval adjudication (handler decisions and the strict fail-closed rejection; severity `info` for approved/pending, `warn` for rejected/timeout), `apcore.policy.override` whenever a policy changes a module's effective governance, and `apcore.acl.denied` (severity `warn`) when an ACL check denies a call. Payloads carry `module_id`, `trace_id`, and event-specific keys (`status`/`approved_by`/`approval_id`, `pattern`/`requires_approval`/`destructive`, or `caller_id`). Canonical names are proposed in apcore#77, pending the PROTOCOL_SPEC §9.16.2 amendment. A skipped approval gate emits nothing (parity with the no-audit-log-when-skipped contract), and the `apcore.acl.denied` event is suppressed during `validate()` preflight (dry-run) so a probe never emits a spurious denial.
+
+### Changed
+
+- **Resolve `destructive` ↔ approval semantics (#76).** `new ExecutionPolicy(rules, { gateDestructive: true })` makes any module whose effective `destructive` annotation is true require approval even when `requiresApproval` is false — the opt-in resolution of the long-standing footgun where an inferred `DELETE` was `destructive=true` yet ungated. Orthogonality remains the default (no behavior change without a policy).
+
+- **Approval gate fails loud, not silent (#76, security principle).** When a module needs approval but no `ApprovalHandler` is configured, the gate keeps the PROTOCOL_SPEC §7.4 skip behavior but now emits a `console.warn` (once per module) instead of silently no-opping. `new ExecutionPolicy(rules, { strict: true })` upgrades this to fail **closed** (throws `ApprovalDeniedError`). A module annotated `destructive=true` that no approval gate covers is likewise warned about once per module. Existing behavior without a policy and with a handler configured is unchanged.
+
 ## [0.25.0] - 2026-06-22
 
 ### Added
