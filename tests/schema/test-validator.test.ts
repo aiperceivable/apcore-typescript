@@ -231,6 +231,117 @@ describe('SchemaValidator — format warnings (SHOULD-level)', () => {
   });
 });
 
+describe('SchemaValidator — unrecognised format is an annotation (apexe#32)', () => {
+  // JSON Schema 2020-12 format-annotation vocabulary: a format the implementation
+  // does not recognise is collected as an annotation and MUST NOT fail validation.
+  // apcore-python (pydantic json_schema_extra) and apcore-rust (jsonschema crate,
+  // Draft 2020-12 with format assertion off) both ignore it; TS used to reject.
+
+  it('accepts a string carrying an unregistered format', () => {
+    const validator = new SchemaValidator(false);
+    const schema = jsonSchemaToTypeBox({
+      type: 'object',
+      properties: { path: { type: 'string', format: 'path' } },
+      required: ['path'],
+    });
+    const result = validator.validate({ path: '/tmp/z' }, schema);
+    expect(result.valid).toBe(true);
+    expect(result.errorCode).toBeUndefined();
+  });
+
+  it('does not warn for an unrecognised format (nothing to assert)', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const validator = new SchemaValidator(false);
+    const schema = jsonSchemaToTypeBox({
+      type: 'object',
+      properties: { a: { type: 'string', format: 'bogus-xyz' } },
+      required: ['a'],
+    });
+    const result = validator.validate({ a: '/tmp/z' }, schema);
+    expect(result.valid).toBe(true);
+    expect(result.warnLogged).toBeUndefined();
+    expect(warnSpy).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+
+  it('accepts an unregistered format inside array items (the apexe path operand case)', () => {
+    const validator = new SchemaValidator(false);
+    const schema = jsonSchemaToTypeBox({
+      type: 'object',
+      properties: { path: { type: 'array', items: { type: 'string', format: 'path' } } },
+      required: ['path'],
+    });
+    const result = validator.validate({ path: ['/tmp/z'] }, schema);
+    expect(result.valid).toBe(true);
+  });
+
+  it('accepts an unregistered format inside a oneOf branch', () => {
+    const validator = new SchemaValidator(false);
+    const schema = jsonSchemaToTypeBox({
+      oneOf: [
+        { type: 'object', properties: { p: { type: 'string', format: 'path' } }, required: ['p'] },
+      ],
+    });
+    const result = validator.validate({ p: '/tmp/z' }, schema);
+    expect(result.valid).toBe(true);
+  });
+
+  it('validateInput returns the data instead of throwing for an unregistered format', () => {
+    const validator = new SchemaValidator(false);
+    const schema = jsonSchemaToTypeBox({
+      type: 'object',
+      properties: { p: { type: 'string', format: 'path' } },
+      required: ['p'],
+    });
+    expect(validator.validateInput({ p: '/tmp/z' }, schema)['p']).toBe('/tmp/z');
+  });
+
+  it('accepts an unregistered format on a TypeBox schema built without the converter', () => {
+    const validator = new SchemaValidator(false);
+    const schema = Type.Object({ p: Type.String({ format: 'unregistered-xyz' }) });
+    expect(validator.validate({ p: '/tmp/z' }, schema).valid).toBe(true);
+  });
+
+  it('keeps the format value on the converted schema (it is an annotation, not dropped)', () => {
+    const schema = jsonSchemaToTypeBox({
+      type: 'object',
+      properties: { p: { type: 'string', format: 'path' } },
+      required: ['p'],
+    }) as unknown as { properties: { p: { format?: string } } };
+    expect(schema.properties.p.format).toBe('path');
+  });
+
+  it('still rejects a type mismatch on a property carrying an unregistered format', () => {
+    const validator = new SchemaValidator(false);
+    const schema = jsonSchemaToTypeBox({
+      type: 'object',
+      properties: { p: { type: 'string', format: 'path' } },
+      required: ['p'],
+    });
+    const result = validator.validate({ p: 42 } as unknown as Record<string, unknown>, schema);
+    expect(result.valid).toBe(false);
+    expect(result.errorCode).toBe('SCHEMA_VALIDATION_ERROR');
+  });
+
+  it('a recognised format that fails still warns and still passes (SHOULD-level, unchanged)', () => {
+    // The other half of apexe#32: this stays a warning. The cross-SDK contract is
+    // the conformance fixture schema_hardening_formats.json — valid: true,
+    // warn_logged: true — and both apcore-python and apcore-rust behave this way.
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const validator = new SchemaValidator(false);
+    const schema = jsonSchemaToTypeBox({
+      type: 'object',
+      properties: { a: { type: 'string', format: 'uri' } },
+      required: ['a'],
+    });
+    const result = validator.validate({ a: '/tmp/z' }, schema);
+    expect(result.valid).toBe(true);
+    expect(result.warnLogged).toBe(true);
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("Format 'uri' validation failed at /a"));
+    warnSpy.mockRestore();
+  });
+});
+
 describe('SchemaValidator — errorCode in results', () => {
   const validator = new SchemaValidator(false);
 

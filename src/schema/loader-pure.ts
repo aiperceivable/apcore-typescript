@@ -11,6 +11,7 @@
 
 import { Type, type TSchema } from '@sinclair/typebox';
 import { ONEOF_MARKER } from './constants.js';
+import { registerFormatAsAnnotation } from './formats.js';
 
 // ---------------------------------------------------------------------------
 // Canonical-form serialization (used for content hashing)
@@ -137,6 +138,11 @@ function _convertString(schema: Record<string, unknown>): TSchema {
   for (const key of ['minLength', 'maxLength', 'pattern', 'format']) {
     if (key in schema) opts[key] = schema[key];
   }
+  // The `format` value is carried through as an annotation. TypeBox rejects a
+  // string whose format is not in its global registry, so register it as an
+  // accept-everything checker — JSON Schema 2020-12 requires an unrecognised
+  // format to be collected, not asserted (apexe#32).
+  if (typeof opts['format'] === 'string') registerFormatAsAnnotation(opts['format']);
   return Type.String(opts);
 }
 

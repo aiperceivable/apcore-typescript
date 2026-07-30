@@ -2,42 +2,35 @@
  * SchemaValidator — validates runtime data against TypeBox schemas.
  */
 
-import { type TSchema, FormatRegistry, TypeGuard } from '@sinclair/typebox';
+import { type TSchema, TypeGuard } from '@sinclair/typebox';
 import { Value, type ValueError } from '@sinclair/typebox/value';
 import type { SchemaValidationErrorDetail, SchemaValidationResult } from './types.js';
 import { validationResultToError } from './types.js';
 import { ONEOF_MARKER } from './constants.js';
-
-// SHOULD-level format validators (Issue #44 §4).
-// These check semantic correctness; failures emit warnings but do not reject.
-const FORMAT_VALIDATORS: Record<string, (v: string) => boolean> = {
-  'date-time': (v) => !isNaN(new Date(v).getTime()),
-  'date': (v) => /^\d{4}-\d{2}-\d{2}$/.test(v),
-  'time': (v) => /^\d{2}:\d{2}:\d{2}/.test(v),
-  'email': (v) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v),
-  'uri': (v) => { try { new URL(v); return true; } catch { return false; } },
-  'uuid': (v) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v),
-  'ipv4': (v) => /^(\d{1,3}\.){3}\d{1,3}$/.test(v) && v.split('.').every((n) => parseInt(n, 10) <= 255),
-  'ipv6': (v) => /^([0-9a-f]{0,4}:){2,7}[0-9a-f]{0,4}$/i.test(v),
-};
+import {
+  FORMAT_VALIDATORS,
+  registerFormatAsAnnotation,
+  registerSchemaFormats,
+} from './formats.js';
 
 export class SchemaValidator {
   private _coerceTypes: boolean;
 
   constructor(coerceTypes: boolean = true) {
     this._coerceTypes = coerceTypes;
-    // Register known formats with TypeBox so Value.Check accepts them structurally.
-    // TypeBox 0.34+ rejects strings with unregistered formats; we override to always
-    // pass the structural check and handle enforcement ourselves via SHOULD-level warnings.
-    // Guarded by Has() so pre-existing registrations from the host process are not clobbered.
+    // Register the formats apcore recognises so TypeBox's structural check
+    // accepts them; enforcement happens here at SHOULD level (see _checkFormats).
     for (const fmt of Object.keys(FORMAT_VALIDATORS)) {
-      if (!FormatRegistry.Has(fmt)) {
-        FormatRegistry.Set(fmt, () => true);
-      }
+      registerFormatAsAnnotation(fmt);
     }
   }
 
   validate(data: Record<string, unknown>, schema: TSchema): SchemaValidationResult {
+    // A `format` TypeBox does not know would otherwise make the structural check
+    // fail. JSON Schema 2020-12 says an unrecognised format is an annotation, not
+    // an assertion, so neutralise every format before checking (apexe#32).
+    registerSchemaFormats(schema);
+
     const s = schema as Record<string, unknown>;
 
     // oneOf: exhaustive counting — exactly one branch must match
