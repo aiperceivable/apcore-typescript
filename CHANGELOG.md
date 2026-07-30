@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [Unreleased]
+
+### Fixed
+
+- **An unrecognised `format` no longer fails validation (apexe#32).** JSON Schema 2020-12 puts `format` in the format-annotation vocabulary by default: a format value the implementation does not recognise is collected as an annotation and MUST NOT be treated as an assertion failure. TypeBox does the opposite — `Value.Check` rejects any string whose `format` is absent from its global `FormatRegistry` — so a contract carrying, for example, `format: "path"` made every call passing that field fail with `SCHEMA_VALIDATION_ERROR` before the module ran. Scanned apexe contracts were uncallable from a JS consumer (the path operands of `cli.find` / `cli.cp` / `cli.ls`) while the identical contract executed fine over apcore-rust. Every format apcore meets is now registered as an accept-everything checker at both boundaries — `jsonSchemaToTypeBox` and `SchemaValidator.validate` — and the format value is preserved on the schema. New module `schema/formats.ts` owns the recognised-format checkers and the registration helpers. The other half is unchanged by design: a **recognised** format whose value does not satisfy it still passes with a `console.warn`, which is the established cross-language contract (conformance fixture `schema_hardening_formats.json`: `valid: true`, `warn_logged: true`) and matches apcore-python and apcore-rust.
+
+- **`additionalProperties` is honoured by the schema converter.** It was ignored, so an object declared `additionalProperties: false` accepted unknown keys, while apcore-python (pydantic `extra="forbid"`) and apcore-rust (jsonschema crate) both reject them. The object form (`additionalProperties: {type: "integer"}`) is honoured as well.
+
+- **A `type` array converts to a union.** `{"type": ["string", "boolean"]}` — which apexe emits for value-optional flags — fell through to `Type.Unknown()`, so the property accepted a number, an object, anything. It now converts to a union of its members with the sibling constraints kept per branch, matching apcore-rust.
+
 ## [0.26.0] - 2026-07-13
 
 ### Added
