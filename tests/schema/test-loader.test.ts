@@ -574,4 +574,101 @@ describe('jsonSchemaToTypeBox', () => {
     expect(Value.Check(schema, { score: 0, positive: 0.1 })).toBe(false);
     expect(Value.Check(schema, { score: 50, positive: 0 })).toBe(false);
   });
+
+  it('registers an unrecognised format so the structural check ignores it', () => {
+    // Conversion must not produce a schema TypeBox considers unsatisfiable —
+    // `format` is an annotation (apexe#32). Uses a format name no other test
+    // registers, so this fails if the registration is removed.
+    const schema = jsonSchemaToTypeBox({ type: 'string', format: 'loader-probe-format' });
+    expect(Value.Check(schema, '/tmp/z')).toBe(true);
+    expect((schema as Record<string, unknown>)['format']).toBe('loader-probe-format');
+  });
+});
+
+describe('jsonSchemaToTypeBox — keywords apexe contracts rely on', () => {
+  it('enforces additionalProperties: false', () => {
+    // apcore-python maps this to pydantic extra="forbid" and apcore-rust
+    // delegates to the jsonschema crate; both reject the unexpected key.
+    const schema = jsonSchemaToTypeBox({
+      type: 'object',
+      properties: { a: { type: 'string' } },
+      required: ['a'],
+      additionalProperties: false,
+    });
+    expect(Value.Check(schema, { a: 'x' })).toBe(true);
+    expect(Value.Check(schema, { a: 'x', b: 'y' })).toBe(false);
+  });
+
+  it('allows unknown properties when additionalProperties is absent or true', () => {
+    const open = jsonSchemaToTypeBox({
+      type: 'object',
+      properties: { a: { type: 'string' } },
+      required: ['a'],
+    });
+    expect(Value.Check(open, { a: 'x', b: 'y' })).toBe(true);
+    const explicit = jsonSchemaToTypeBox({
+      type: 'object',
+      properties: { a: { type: 'string' } },
+      required: ['a'],
+      additionalProperties: true,
+    });
+    expect(Value.Check(explicit, { a: 'x', b: 'y' })).toBe(true);
+  });
+
+  it('constrains unknown properties to an additionalProperties sub-schema', () => {
+    const schema = jsonSchemaToTypeBox({
+      type: 'object',
+      properties: { a: { type: 'string' } },
+      required: ['a'],
+      additionalProperties: { type: 'integer' },
+    });
+    expect(Value.Check(schema, { a: 'x', count: 3 })).toBe(true);
+    expect(Value.Check(schema, { a: 'x', count: 'three' })).toBe(false);
+  });
+
+  it('enforces additionalProperties: false on an object with no properties', () => {
+    const schema = jsonSchemaToTypeBox({ type: 'object', additionalProperties: false });
+    expect(Value.Check(schema, {})).toBe(true);
+    expect(Value.Check(schema, { a: 1 })).toBe(false);
+  });
+
+  it('converts a type array to a union of its members', () => {
+    // apexe emits ["string", "boolean"] for value-optional flags. Converting it
+    // to `unknown` accepted every other type as well; apcore-rust rejects them.
+    const schema = jsonSchemaToTypeBox({
+      type: 'object',
+      properties: { flag: { type: ['string', 'boolean'] } },
+      required: ['flag'],
+    });
+    expect(Value.Check(schema, { flag: 'value' })).toBe(true);
+    expect(Value.Check(schema, { flag: true })).toBe(true);
+    expect(Value.Check(schema, { flag: 42 })).toBe(false);
+    expect(Value.Check(schema, { flag: { nested: 1 } })).toBe(false);
+  });
+
+  it('converts a nullable type array ["string", "null"]', () => {
+    const schema = jsonSchemaToTypeBox({ type: ['string', 'null'] });
+    expect(Value.Check(schema, 'x')).toBe(true);
+    expect(Value.Check(schema, null)).toBe(true);
+    expect(Value.Check(schema, 7)).toBe(false);
+  });
+
+  it('keeps per-branch constraints when converting a type array', () => {
+    const schema = jsonSchemaToTypeBox({ type: ['string', 'null'], minLength: 3 });
+    expect(Value.Check(schema, 'abc')).toBe(true);
+    expect(Value.Check(schema, 'ab')).toBe(false);
+    expect(Value.Check(schema, null)).toBe(true);
+  });
+
+  it('accepts a required property whose value is present but empty', () => {
+    // `required` is about presence, not emptiness — apcore-python and
+    // apcore-rust both accept "" and []. Locked so it cannot drift.
+    const schema = jsonSchemaToTypeBox({
+      type: 'object',
+      properties: { name: { type: 'string' }, items: { type: 'array', items: { type: 'string' } } },
+      required: ['name', 'items'],
+    });
+    expect(Value.Check(schema, { name: '', items: [] })).toBe(true);
+    expect(Value.Check(schema, { items: [] })).toBe(false);
+  });
 });

@@ -85,7 +85,10 @@ function _convert(
     return Type.Unknown();
   }
 
-  const schemaType = schema['type'] as string | undefined;
+  const rawType = schema['type'];
+  if (Array.isArray(rawType)) return _convertTypeUnion(schema, rawType, self, selfId);
+
+  const schemaType = rawType as string | undefined;
 
   let result: TSchema;
   if (schemaType === 'object') result = _convertObject(schema, self, selfId);
@@ -105,6 +108,25 @@ function _convert(
   return result;
 }
 
+/**
+ * A `type` array (`["string", "boolean"]`, `["string", "null"]`) means "any one
+ * of these types", so it converts to a union of the same schema narrowed to each
+ * member. Converting it to `unknown` would accept values of every other type as
+ * well — apcore-rust rejects them, and apexe emits `["string", "boolean"]` for
+ * value-optional flags.
+ */
+function _convertTypeUnion(
+  schema: Record<string, unknown>,
+  types: unknown[],
+  self: TSchema | undefined,
+  selfId: string | undefined,
+): TSchema {
+  const branches = types
+    .filter((t): t is string => typeof t === 'string')
+    .map((t) => _convert({ ...schema, type: t }, self, selfId));
+  return branches.length > 0 ? Type.Union(branches) : Type.Unknown();
+}
+
 function _convertObject(
   schema: Record<string, unknown>,
   self: TSchema | undefined,
@@ -112,6 +134,7 @@ function _convertObject(
 ): TSchema {
   const properties = schema['properties'] as Record<string, Record<string, unknown>> | undefined;
   const required = new Set((schema['required'] as string[]) ?? []);
+  const opts = _additionalPropertiesOption(schema, self, selfId);
 
   if (properties) {
     const typeboxProps: Record<string, TSchema> = {};
@@ -119,9 +142,30 @@ function _convertObject(
       const propType = _convert(propSchema, self, selfId);
       typeboxProps[name] = required.has(name) ? propType : Type.Optional(propType);
     }
-    return Type.Object(typeboxProps);
+    return Type.Object(typeboxProps, opts);
   }
+  if (opts) return Type.Object({}, opts);
   return Type.Record(Type.String(), Type.Unknown());
+}
+
+/**
+ * Translate `additionalProperties` into the TypeBox object option. Ignoring it
+ * let unknown properties through, while apcore-python (`extra="forbid"`) and
+ * apcore-rust both reject them. `true` (the default) needs no option.
+ */
+function _additionalPropertiesOption(
+  schema: Record<string, unknown>,
+  self: TSchema | undefined,
+  selfId: string | undefined,
+): { additionalProperties: false | TSchema } | undefined {
+  const additional = schema['additionalProperties'];
+  if (additional === false) return { additionalProperties: false };
+  if (additional !== null && typeof additional === 'object' && !Array.isArray(additional)) {
+    return {
+      additionalProperties: _convert(additional as Record<string, unknown>, self, selfId),
+    };
+  }
+  return undefined;
 }
 
 function _convertArray(
