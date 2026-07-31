@@ -1,5 +1,6 @@
-import { describe, it, expect, vi } from 'vitest';
-import { Type } from '@sinclair/typebox';
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import { Type, FormatRegistry } from '@sinclair/typebox';
+import { Value } from '@sinclair/typebox/value';
 import { SchemaValidator } from '../../src/schema/validator.js';
 import { SchemaValidationError } from '../../src/errors.js';
 import { validationResultToError } from '../../src/schema/types.js';
@@ -377,6 +378,69 @@ describe('SchemaValidator — errorCode in results', () => {
       expect(err).toBeInstanceOf(SchemaValidationError);
       expect((err as SchemaValidationError).code).toBe('SCHEMA_UNION_AMBIGUOUS');
     }
+  });
+});
+
+describe('SchemaValidator — format handling does not leak into the global registry', () => {
+  // `FormatRegistry` is process-global and shared with the host application.
+  // apcore's annotation semantics must not depend on who registered first, and
+  // apcore must not leave accept-everything checkers behind for the host.
+  afterEach(() => {
+    FormatRegistry.Delete('email');
+    FormatRegistry.Delete('apcore-leaked-fmt');
+  });
+
+  it('keeps warn-only semantics when the host registered a strict checker first', () => {
+    // The failing scenario: a TypeBox host registers a strict `email` checker at
+    // startup. Before the scoped override, apcore deferred to it and turned the
+    // conformance fixture case into a hard SCHEMA_VALIDATION_ERROR.
+    FormatRegistry.Set('email', (v) => /^[^@\s]+@[^@\s]+\.[a-z]{2,}$/i.test(v));
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const validator = new SchemaValidator(false);
+    const schema = jsonSchemaToTypeBox({
+      type: 'object',
+      properties: { a: { type: 'string', format: 'email' } },
+      required: ['a'],
+    });
+    const result = validator.validate({ a: 'not-an-email' }, schema);
+    expect(result.valid).toBe(true);
+    expect(result.warnLogged).toBe(true);
+    expect(result.errorCode).toBeUndefined();
+    warnSpy.mockRestore();
+  });
+
+  it("restores the host's own checker after validating", () => {
+    const strict = (v: string) => /^[^@\s]+@[^@\s]+\.[a-z]{2,}$/i.test(v);
+    FormatRegistry.Set('email', strict);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const schema = jsonSchemaToTypeBox({
+      type: 'object',
+      properties: { a: { type: 'string', format: 'email' } },
+      required: ['a'],
+    });
+    new SchemaValidator(false).validate({ a: 'not-an-email' }, schema);
+    warnSpy.mockRestore();
+    expect(FormatRegistry.Get('email')).toBe(strict);
+    // The host's schema still rejects garbage.
+    expect(Value.Check(Type.String({ format: 'email' }), 'not-an-email')).toBe(false);
+  });
+
+  it('does not register an unknown format the schema carried', () => {
+    const schema = jsonSchemaToTypeBox({
+      type: 'object',
+      properties: { a: { type: 'string', format: 'apcore-leaked-fmt' } },
+      required: ['a'],
+    });
+    expect(new SchemaValidator(false).validate({ a: 'anything' }, schema).valid).toBe(true);
+    expect(FormatRegistry.Has('apcore-leaked-fmt')).toBe(false);
+  });
+
+  it('does not register the formats apcore recognises', () => {
+    // Constructing a validator used to register every FORMAT_VALIDATORS key
+    // process-globally, so a host's `Type.String({format:'email'})` silently
+    // stopped rejecting garbage.
+    new SchemaValidator(false);
+    expect(FormatRegistry.Has('email')).toBe(false);
   });
 });
 

@@ -7,30 +7,27 @@ import { Value, type ValueError } from '@sinclair/typebox/value';
 import type { SchemaValidationErrorDetail, SchemaValidationResult } from './types.js';
 import { validationResultToError } from './types.js';
 import { ONEOF_MARKER } from './constants.js';
-import {
-  FORMAT_VALIDATORS,
-  registerFormatAsAnnotation,
-  registerSchemaFormats,
-} from './formats.js';
+import { FORMAT_VALIDATORS, withFormatsAsAnnotations } from './formats.js';
 
 export class SchemaValidator {
   private _coerceTypes: boolean;
 
   constructor(coerceTypes: boolean = true) {
     this._coerceTypes = coerceTypes;
-    // Register the formats apcore recognises so TypeBox's structural check
-    // accepts them; enforcement happens here at SHOULD level (see _checkFormats).
-    for (const fmt of Object.keys(FORMAT_VALIDATORS)) {
-      registerFormatAsAnnotation(fmt);
-    }
   }
 
+  /**
+   * A `format` TypeBox does not know would otherwise make the structural check
+   * fail. JSON Schema 2020-12 §7.2.1 makes `format` an annotation rather than an
+   * assertion by default, so every format the schema carries is neutralised for
+   * the duration of the check and restored afterwards (apexe#32). Recognised
+   * formats are enforced at SHOULD level by `_checkFormats`, never here.
+   */
   validate(data: Record<string, unknown>, schema: TSchema): SchemaValidationResult {
-    // A `format` TypeBox does not know would otherwise make the structural check
-    // fail. JSON Schema 2020-12 says an unrecognised format is an annotation, not
-    // an assertion, so neutralise every format before checking (apexe#32).
-    registerSchemaFormats(schema);
+    return withFormatsAsAnnotations(schema, () => this._validate(data, schema));
+  }
 
+  private _validate(data: Record<string, unknown>, schema: TSchema): SchemaValidationResult {
     const s = schema as Record<string, unknown>;
 
     // oneOf: exhaustive counting — exactly one branch must match
@@ -137,18 +134,20 @@ export class SchemaValidator {
   }
 
   private _validateAndReturn(data: Record<string, unknown>, schema: TSchema): Record<string, unknown> {
-    // Route through validate() so union schemas surface their specific error
-    // code (SCHEMA_UNION_NO_MATCH / SCHEMA_UNION_AMBIGUOUS) and plain failures
-    // surface SCHEMA_VALIDATION_ERROR — all preserved through the thrown error.
-    const result = this.validate(data, schema);
-    if (!result.valid) {
-      throw validationResultToError(result);
-    }
+    return withFormatsAsAnnotations(schema, () => {
+      // Route through _validate() so union schemas surface their specific error
+      // code (SCHEMA_UNION_NO_MATCH / SCHEMA_UNION_AMBIGUOUS) and plain failures
+      // surface SCHEMA_VALIDATION_ERROR — all preserved through the thrown error.
+      const result = this._validate(data, schema);
+      if (!result.valid) {
+        throw validationResultToError(result);
+      }
 
-    if (this._coerceTypes) {
-      return Value.Decode(schema, data) as Record<string, unknown>;
-    }
-    return data;
+      if (this._coerceTypes) {
+        return Value.Decode(schema, data) as Record<string, unknown>;
+      }
+      return data;
+    });
   }
 
   /**

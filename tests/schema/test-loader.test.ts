@@ -2,11 +2,12 @@ import { mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { Type } from '@sinclair/typebox';
+import { Type, FormatRegistry } from '@sinclair/typebox';
 import { Value } from '@sinclair/typebox/value';
 import { Config } from '../../src/config.js';
 import { SchemaNotFoundError, SchemaParseError } from '../../src/errors.js';
 import { SchemaLoader, jsonSchemaToTypeBox, contentHash } from '../../src/schema/loader.js';
+import { SchemaValidator } from '../../src/schema/validator.js';
 
 describe('SchemaLoader', () => {
   let tmpDir: string;
@@ -575,13 +576,15 @@ describe('jsonSchemaToTypeBox', () => {
     expect(Value.Check(schema, { score: 50, positive: 0 })).toBe(false);
   });
 
-  it('registers an unrecognised format so the structural check ignores it', () => {
-    // Conversion must not produce a schema TypeBox considers unsatisfiable —
-    // `format` is an annotation (apexe#32). Uses a format name no other test
-    // registers, so this fails if the registration is removed.
+  it('carries an unrecognised format through without touching the global registry', () => {
+    // `format` is an annotation (apexe#32), so the value must survive the
+    // conversion. Neutralising it for TypeBox's structural check belongs to
+    // SchemaValidator, which scopes the override to one check — the converter
+    // must NOT mutate the process-global FormatRegistry (see schema/formats.ts).
     const schema = jsonSchemaToTypeBox({ type: 'string', format: 'loader-probe-format' });
-    expect(Value.Check(schema, '/tmp/z')).toBe(true);
     expect((schema as Record<string, unknown>)['format']).toBe('loader-probe-format');
+    expect(FormatRegistry.Has('loader-probe-format')).toBe(false);
+    expect(new SchemaValidator(false).validate('/tmp/z' as never, schema).valid).toBe(true);
   });
 });
 
