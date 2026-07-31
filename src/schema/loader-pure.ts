@@ -86,26 +86,64 @@ function _convert(
   }
 
   const rawType = schema['type'];
-  if (Array.isArray(rawType)) return _convertTypeUnion(schema, rawType, self, selfId);
-
   const schemaType = rawType as string | undefined;
 
   let result: TSchema;
-  if (schemaType === 'object') result = _convertObject(schema, self, selfId);
+  if (Array.isArray(rawType)) result = _convertTypeUnion(schema, rawType, self, selfId);
+  else if (schemaType === 'object') result = _convertObject(schema, self, selfId);
   else if (schemaType === 'array') result = _convertArray(schema, self, selfId);
   else if (schemaType === 'string') result = _convertString(schema);
   else if (schemaType === 'integer') result = _convertNumeric(schema, Type.Integer);
   else if (schemaType === 'number') result = _convertNumeric(schema, Type.Number);
   else if (schemaType === 'boolean') result = Type.Boolean();
   else if (schemaType === 'null') result = Type.Null();
-  else result = _convertCombinator(schema, self, selfId);
+  else {
+    // No `type` at all — the combinator keywords are the whole schema.
+    return _annotate(_convertCombinator(schema, self, selfId), schema);
+  }
 
+  // `type` and a combinator keyword are independent assertions that must BOTH
+  // hold (JSON Schema 2020-12 §10.2). Converting only the `type` half silently
+  // dropped `enum` / `const` / `anyOf` / `allOf` / `not`, so
+  // `{type: ["string","boolean"], enum: ["always","auto","never"]}` accepted any
+  // string at all — apcore-rust and apcore-python both reject a non-member.
+  result = _intersectWithCombinator(result, schema, self, selfId);
+
+  return _annotate(result, schema);
+}
+
+/** Copy the annotation keywords onto the converted node. */
+function _annotate(result: TSchema, schema: Record<string, unknown>): TSchema {
   if (typeof schema['description'] === 'string')
     (result as Record<string, unknown>)['description'] = schema['description'];
   if (typeof schema['title'] === 'string')
     (result as Record<string, unknown>)['title'] = schema['title'];
-
   return result;
+}
+
+/** Assertion keywords that constrain a value independently of its `type`. */
+const COMBINATOR_KEYWORDS: readonly string[] = [
+  'enum',
+  'const',
+  'oneOf',
+  'anyOf',
+  'allOf',
+  'not',
+];
+
+/**
+ * Intersect a type-derived schema with the constraint its combinator siblings
+ * express, so both halves are enforced. Returns `typed` unchanged when the
+ * schema carries no combinator keyword.
+ */
+function _intersectWithCombinator(
+  typed: TSchema,
+  schema: Record<string, unknown>,
+  self: TSchema | undefined,
+  selfId: string | undefined,
+): TSchema {
+  if (!COMBINATOR_KEYWORDS.some((keyword) => keyword in schema)) return typed;
+  return Type.Intersect([typed, _convertCombinator(schema, self, selfId)]);
 }
 
 /**
@@ -114,6 +152,10 @@ function _convert(
  * member. Converting it to `unknown` would accept values of every other type as
  * well — apcore-rust rejects them, and apexe emits `["string", "boolean"]` for
  * value-optional flags.
+ *
+ * The branches carry only the type-specific option keywords; `description` /
+ * `title` belong on the union node and the combinator keywords are intersected
+ * with the whole union by the caller, so both are stripped here.
  */
 function _convertTypeUnion(
   schema: Record<string, unknown>,
@@ -121,9 +163,13 @@ function _convertTypeUnion(
   self: TSchema | undefined,
   selfId: string | undefined,
 ): TSchema {
+  const branchSchema: Record<string, unknown> = { ...schema };
+  for (const keyword of ['description', 'title', ...COMBINATOR_KEYWORDS]) {
+    delete branchSchema[keyword];
+  }
   const branches = types
     .filter((t): t is string => typeof t === 'string')
-    .map((t) => _convert({ ...schema, type: t }, self, selfId));
+    .map((t) => _convert({ ...branchSchema, type: t }, self, selfId));
   return branches.length > 0 ? Type.Union(branches) : Type.Unknown();
 }
 

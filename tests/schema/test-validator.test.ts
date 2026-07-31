@@ -380,6 +380,38 @@ describe('SchemaValidator — errorCode in results', () => {
   });
 });
 
+describe('SchemaValidator — enum beside a type array (apexe value-optional flag)', () => {
+  // `{"type": ["string","boolean"], "enum": [...]}` is what apexe emits for
+  // `ls --color[=WHEN]`. The enum must be enforced at the validation boundary,
+  // or a bogus value reaches argv. apcore-rust and apcore-python both reject it.
+  const schema = jsonSchemaToTypeBox({
+    type: 'object',
+    properties: {
+      color: {
+        type: ['string', 'boolean'],
+        enum: ['always', 'auto', 'never'],
+        description: 'colorize the output',
+      },
+    },
+    required: ['color'],
+    additionalProperties: false,
+  });
+
+  for (const coerceTypes of [true, false]) {
+    it(`accepts an enum member (coerceTypes=${coerceTypes})`, () => {
+      const validator = new SchemaValidator(coerceTypes);
+      expect(validator.validate({ color: 'always' }, schema).valid).toBe(true);
+    });
+
+    it(`rejects a non-member string (coerceTypes=${coerceTypes})`, () => {
+      const validator = new SchemaValidator(coerceTypes);
+      const result = validator.validate({ color: 'bogus-not-in-enum' }, schema);
+      expect(result.valid).toBe(false);
+      expect(result.errorCode).toBe('SCHEMA_VALIDATION_ERROR');
+    });
+  }
+});
+
 describe('validationResultToError', () => {
   it('throws when result is valid', () => {
     expect(() => validationResultToError({ valid: true, errors: [] })).toThrow(

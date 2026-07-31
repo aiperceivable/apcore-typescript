@@ -660,6 +660,98 @@ describe('jsonSchemaToTypeBox — keywords apexe contracts rely on', () => {
     expect(Value.Check(schema, null)).toBe(true);
   });
 
+  it('keeps an enum sibling of a type array (apexe value-optional flag)', () => {
+    // apexe emits exactly this for `ls --color[=WHEN]`. Converting only the
+    // `type` half let `--color=bogus` through; apcore-rust and apcore-python
+    // both reject it because `type` and `enum` are independent assertions.
+    const schema = jsonSchemaToTypeBox({
+      type: 'object',
+      properties: {
+        color: {
+          type: ['string', 'boolean'],
+          enum: ['always', 'auto', 'never'],
+          description: 'colorize the output',
+        },
+      },
+      required: ['color'],
+      additionalProperties: false,
+    });
+    expect(Value.Check(schema, { color: 'always' })).toBe(true);
+    expect(Value.Check(schema, { color: 'never' })).toBe(true);
+    expect(Value.Check(schema, { color: 'bogus-not-in-enum' })).toBe(false);
+    // `true` is in the declared type union but not in the enum.
+    expect(Value.Check(schema, { color: true })).toBe(false);
+    expect(Value.Check(schema, { color: 42 })).toBe(false);
+  });
+
+  it('keeps an enum whose members span every branch of a type array', () => {
+    const schema = jsonSchemaToTypeBox({ type: ['string', 'boolean'], enum: ['a', true] });
+    expect(Value.Check(schema, 'a')).toBe(true);
+    expect(Value.Check(schema, true)).toBe(true);
+    expect(Value.Check(schema, 'b')).toBe(false);
+    expect(Value.Check(schema, false)).toBe(false);
+    expect(Value.Check(schema, 1)).toBe(false);
+  });
+
+  it('keeps a const sibling of a type array', () => {
+    const schema = jsonSchemaToTypeBox({ type: ['string', 'boolean'], const: 'a' });
+    expect(Value.Check(schema, 'a')).toBe(true);
+    expect(Value.Check(schema, true)).toBe(false);
+    expect(Value.Check(schema, 'b')).toBe(false);
+  });
+
+  it('keeps an anyOf sibling of a type array', () => {
+    const schema = jsonSchemaToTypeBox({
+      type: ['string', 'integer'],
+      anyOf: [{ type: 'string', minLength: 3 }, { type: 'integer', minimum: 10 }],
+    });
+    expect(Value.Check(schema, 'abc')).toBe(true);
+    expect(Value.Check(schema, 12)).toBe(true);
+    expect(Value.Check(schema, 'ab')).toBe(false);
+    expect(Value.Check(schema, 5)).toBe(false);
+    expect(Value.Check(schema, true)).toBe(false);
+  });
+
+  it('keeps an allOf sibling of a type array', () => {
+    const schema = jsonSchemaToTypeBox({
+      type: ['string', 'null'],
+      allOf: [{ type: 'string', minLength: 2 }, { type: 'string', maxLength: 4 }],
+    });
+    expect(Value.Check(schema, 'abc')).toBe(true);
+    expect(Value.Check(schema, 'a')).toBe(false);
+    expect(Value.Check(schema, 'abcde')).toBe(false);
+  });
+
+  it('keeps a not sibling of a type array', () => {
+    const schema = jsonSchemaToTypeBox({ type: ['string', 'boolean'], not: { const: 'banned' } });
+    expect(Value.Check(schema, 'allowed')).toBe(true);
+    expect(Value.Check(schema, true)).toBe(true);
+    expect(Value.Check(schema, 'banned')).toBe(false);
+    expect(Value.Check(schema, 42)).toBe(false);
+  });
+
+  it('keeps an enum sibling of a scalar type', () => {
+    // Same independence rule with a non-array `type`.
+    const schema = jsonSchemaToTypeBox({ type: 'string', enum: ['red', 'green'] });
+    expect(Value.Check(schema, 'red')).toBe(true);
+    expect(Value.Check(schema, 'blue')).toBe(false);
+    expect(Value.Check(schema, 1)).toBe(false);
+  });
+
+  it('puts description and title on the union node, not on each branch', () => {
+    const schema = jsonSchemaToTypeBox({
+      type: ['string', 'boolean'],
+      description: 'colorize the output',
+      title: 'color',
+    }) as Record<string, unknown>;
+    expect(schema['description']).toBe('colorize the output');
+    expect(schema['title']).toBe('color');
+    for (const branch of schema['anyOf'] as Record<string, unknown>[]) {
+      expect(branch['description']).toBeUndefined();
+      expect(branch['title']).toBeUndefined();
+    }
+  });
+
   it('accepts a required property whose value is present but empty', () => {
     // `required` is about presence, not emptiness — apcore-python and
     // apcore-rust both accept "" and []. Locked so it cannot drift.
