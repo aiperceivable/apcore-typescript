@@ -381,6 +381,58 @@ describe('SchemaValidator — errorCode in results', () => {
   });
 });
 
+describe('SchemaValidator — format warnings reach into unions and intersections', () => {
+  it('warns for a format on a branch of a type array', () => {
+    // `{type: ["string","null"], format: "email"}` converts to a union, and the
+    // format annotation lands on the string branch. The walk used to stop at the
+    // union node, so this was the one shape where a recognised format was not
+    // enforced at all.
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const schema = jsonSchemaToTypeBox({
+      type: 'object',
+      properties: { a: { type: ['string', 'null'], format: 'email' } },
+      required: ['a'],
+    });
+    const result = new SchemaValidator(false).validate({ a: 'not-an-email' }, schema);
+    expect(result.valid).toBe(true);
+    expect(result.warnLogged).toBe(true);
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("Format 'email' validation failed at /a"));
+    warnSpy.mockRestore();
+  });
+
+  it('does not warn when the data matches a branch carrying no format', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const schema = jsonSchemaToTypeBox({
+      type: 'object',
+      properties: { a: { type: ['string', 'null'], format: 'email' } },
+      required: ['a'],
+    });
+    const result = new SchemaValidator(false).validate({ a: null }, schema);
+    expect(result.valid).toBe(true);
+    expect(result.warnLogged).toBeUndefined();
+    expect(warnSpy).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+
+  it('warns for a format on a schema that also carries a combinator sibling', () => {
+    // `type` + `enum` converts to an intersection; the format annotation is on
+    // the type-derived member.
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const schema = jsonSchemaToTypeBox({
+      type: 'object',
+      properties: {
+        a: { type: 'string', format: 'email', enum: ['not-an-email', 'a@b.com'] },
+      },
+      required: ['a'],
+    });
+    const result = new SchemaValidator(false).validate({ a: 'not-an-email' }, schema);
+    expect(result.valid).toBe(true);
+    expect(result.warnLogged).toBe(true);
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("Format 'email' validation failed at /a"));
+    warnSpy.mockRestore();
+  });
+});
+
 describe('SchemaValidator — format handling does not leak into the global registry', () => {
   // `FormatRegistry` is process-global and shared with the host application.
   // apcore's annotation semantics must not depend on who registered first, and

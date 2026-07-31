@@ -25,6 +25,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **A combinator sibling of a `type` keyword is no longer discarded.** `enum`, `const`, `anyOf`, `oneOf`, `allOf` and `not` were dropped whenever the schema also carried `type`, so `{"type": ["string","boolean"], "enum": ["always","auto","never"]}` — what apexe emits for `ls --color[=WHEN]` — accepted `{"color": "bogus-not-in-enum"}` and rendered it into argv. `type` and a combinator keyword are independent assertions that must both hold (JSON Schema 2020-12 §10.2), so the type-derived schema is now intersected with the combinator-derived one. See the BREAKING entry above for the compatibility impact.
 
+- **The SHOULD-level format warning reaches into unions and intersections.** The walk that emits `[apcore:schema] Format '…' validation failed` only descended through `type: "object"` / `type: "array"` nodes, so `{"type": ["string","null"], "format": "email"}` — a union after conversion — never warned for `"not-an-email"`. It now descends into `anyOf` branches (only those the data satisfies, so a sibling branch cannot report a format the value never carried) and into `allOf` members, and duplicate annotations reached through more than one branch are reported once.
+
 - **`description` / `title` land on the union node of a `type` array.** They were copied onto every branch instead of onto the union itself. LLM-facing exports (MCP / OpenAI / Anthropic tool definitions) and `contentHash` read the raw JSON Schema rather than the converted `TSchema`, so they were unaffected; only direct consumers of `jsonSchemaToTypeBox` saw the misplacement.
 
 ## [0.26.0] - 2026-07-13

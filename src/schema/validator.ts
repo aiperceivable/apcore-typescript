@@ -158,14 +158,40 @@ export class SchemaValidator {
   private _checkFormats(data: unknown, schema: TSchema): boolean {
     const warnings: string[] = [];
     this._walkFormats(data, schema as Record<string, unknown>, '/', warnings);
-    for (const w of warnings) {
+    // The same annotation can be reached through more than one union branch.
+    const unique = [...new Set(warnings)];
+    for (const w of unique) {
       console.warn(`[apcore:schema] ${w}`);
     }
-    return warnings.length > 0;
+    return unique.length > 0;
   }
 
   private _walkFormats(data: unknown, schema: Record<string, unknown>, path: string, warnings: string[]): void {
     if (typeof schema !== 'object' || schema === null) return;
+
+    // Union (a `type` array, `anyOf` or `oneOf`): the format annotation lives on
+    // the branches, not on the union node. Only branches the data satisfies
+    // contribute — a sibling branch describes a different shape, and warning
+    // from it would report a format the value was never meant to carry.
+    const anyOf = schema['anyOf'];
+    if (Array.isArray(anyOf)) {
+      for (const branch of anyOf as Record<string, unknown>[]) {
+        if (Value.Check(branch as TSchema, data)) {
+          this._walkFormats(data, branch, path, warnings);
+        }
+      }
+      return;
+    }
+
+    // Intersection (`type` plus a combinator sibling, or `allOf`): every member
+    // applies, so every member's annotations are collected.
+    const allOf = schema['allOf'];
+    if (Array.isArray(allOf)) {
+      for (const member of allOf as Record<string, unknown>[]) {
+        this._walkFormats(data, member, path, warnings);
+      }
+      return;
+    }
 
     // String with format annotation
     if (schema['type'] === 'string' && typeof schema['format'] === 'string' && typeof data === 'string') {
