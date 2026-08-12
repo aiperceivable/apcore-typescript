@@ -17,29 +17,19 @@ export function getSchema(registry: Registry, moduleId: string): Record<string, 
 
   const mod = module as Record<string, unknown>;
 
-  // TypeBox schemas are already JSON Schema
-  const inputSchemaDict = mod['inputSchema'] as Record<string, unknown> ?? {};
-  const outputSchemaDict = mod['outputSchema'] as Record<string, unknown> ?? {};
-
-  const annotations = mod['annotations'] as ModuleAnnotations | undefined;
-  let annotationsDict: Record<string, unknown> | null = null;
-  if (annotations) {
-    annotationsDict = { ...annotations };
-  }
-
-  const examplesRaw = (mod['examples'] as ModuleExample[] | undefined) ?? [];
-  const examplesList = examplesRaw.map((ex) => ({ ...ex }));
-
+  // A schema export, not a module manifest — exactly the four keys
+  // `schemas/module-schema-export.schema.json` declares. `name`, `version`,
+  // `tags`, `annotations` and `examples` used to ride along here, which made
+  // this envelope a partial, non-conforming duplicate of `system.manifest.module`
+  // (sys-manifest-module.schema.json) and left the three SDKs emitting three
+  // different shapes. Descriptor metadata belongs to the manifest module;
+  // callers that need it should ask for it there. TypeBox schemas are already
+  // JSON Schema, so they pass through unchanged.
   return {
     module_id: moduleId,
-    name: (mod['name'] as string) ?? null,
     description: (mod['description'] as string) ?? '',
-    version: (mod['version'] as string) ?? '1.0.0',
-    tags: [...((mod['tags'] as string[]) ?? [])],
-    input_schema: inputSchemaDict,
-    output_schema: outputSchemaDict,
-    annotations: annotationsDict,
-    examples: examplesList,
+    input_schema: (mod['inputSchema'] as Record<string, unknown>) ?? {},
+    output_schema: (mod['outputSchema'] as Record<string, unknown>) ?? {},
   };
 }
 
@@ -121,7 +111,9 @@ function exportWithProfile(
     inputSchema: schemaDict['input_schema'] as Record<string, unknown>,
     outputSchema: schemaDict['output_schema'] as Record<string, unknown>,
     definitions: {},
-    version: (schemaDict['version'] as string) ?? '1.0.0',
+    version:
+      ((registry.get(moduleId) as Record<string, unknown> | null)?.['version'] as string) ??
+      '1.0.0',
   };
   const module = registry.get(moduleId);
   const annotations = module ? (module as Record<string, unknown>)['annotations'] as ModuleAnnotations | undefined : undefined;

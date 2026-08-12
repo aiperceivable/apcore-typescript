@@ -187,6 +187,7 @@ describe('toStrictSchema - definitions and combinators', () => {
           ],
         },
       },
+      required: ['value'],
     };
     const strict = toStrictSchema(schema);
     const props = strict['properties'] as Record<string, Record<string, unknown>>;
@@ -194,63 +195,163 @@ describe('toStrictSchema - definitions and combinators', () => {
     expect(oneOf[0]['additionalProperties']).toBe(false);
   });
 
-  it('appends null to existing oneOf for optional property', () => {
+  it('wraps an optional oneOf property instead of appending null to it', () => {
+    // A23 nullable-wrapping has one union spelling: `{anyOf: [prop, {type:
+    // "null"}]}`. Pushing `{type: "null"}` into the author's `oneOf` would
+    // rewrite the exclusivity count their contract asserts, and diverges from
+    // apcore-python / apcore-rust.
     const schema = {
       type: 'object',
       properties: {
         value: {
-          oneOf: [
-            { type: 'string' },
-            { type: 'number' },
-          ],
+          oneOf: [{ type: 'string' }, { type: 'number' }],
         },
       },
       required: [],
     };
     const strict = toStrictSchema(schema);
     const props = strict['properties'] as Record<string, Record<string, unknown>>;
-    const oneOf = props['value']['oneOf'] as Record<string, unknown>[];
-    expect(oneOf).toHaveLength(3);
-    expect(oneOf[2]).toEqual({ type: 'null' });
+    expect(props['value']).toEqual({
+      anyOf: [{ oneOf: [{ type: 'string' }, { type: 'number' }] }, { type: 'null' }],
+    });
   });
 
-  it('appends null to existing anyOf for optional property', () => {
+  it('wraps an optional anyOf property instead of appending null to it', () => {
     const schema = {
       type: 'object',
       properties: {
         value: {
-          anyOf: [
-            { type: 'string' },
-            { type: 'integer' },
-          ],
+          anyOf: [{ type: 'string' }, { type: 'integer' }],
         },
       },
       required: [],
     };
     const strict = toStrictSchema(schema);
     const props = strict['properties'] as Record<string, Record<string, unknown>>;
+    expect(props['value']).toEqual({
+      anyOf: [{ anyOf: [{ type: 'string' }, { type: 'integer' }] }, { type: 'null' }],
+    });
+  });
+
+  it('wraps an optional oneOf that already carries a null branch', () => {
+    const schema = {
+      type: 'object',
+      properties: {
+        value: {
+          oneOf: [{ type: 'string' }, { type: 'null' }],
+        },
+      },
+      required: [],
+    };
+    const strict = toStrictSchema(schema);
+    const props = strict['properties'] as Record<string, Record<string, unknown>>;
+    expect(props['value']).toEqual({
+      anyOf: [{ oneOf: [{ type: 'string' }, { type: 'null' }] }, { type: 'null' }],
+    });
+  });
+
+  it('hardens an object schema that has properties but no type keyword', () => {
+    // `properties` alone already makes this an object schema. Requiring a
+    // `type` keyword let it through with neither `additionalProperties: false`
+    // nor a `required` list — exactly what OpenAI strict mode rejects.
+    const schema = {
+      type: 'object',
+      properties: {
+        nested: { properties: { q: { type: 'integer' } } },
+      },
+      required: ['nested'],
+    };
+    const strict = toStrictSchema(schema);
+    const props = strict['properties'] as Record<string, Record<string, unknown>>;
+    expect(props['nested']['additionalProperties']).toBe(false);
+    expect(props['nested']['required']).toEqual(['q']);
+  });
+
+  it('hardens an object whose type is the ["object", "null"] union form', () => {
+    const schema = {
+      type: 'object',
+      properties: {
+        inner: { type: ['object', 'null'], properties: { k: { type: 'string' } } },
+      },
+      required: ['inner'],
+    };
+    const strict = toStrictSchema(schema);
+    const props = strict['properties'] as Record<string, Record<string, unknown>>;
+    expect(props['inner']['additionalProperties']).toBe(false);
+    expect(props['inner']['required']).toEqual(['k']);
+  });
+
+  it('leaves properties next to a non-object type alone', () => {
+    // R2 inertness — `properties` beside `type: "string"` asserts nothing.
+    const schema = {
+      type: 'object',
+      properties: {
+        s: { type: 'string', properties: { nope: { type: 'string' } } },
+      },
+      required: ['s'],
+    };
+    const strict = toStrictSchema(schema);
+    const props = strict['properties'] as Record<string, Record<string, unknown>>;
+    expect(props['s']['additionalProperties']).toBeUndefined();
+  });
+
+  it('hardens an object sitting at a prefixItems tuple position', () => {
+    const schema = {
+      type: 'object',
+      properties: {
+        tup: {
+          type: 'array',
+          prefixItems: [
+            { type: 'object', properties: { z: { type: 'string' } } },
+            { type: 'string' },
+          ],
+        },
+      },
+      required: ['tup'],
+    };
+    const strict = toStrictSchema(schema);
+    const props = strict['properties'] as Record<string, Record<string, unknown>>;
+    const prefixItems = props['tup']['prefixItems'] as Record<string, unknown>[];
+    expect(prefixItems[0]['additionalProperties']).toBe(false);
+    expect(prefixItems[0]['required']).toEqual(['z']);
+  });
+
+  it('wraps an optional pure $ref in anyOf, not oneOf', () => {
+    // OpenAI structured outputs accepts only `anyOf` as the nullable-union
+    // spelling, and strict mode exists to feed that adapter.
+    const schema = {
+      type: 'object',
+      properties: {
+        address: { $ref: '#/definitions/Address' },
+      },
+      required: [],
+      definitions: {
+        Address: { type: 'object', properties: { city: { type: 'string' } }, required: ['city'] },
+      },
+    };
+    const strict = toStrictSchema(schema);
+    const props = strict['properties'] as Record<string, Record<string, unknown>>;
+    expect(props['address']['oneOf']).toBeUndefined();
+    expect(props['address']['anyOf']).toEqual([
+      { $ref: '#/definitions/Address' },
+      { type: 'null' },
+    ]);
+  });
+
+  it('wraps an optional allOf composition in anyOf, not oneOf', () => {
+    const schema = {
+      type: 'object',
+      properties: {
+        value: { allOf: [{ type: 'string' }, { minLength: 2 }] },
+      },
+      required: [],
+    };
+    const strict = toStrictSchema(schema);
+    const props = strict['properties'] as Record<string, Record<string, unknown>>;
+    expect(props['value']['oneOf']).toBeUndefined();
     const anyOf = props['value']['anyOf'] as Record<string, unknown>[];
-    expect(anyOf).toHaveLength(3);
-    expect(anyOf[2]).toEqual({ type: 'null' });
-  });
-
-  it('does not double-add null to oneOf that already has null', () => {
-    const schema = {
-      type: 'object',
-      properties: {
-        value: {
-          oneOf: [
-            { type: 'string' },
-            { type: 'null' },
-          ],
-        },
-      },
-      required: [],
-    };
-    const strict = toStrictSchema(schema);
-    const props = strict['properties'] as Record<string, Record<string, unknown>>;
-    const oneOf = props['value']['oneOf'] as Record<string, unknown>[];
-    expect(oneOf).toHaveLength(2);
+    expect(anyOf).toHaveLength(2);
+    expect(anyOf[1]).toEqual({ type: 'null' });
   });
 
   it('does not add null to already-nullable type array', () => {

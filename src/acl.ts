@@ -154,32 +154,53 @@ export class ACL {
   }
 
   /**
-   * Per-call-stack handler-error message captured by `_evaluateConditions[Async]`.
-   * Set inside catch blocks; consumed by `_buildAuditEntry` to populate
-   * `AuditEntry.handlerError`. Mirrors apcore-python's `_handler_error_var`
-   * contextvar (sync finding A-D-026). JS is single-threaded so a static field
-   * is sufficient — the accessor pair `_takeLastHandlerError()` and the
-   * implicit reset at each `check()` / `asyncCheck()` call ensures no leakage
-   * across evaluations.
+   * Per-`check()` / per-`asyncCheck()` capture slot for the handler-error
+   * message produced by `_evaluateConditions[Async]`.
+   *
+   * `_currentFrame` names the frame belonging to the evaluation *currently*
+   * on the stack. `_evaluateConditions[Async]` captures the reference at
+   * entry and writes to that captured object, never back through the static
+   * — so neither a nested `check()` (which pushes and pops its own frame)
+   * nor a concurrent `asyncCheck()` suspended mid-evaluation can steal or
+   * clobber another call's error. This is the JS equivalent of
+   * apcore-python's `_handler_error_var` ContextVar token pair and
+   * apcore-rust's depth-tracked thread-local / tokio task-local
+   * (sync findings A-D-026, W2).
    */
-  private static _lastHandlerError: string | null = null;
+  private static _currentFrame: { error: string | null } | null = null;
 
-  /**
-   * Read-and-clear the most recent handler-error message captured by an
-   * `_evaluateConditions[Async]` invocation.
-   */
-  static _takeLastHandlerError(): string | null {
-    const err = ACL._lastHandlerError;
-    ACL._lastHandlerError = null;
+  /** @internal — open a capture frame; returns [frame, previousFrame]. */
+  private static _pushHandlerErrorFrame(): [{ error: string | null }, { error: string | null } | null] {
+    const previous = ACL._currentFrame;
+    const frame = { error: null as string | null };
+    ACL._currentFrame = frame;
+    return [frame, previous];
+  }
+
+  /** @internal — restore the caller's capture frame. */
+  private static _popHandlerErrorFrame(previous: { error: string | null } | null): void {
+    ACL._currentFrame = previous;
+  }
+
+  /** @internal — read-and-clear this evaluation's captured handler error. */
+  private static _takeFrameError(frame: { error: string | null }): string | null {
+    const err = frame.error;
+    frame.error = null;
     return err;
   }
 
   static _evaluateConditions(conditions: Record<string, unknown>, context: Context): boolean {
+    // Bind the frame at entry so writes land on this evaluation's slot even if
+    // another evaluation becomes current in the meantime.
+    const frame = ACL._currentFrame;
+    const record = (msg: string): void => {
+      if (frame !== null) frame.error = msg;
+    };
     for (const [key, value] of Object.entries(conditions)) {
       const handler = ACL.conditionHandlers.get(key);
       if (handler === undefined) {
         const msg = `Unknown ACL condition '${key}'`;
-        ACL._lastHandlerError = msg;
+        record(msg);
         console.warn(`[apcore:acl] ${msg} — treated as unsatisfied`);
         return false;
       }
@@ -188,14 +209,14 @@ export class ACL {
         if (result instanceof Promise) {
           // Async handler in sync context — fail-closed
           const msg = `Async condition '${key}' in sync context — use asyncCheck()`;
-          ACL._lastHandlerError = msg;
+          record(msg);
           console.warn(`[apcore:acl] ${msg}`);
           return false;
         }
         if (!result) return false;
       } catch (e) {
         const msg = `Handler for condition '${key}' threw: ${e instanceof Error ? e.message : String(e)}`;
-        ACL._lastHandlerError = msg;
+        record(msg);
         console.warn(`[apcore:acl] ${msg} — treated as unsatisfied`);
         return false;
       }
@@ -204,11 +225,17 @@ export class ACL {
   }
 
   static async _evaluateConditionsAsync(conditions: Record<string, unknown>, context: Context): Promise<boolean> {
+    // Bind the frame at entry — after an `await` the static may point at
+    // another in-flight evaluation's frame.
+    const frame = ACL._currentFrame;
+    const record = (msg: string): void => {
+      if (frame !== null) frame.error = msg;
+    };
     for (const [key, value] of Object.entries(conditions)) {
       const handler = ACL.asyncConditionHandlers.get(key) ?? ACL.conditionHandlers.get(key);
       if (handler === undefined) {
         const msg = `Unknown ACL condition '${key}'`;
-        ACL._lastHandlerError = msg;
+        record(msg);
         console.warn(`[apcore:acl] ${msg} — treated as unsatisfied`);
         return false;
       }
@@ -217,7 +244,7 @@ export class ACL {
         if (!result) return false;
       } catch (e) {
         const msg = `Handler for condition '${key}' threw: ${e instanceof Error ? e.message : String(e)}`;
-        ACL._lastHandlerError = msg;
+        record(msg);
         console.warn(`[apcore:acl] ${msg} — treated as unsatisfied`);
         return false;
       }
@@ -295,32 +322,38 @@ export class ACL {
     const rules = this._rules.slice();
     const defaultEffect = this._defaultEffect;
     const auditLogger = this._auditLogger;
-    // Clear any leftover handler-error captured by a previous evaluation.
-    ACL._takeLastHandlerError();
+    // Open a capture frame private to this evaluation. A nested check()
+    // invoked from a condition handler pushes its own frame and restores
+    // ours on exit, so it can no longer consume our handler error.
+    const [frame, previousFrame] = ACL._pushHandlerErrorFrame();
 
-    for (let idx = 0; idx < rules.length; idx++) {
-      const rule = rules[idx];
-      if (this._matchesRule(rule, effectiveCaller, targetId, ctx)) {
-        const decision = rule.effect === 'allow';
-        if (auditLogger) {
-          auditLogger(this._buildAuditEntry(
-            effectiveCaller, targetId, decision ? 'allow' : 'deny',
-            'rule_match', rule, idx, ctx, ACL._takeLastHandlerError(),
-          ));
+    try {
+      for (let idx = 0; idx < rules.length; idx++) {
+        const rule = rules[idx];
+        if (this._matchesRule(rule, effectiveCaller, targetId, ctx)) {
+          const decision = rule.effect === 'allow';
+          if (auditLogger) {
+            auditLogger(this._buildAuditEntry(
+              effectiveCaller, targetId, decision ? 'allow' : 'deny',
+              'rule_match', rule, idx, ctx, ACL._takeFrameError(frame),
+            ));
+          }
+          return decision;
         }
-        return decision;
       }
-    }
 
-    const defaultDecision = defaultEffect === 'allow';
-    if (auditLogger) {
-      const reason = rules.length === 0 ? 'no_rules' : 'default_effect';
-      auditLogger(this._buildAuditEntry(
-        effectiveCaller, targetId, defaultDecision ? 'allow' : 'deny',
-        reason, null, null, ctx, ACL._takeLastHandlerError(),
-      ));
+      const defaultDecision = defaultEffect === 'allow';
+      if (auditLogger) {
+        const reason = rules.length === 0 ? 'no_rules' : 'default_effect';
+        auditLogger(this._buildAuditEntry(
+          effectiveCaller, targetId, defaultDecision ? 'allow' : 'deny',
+          reason, null, null, ctx, ACL._takeFrameError(frame),
+        ));
+      }
+      return defaultDecision;
+    } finally {
+      ACL._popHandlerErrorFrame(previousFrame);
     }
-    return defaultDecision;
   }
 
   async asyncCheck(callerId: string | null, targetId: string, context?: Context | null): Promise<boolean> {
@@ -331,32 +364,39 @@ export class ACL {
     const rules = this._rules.slice();
     const defaultEffect = this._defaultEffect;
     const auditLogger = this._auditLogger;
-    // Clear any leftover handler-error captured by a previous evaluation.
-    ACL._takeLastHandlerError();
+    // Open a capture frame private to this evaluation (see check()).
+    const [frame, previousFrame] = ACL._pushHandlerErrorFrame();
 
-    for (let idx = 0; idx < rules.length; idx++) {
-      const rule = rules[idx];
-      if (await this._matchesRuleAsync(rule, effectiveCaller, targetId, ctx)) {
-        const decision = rule.effect === 'allow';
-        if (auditLogger) {
-          auditLogger(this._buildAuditEntry(
-            effectiveCaller, targetId, decision ? 'allow' : 'deny',
-            'rule_match', rule, idx, ctx, ACL._takeLastHandlerError(),
-          ));
+    try {
+      for (let idx = 0; idx < rules.length; idx++) {
+        // Re-arm the current frame after every await gap: a concurrent
+        // asyncCheck() may have become "current" while we were suspended.
+        ACL._currentFrame = frame;
+        const rule = rules[idx];
+        if (await this._matchesRuleAsync(rule, effectiveCaller, targetId, ctx)) {
+          const decision = rule.effect === 'allow';
+          if (auditLogger) {
+            auditLogger(this._buildAuditEntry(
+              effectiveCaller, targetId, decision ? 'allow' : 'deny',
+              'rule_match', rule, idx, ctx, ACL._takeFrameError(frame),
+            ));
+          }
+          return decision;
         }
-        return decision;
       }
-    }
 
-    const defaultDecision = defaultEffect === 'allow';
-    if (auditLogger) {
-      const reason = rules.length === 0 ? 'no_rules' : 'default_effect';
-      auditLogger(this._buildAuditEntry(
-        effectiveCaller, targetId, defaultDecision ? 'allow' : 'deny',
-        reason, null, null, ctx, ACL._takeLastHandlerError(),
-      ));
+      const defaultDecision = defaultEffect === 'allow';
+      if (auditLogger) {
+        const reason = rules.length === 0 ? 'no_rules' : 'default_effect';
+        auditLogger(this._buildAuditEntry(
+          effectiveCaller, targetId, defaultDecision ? 'allow' : 'deny',
+          reason, null, null, ctx, ACL._takeFrameError(frame),
+        ));
+      }
+      return defaultDecision;
+    } finally {
+      ACL._popHandlerErrorFrame(previousFrame);
     }
-    return defaultDecision;
   }
 
   private _matchPatternsAsync(patterns: string[], value: string, context: Context | null): boolean {

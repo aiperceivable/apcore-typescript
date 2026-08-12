@@ -163,6 +163,12 @@ export class RedactionConfig {
    * Falls back to {@link DEFAULT_REDACTION_FIELD_PATTERNS} when no sensitive
    * keys are configured so `_secret_*` and standard sensitive keys (apiKey,
    * api_key, token, authorization, password) remain redacted out of the box.
+   *
+   * "Not configured" means the key is absent or null. An operator who
+   * explicitly writes `sensitive_keys: []` has disabled key-based redaction
+   * and gets exactly that — the override REPLACES the default list rather
+   * than merging with it, and an empty override is not re-interpreted as
+   * "unset" (docs/features/observability.md, D-54; matches apcore-python).
    */
   static fromConfig(config: Config): RedactionConfig {
     const legacyKeysUsed: string[] = [];
@@ -201,10 +207,16 @@ export class RedactionConfig {
       _emitRedactionLegacyDeprecation(legacyKeysUsed);
     }
 
-    const fieldPatterns =
-      Array.isArray(rawFields) && rawFields.length > 0
-        ? (rawFields as unknown[]).filter((p): p is string => typeof p === 'string')
-        : [...DEFAULT_REDACTION_FIELD_PATTERNS];
+    // An operator-supplied list REPLACES the default; it does not merge
+    // (docs/features/observability.md "Canonical default sensitive_keys").
+    // An explicitly-configured EMPTY list therefore means "no key-based
+    // redaction" and MUST be honoured — only a missing/null value falls back
+    // to the shipped defaults. Matches apcore-python's
+    // `RedactionConfig.from_config` ("Empty lists are permitted; callers that
+    // want NO redaction must explicitly set `sensitive_keys: []`").
+    const fieldPatterns = Array.isArray(rawFields)
+      ? (rawFields as unknown[]).filter((p): p is string => typeof p === 'string')
+      : [...DEFAULT_REDACTION_FIELD_PATTERNS];
 
     const valueStrings = Array.isArray(rawValues)
       ? (rawValues as unknown[]).filter((p): p is string => typeof p === 'string')

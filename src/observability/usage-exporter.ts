@@ -71,13 +71,24 @@ export class PeriodicUsageExporter {
     }, this.intervalMs);
   }
 
-  /** Stop the timer and await `exporter.shutdown()`. Idempotent. */
+  /**
+   * Stop the timer and await `exporter.shutdown()`.
+   *
+   * Idempotent (usage_exporter.json →
+   * `periodic_usage_exporter_stop_is_idempotent_and_drains`): `shutdown()` is
+   * invoked at most ONCE per `start()`, so calling `stop()` twice yields
+   * `shutdown_call_count == 1`. `stop()` before `start()` is a pure no-op and
+   * does NOT call `shutdown()` — the exporter was never taken over, mirroring
+   * apcore-python's `PeriodicUsageExporter.stop()` (returns early when no task
+   * is running) and BatchSpanProcessor semantics.
+   */
   async stop(): Promise<void> {
+    if (!this._running) return;
+    this._running = false;
     if (this._timer !== null) {
       clearInterval(this._timer);
       this._timer = null;
     }
-    this._running = false;
     await this.exporter.shutdown();
   }
 

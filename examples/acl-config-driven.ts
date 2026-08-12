@@ -55,7 +55,10 @@ rules:
     description: External callers may greet.
 `;
 
-const APCORE_YAML = `project:
+// `version` and `project.name` are the only two keys a config file must
+// declare — every other key here carries a canonical default (§9.1).
+const APCORE_YAML = `version: "1.0.0"
+project:
   name: acl-config-driven-demo
 acl:
   root: ./acl

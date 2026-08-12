@@ -9,7 +9,7 @@
  */
 
 import { Type } from '@sinclair/typebox';
-import { FunctionModule, ContextLogger } from 'apcore-js';
+import { FunctionModule, ContextLogger, createAnnotations } from 'apcore-js';
 import type { Context } from 'apcore-js';
 
 export const sendEmailModule = new FunctionModule({
@@ -19,7 +19,10 @@ export const sendEmailModule = new FunctionModule({
     to: Type.String(),
     subject: Type.String(),
     body: Type.String(),
-    apiKey: Type.String(),
+    // `x-sensitive: true` is one of the two redaction triggers the executor
+    // honours (the other is a `_secret_` field-name prefix): the value is
+    // replaced with `***REDACTED***` in captured inputs/outputs and logs.
+    apiKey: Type.String({ 'x-sensitive': true }),
   }),
   outputSchema: Type.Object({
     status: Type.String(),
@@ -28,14 +31,17 @@ export const sendEmailModule = new FunctionModule({
   tags: ['email', 'communication', 'external'],
   version: '1.2.0',
   metadata: { provider: 'example-smtp', maxRetries: 3 },
-  annotations: {
+  // `ModuleAnnotations` is a total interface — `createAnnotations()` fills the
+  // fields not named here (cacheable, cacheTtl, cacheKeyFields, paginated,
+  // paginationStyle, extra) from `DEFAULT_ANNOTATIONS`.
+  annotations: createAnnotations({
     readonly: false,
     destructive: true,
     idempotent: false,
     requiresApproval: false,
     openWorld: true,
     streaming: false,
-  },
+  }),
   examples: [
     {
       title: 'Send a welcome email',

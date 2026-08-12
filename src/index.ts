@@ -225,7 +225,12 @@ export {
   CircuitBreakerWrapper,
   CircuitState,
 } from './events/index.js';
-export type { ApCoreEvent, EventSubscriber, CircuitBreakerConfig, RetryConfig as EventRetryConfig } from './events/index.js';
+export type {
+  ApCoreEvent,
+  EventSubscriber,
+  CircuitBreakerConfig,
+  RetryConfig as EventRetryConfig,
+} from './events/index.js';
 
 // System Modules
 export {
@@ -308,6 +313,11 @@ export type {
 } from './schema/types.js';
 export { RefResolver } from './schema/ref-resolver.js';
 export { toStrictSchema } from './schema/strict.js';
+export {
+  assertOpenAiStrictCompatible,
+  detectOpenAiStrictIncompatibilities,
+} from './schema/openai-strict.js';
+export type { AssertOpenAiStrictOptions } from './schema/openai-strict.js';
 
 // Registry types
 export type { ModuleDescriptor, DiscoveredModule, DependencyInfo } from './registry/types.js';

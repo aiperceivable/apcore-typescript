@@ -46,8 +46,10 @@ import {
   ContextBindingError,
 } from '../src/errors.js';
 import { CancelToken } from '../src/cancel.js';
-import { jsonSchemaToTypeBox, contentHash } from '../src/schema/loader.js';
+import { SchemaLoader, jsonSchemaToTypeBox, contentHash } from '../src/schema/loader.js';
 import { SchemaValidator } from '../src/schema/validator.js';
+import type { SchemaDefinition } from '../src/schema/types.js';
+import type { TSchema } from '@sinclair/typebox';
 import { deepMergeChunk } from '../src/executor.js';
 import {
   createAnnotations,
@@ -493,7 +495,10 @@ describe('apcore Conformance Suite (TypeScript)', () => {
         if ('expected_valid' in tc) {
           expectedValid = tc.expected_valid;
         } else if ('expected_valid_strict' in tc) {
-          // Default coerce mode
+          // The validator below is built with coerceTypes=true — assert that
+          // half. This is the opt-in LIBRARY-level mode, not what the
+          // module-invocation boundary does: that path never coerces
+          // (TYPE_MAPPING §17.3) and is covered by schema_keyword_parity.json.
           expectedValid = tc.expected_valid_coerce;
         } else {
           expectedValid = true;
@@ -777,15 +782,11 @@ describe('apcore Conformance Suite (TypeScript)', () => {
     });
   });
 
-  // --- binding_errors ---
-  describe('Binding Errors', () => {
-    it.skip('not yet implemented — BindingLoader requires real file I/O and dynamic imports', () => {});
-  });
-
-  // --- binding_yaml_canonical ---
-  describe('Binding YAML Canonical', () => {
-    it.skip('not yet implemented — BindingLoader requires real file I/O and dynamic imports', () => {});
-  });
+  // --- binding_errors / binding_yaml_canonical ---
+  // Driven by tests/conformance-bindings.test.ts. (They were skipped here with
+  // the reason "BindingLoader requires real file I/O and dynamic imports",
+  // which was wrong — both fixtures assert error-message parity and YAML
+  // round-trip, exactly as apcore-python and apcore-rust drive them.)
 
   // --- dependency_version_constraints ---
   const depVersionFixture = loadFixture('dependency_version_constraints');
@@ -977,10 +978,17 @@ describe('apcore Conformance Suite (TypeScript)', () => {
       expect(s.properties).toHaveProperty('audit');
     });
 
-    it('apcore-config schema has required fields', () => {
+    it('apcore-config schema requires exactly version and project', () => {
+      // PROTOCOL_SPEC §9.1: a key is required only when it has no canonical
+      // default. `extensions`, `schema` and `acl` all carry defaults in
+      // defaults.schema.json, so requiring them rejected configurations the
+      // framework resolves fine; they were dropped from `required`.
       const s = loadSchema('apcore-config') as any;
-      for (const key of ['version', 'project', 'extensions', 'schema', 'acl']) {
-        expect(s.required).toContain(key);
+      expect(s.required).toContain('version');
+      expect(s.required).toContain('project');
+      expect(s.required).toHaveLength(2);
+      for (const key of ['extensions', 'schema', 'acl']) {
+        expect(s.required).not.toContain(key);
       }
     });
 
@@ -1057,15 +1065,39 @@ describe('apcore Conformance Suite (TypeScript)', () => {
   // Schema System Hardening (Issue #44, §4.15)
   // --------------------------------------------------------------------------
 
+  // --- SH-1 / SH-2 share the module-invocation path ---
+  //
+  // DRIVER CONTRACT: both fixtures MUST be driven through `SchemaLoader.resolve()`
+  // — RefResolver followed by `jsonSchemaToTypeBox()` — and not through the
+  // converter alone. Calling `jsonSchemaToTypeBox()` on the raw fixture schema
+  // skips `$ref` resolution entirely, which is exactly where the recursive-schema
+  // defect lived: the converter handled `{"$ref": "#"}` fine while the resolver in
+  // front of it rejected the same schema outright, so conformance stayed green on
+  // a schema no module could actually register.
+  const moduleSchema = (schema: Record<string, unknown>): TSchema => {
+    const loader = new SchemaLoader(new Config({}), fs.mkdtempSync(path.join(os.tmpdir(), 'apcore-conf-')));
+    const definition: SchemaDefinition = {
+      moduleId: 'conformance.schema_hardening',
+      description: 'conformance fixture',
+      inputSchema: schema,
+      outputSchema: {},
+      errorSchema: null,
+      definitions: {},
+      version: '1.0.0',
+      documentation: null,
+      schemaUrl: null,
+    };
+    return loader.resolve(definition)[0].schema;
+  };
+
   // --- SH-1. Union type: anyOf/oneOf/allOf exhaustive evaluation ---
   describe('Schema Hardening: Union Type Evaluation', () => {
     const fixture = loadFixture('schema_hardening_union');
 
     fixture.test_cases.forEach((tc: any) => {
       it(tc.id, () => {
-        const typeboxSchema = jsonSchemaToTypeBox(tc.schema);
         const validator = new SchemaValidator(false);
-        const result = validator.validate(tc.input, typeboxSchema);
+        const result = validator.validate(tc.input, moduleSchema(tc.schema));
         expect(result.valid).toBe(tc.expected.valid);
         if (tc.expected.error_code !== null) {
           expect(result.errorCode).toBe(tc.expected.error_code);
@@ -1077,7 +1109,7 @@ describe('apcore Conformance Suite (TypeScript)', () => {
   // --- SH-2. Recursive schema: TreeNode self-referencing $ref ---
   describe('Schema Hardening: Recursive Schema', () => {
     const fixture = loadFixture('schema_hardening_recursive');
-    const typeboxSchema = jsonSchemaToTypeBox(fixture.schema);
+    const typeboxSchema = moduleSchema(fixture.schema);
 
     fixture.test_cases.forEach((tc: any) => {
       it(tc.id, () => {
@@ -2420,11 +2452,16 @@ describe('apcore Conformance Suite (TypeScript)', () => {
       const manager = new AsyncTaskManager({ executor, store });
 
       const reaperConfig = tc.config.reaper;
-      // Use now=1700000000 so the threshold (now - 3600 = 1699996400) correctly
-      // separates the expired task (completed_at=1699990002) from the fresh task
-      // (completed_at=1699999002). The fixture's now_timestamp=1700003000 appears
-      // to contain a numeric issue that would make both tasks eligible.
-      const stableNow = 1700000000;
+      // Drive the fixture's OWN now_timestamp. It is 1700002000, which puts the
+      // cutoff at 1700002000 - 3600 = 1699998400 — after expired-task-001
+      // (completed_at=1699990002) and before fresh-task-001 (1699999002), so the
+      // declared deleted/remaining split is reachable. This driver used to
+      // substitute a locally chosen 1700000000 because the fixture then declared
+      // 1700003000, which expired both tasks; substituting a working timestamp
+      // hid the broken fixture instead of failing on it. apcore#81 corrected the
+      // fixture, so the substitution must go — otherwise this case silently stops
+      // testing the value the fixture publishes.
+      const stableNow = tc.now_timestamp as number;
       vi.setSystemTime(stableNow * 1000);
 
       const handle = manager.startReaper({

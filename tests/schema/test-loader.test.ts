@@ -767,3 +767,527 @@ describe('jsonSchemaToTypeBox — keywords apexe contracts rely on', () => {
     expect(Value.Check(schema, { items: [] })).toBe(false);
   });
 });
+
+describe('jsonSchemaToTypeBox — non-scalar enum and const members', () => {
+  it('accepts the exact object a const names and rejects a different one', () => {
+    const schema = jsonSchemaToTypeBox({ type: 'object', const: { a: 1 } });
+    expect(Value.Check(schema, { a: 1 })).toBe(true);
+    expect(Value.Check(schema, { a: 2 })).toBe(false);
+    expect(Value.Check(schema, {})).toBe(false);
+  });
+
+  it('accepts the exact object an enum lists and rejects a different one', () => {
+    const schema = jsonSchemaToTypeBox({ type: 'object', enum: [{ a: 1 }, { b: 2 }] });
+    expect(Value.Check(schema, { a: 1 })).toBe(true);
+    expect(Value.Check(schema, { b: 2 })).toBe(true);
+    expect(Value.Check(schema, { a: 2 })).toBe(false);
+  });
+
+  it('accepts the exact array an enum lists and rejects a reordered one', () => {
+    const schema = jsonSchemaToTypeBox({ type: 'array', enum: [[1, 2]] });
+    expect(Value.Check(schema, [1, 2])).toBe(true);
+    expect(Value.Check(schema, [2, 1])).toBe(false);
+    expect(Value.Check(schema, [1, 2, 3])).toBe(false);
+  });
+
+  it('compares a nested const by value, not by object identity', () => {
+    const schema = jsonSchemaToTypeBox({ const: { a: { b: [1, { c: true }] } } });
+    expect(Value.Check(schema, { a: { b: [1, { c: true }] } })).toBe(true);
+    expect(Value.Check(schema, { a: { b: [1, { c: false }] } })).toBe(false);
+  });
+
+  it('ignores key order when comparing a const object', () => {
+    const schema = jsonSchemaToTypeBox({ type: 'object', const: { a: 1, b: 2 } });
+    expect(Value.Check(schema, { b: 2, a: 1 })).toBe(true);
+  });
+
+  it('keeps the const keyword verbatim in the emitted schema', () => {
+    const schema = jsonSchemaToTypeBox({ type: 'object', const: { a: 1 } });
+    expect(JSON.parse(JSON.stringify(schema))).toMatchObject({
+      allOf: [expect.anything(), { const: { a: 1 } }],
+    });
+  });
+
+  it('still uses a scalar literal for a scalar const', () => {
+    const schema = jsonSchemaToTypeBox({ const: 'fixed' });
+    expect(Value.Check(schema, 'fixed')).toBe(true);
+    expect(Value.Check(schema, 'other')).toBe(false);
+    expect([...Value.Errors(schema, 'other')][0]?.message).toMatch(/fixed/);
+  });
+});
+
+describe('jsonSchemaToTypeBox — every combinator sibling applies', () => {
+  it('enforces a not sibling of an enum', () => {
+    const schema = jsonSchemaToTypeBox({
+      type: 'string',
+      enum: ['a', 'b'],
+      not: { const: 'a' },
+    });
+    expect(Value.Check(schema, 'b')).toBe(true);
+    expect(Value.Check(schema, 'a')).toBe(false);
+    expect(Value.Check(schema, 'c')).toBe(false);
+  });
+
+  it('enforces an allOf sibling of an anyOf', () => {
+    const schema = jsonSchemaToTypeBox({
+      anyOf: [{ type: 'string' }],
+      allOf: [{ type: 'string', minLength: 5 }],
+    });
+    expect(Value.Check(schema, 'abcde')).toBe(true);
+    expect(Value.Check(schema, 'ab')).toBe(false);
+  });
+
+  it('enforces a const sibling of an enum', () => {
+    const schema = jsonSchemaToTypeBox({ enum: ['a', 'b'], const: 'b' });
+    expect(Value.Check(schema, 'b')).toBe(true);
+    expect(Value.Check(schema, 'a')).toBe(false);
+  });
+
+  it('enforces an anyOf sibling of an oneOf', () => {
+    // `oneOf` used to win the early-return race and drop the `anyOf` bound.
+    const schema = jsonSchemaToTypeBox({
+      anyOf: [{ type: 'integer', maximum: 20 }],
+      oneOf: [{ type: 'integer', minimum: 10 }],
+    });
+    expect(Value.Check(schema, 12)).toBe(true);
+    expect(Value.Check(schema, 5)).toBe(false); // fails the oneOf minimum
+    expect(Value.Check(schema, 25)).toBe(false); // fails the anyOf maximum
+  });
+
+  it('enforces every sibling when four combinators coexist', () => {
+    const schema = jsonSchemaToTypeBox({
+      enum: ['aa', 'bbb', 'cccc'],
+      anyOf: [{ type: 'string', minLength: 3 }],
+      allOf: [{ type: 'string', maxLength: 3 }],
+      not: { const: 'ccc' },
+    });
+    expect(Value.Check(schema, 'bbb')).toBe(true);
+    expect(Value.Check(schema, 'aa')).toBe(false); // fails anyOf minLength
+    expect(Value.Check(schema, 'cccc')).toBe(false); // fails allOf maxLength
+    expect(Value.Check(schema, 'ccc')).toBe(false); // fails not, and is not an enum member
+  });
+
+  it('enforces the type half of a type array carrying an enum', () => {
+    // The distinguishing case: `1` is an enum member but neither a string nor a
+    // boolean, so the `type` half must reject it.
+    const schema = jsonSchemaToTypeBox({ type: ['string', 'boolean'], enum: ['a', 1] });
+    expect(Value.Check(schema, 'a')).toBe(true);
+    expect(Value.Check(schema, 1)).toBe(false);
+  });
+});
+
+describe('jsonSchemaToTypeBox — union keyword marker', () => {
+  it('tags an anyOf union with the anyOf keyword', () => {
+    const schema = jsonSchemaToTypeBox({ anyOf: [{ type: 'string' }, { type: 'number' }] });
+    expect((schema as Record<string, unknown>)['x-apcore-keyword']).toBe('anyOf');
+  });
+
+  it('keeps the marker reachable when a type sibling nests the union', () => {
+    const schema = jsonSchemaToTypeBox({
+      type: 'object',
+      anyOf: [{ type: 'object' }],
+    }) as Record<string, unknown>;
+    const members = schema['allOf'] as Record<string, unknown>[];
+    expect(members.some((m) => m['x-apcore-keyword'] === 'anyOf')).toBe(true);
+  });
+
+  it('leaves a plain TypeBox union unmarked', () => {
+    expect((Type.Union([Type.String(), Type.Number()]) as Record<string, unknown>)['x-apcore-keyword'])
+      .toBeUndefined();
+  });
+});
+
+describe('jsonSchemaToTypeBox — array validation keywords (JSON Schema 2020-12 §6.4)', () => {
+  it('keeps minItems', () => {
+    const schema = jsonSchemaToTypeBox({ type: 'array', items: { type: 'integer' }, minItems: 2 });
+    expect(Value.Check(schema, [1])).toBe(false);
+    expect(Value.Check(schema, [1, 2])).toBe(true);
+  });
+
+  it('keeps maxItems', () => {
+    const schema = jsonSchemaToTypeBox({ type: 'array', items: { type: 'integer' }, maxItems: 2 });
+    expect(Value.Check(schema, [1, 2, 3])).toBe(false);
+    expect(Value.Check(schema, [1, 2])).toBe(true);
+  });
+
+  it('keeps uniqueItems', () => {
+    const schema = jsonSchemaToTypeBox({
+      type: 'array',
+      items: { type: 'integer' },
+      uniqueItems: true,
+    });
+    expect(Value.Check(schema, [1, 1])).toBe(false);
+    expect(Value.Check(schema, [1, 2])).toBe(true);
+  });
+
+  it('keeps contains and converts its sub-schema', () => {
+    const schema = jsonSchemaToTypeBox({ type: 'array', contains: { type: 'string', minLength: 2 } });
+    expect(Value.Check(schema, [1, 2])).toBe(false);
+    expect(Value.Check(schema, [1, 'a'])).toBe(false); // minLength inside contains applies
+    expect(Value.Check(schema, [1, 'ab'])).toBe(true);
+  });
+
+  it('keeps minContains and maxContains beside a contains', () => {
+    const min = jsonSchemaToTypeBox({ type: 'array', contains: { type: 'string' }, minContains: 2 });
+    expect(Value.Check(min, [1, 'a'])).toBe(false);
+    expect(Value.Check(min, ['a', 'b'])).toBe(true);
+
+    const max = jsonSchemaToTypeBox({ type: 'array', contains: { type: 'string' }, maxContains: 1 });
+    expect(Value.Check(max, ['a', 'b'])).toBe(false);
+    expect(Value.Check(max, [1, 'a'])).toBe(true);
+  });
+
+  it('ignores minContains and maxContains without a contains', () => {
+    // §6.4.4/§6.4.5 make them meaningless on their own. TypeBox applies them
+    // anyway and rejects every array, so the converter must not emit them.
+    expect(Value.Check(jsonSchemaToTypeBox({ type: 'array', minContains: 5 }), [1])).toBe(true);
+    expect(Value.Check(jsonSchemaToTypeBox({ type: 'array', maxContains: 1 }), [1, 2, 3])).toBe(true);
+  });
+
+  it('keeps array keywords on a bare array with no items', () => {
+    const schema = jsonSchemaToTypeBox({ type: 'array', minItems: 1 });
+    expect(Value.Check(schema, [])).toBe(false);
+    expect(Value.Check(schema, ['anything'])).toBe(true);
+  });
+});
+
+describe('jsonSchemaToTypeBox — object validation keywords (JSON Schema 2020-12 §6.5)', () => {
+  it('keeps minProperties alongside declared properties', () => {
+    const schema = jsonSchemaToTypeBox({ type: 'object', properties: {}, minProperties: 1 });
+    expect(Value.Check(schema, {})).toBe(false);
+    expect(Value.Check(schema, { a: 1 })).toBe(true);
+  });
+
+  it('keeps maxProperties alongside declared properties', () => {
+    const schema = jsonSchemaToTypeBox({ type: 'object', properties: {}, maxProperties: 1 });
+    expect(Value.Check(schema, { a: 1, b: 2 })).toBe(false);
+    expect(Value.Check(schema, { a: 1 })).toBe(true);
+  });
+
+  it('keeps minProperties on an object with no declared properties', () => {
+    // This branch converts to Type.Record, which must carry the option too.
+    const schema = jsonSchemaToTypeBox({ type: 'object', minProperties: 1 });
+    expect(Value.Check(schema, {})).toBe(false);
+    expect(Value.Check(schema, { a: 1 })).toBe(true);
+  });
+
+  it('keeps minProperties beside additionalProperties: false', () => {
+    const schema = jsonSchemaToTypeBox({
+      type: 'object',
+      additionalProperties: false,
+      minProperties: 1,
+    });
+    expect(Value.Check(schema, {})).toBe(false);
+  });
+});
+
+describe('jsonSchemaToTypeBox — a type array branch keeps its own constraints', () => {
+  // The cross-SDK divergence that surfaced this: python and rust rejected [1],
+  // TypeScript accepted it because minItems never reached the array branch.
+  const nullableArray = {
+    type: ['array', 'null'],
+    items: { type: 'integer' },
+    minItems: 2,
+  };
+
+  it('rejects an array shorter than minItems', () => {
+    expect(Value.Check(jsonSchemaToTypeBox(nullableArray), [1])).toBe(false);
+  });
+
+  it('accepts an array satisfying minItems', () => {
+    expect(Value.Check(jsonSchemaToTypeBox(nullableArray), [1, 2])).toBe(true);
+  });
+
+  it('accepts null, the other branch of the type array', () => {
+    expect(Value.Check(jsonSchemaToTypeBox(nullableArray), null)).toBe(true);
+  });
+
+  it('routes minProperties to the object branch of a type array', () => {
+    const schema = jsonSchemaToTypeBox({ type: ['object', 'null'], minProperties: 1 });
+    expect(Value.Check(schema, {})).toBe(false);
+    expect(Value.Check(schema, { a: 1 })).toBe(true);
+    expect(Value.Check(schema, null)).toBe(true);
+  });
+
+  it('applies each branch constraint only to the type that owns it', () => {
+    const schema = jsonSchemaToTypeBox({
+      type: ['array', 'string'],
+      minItems: 2,
+      minLength: 4,
+    });
+    expect(Value.Check(schema, [1])).toBe(false);
+    expect(Value.Check(schema, [1, 2])).toBe(true);
+    expect(Value.Check(schema, 'abc')).toBe(false);
+    expect(Value.Check(schema, 'abcd')).toBe(true);
+  });
+});
+
+describe('jsonSchemaToTypeBox — a schema with constraints but no `type`', () => {
+  // The constraint tables were only consulted from the type-specific
+  // converters, so a schema declaring no `type` fell through to the combinator
+  // path, found no combinator keyword, and became Type.Unknown() — every
+  // constraint silently dropped. Expectations below match the `jsonschema`
+  // reference implementation (Draft 2020-12).
+
+  it('enforces minimum on a number', () => {
+    const schema = jsonSchemaToTypeBox({ minimum: 3 });
+    expect(Value.Check(schema, 5)).toBe(true);
+    expect(Value.Check(schema, 1)).toBe(false);
+  });
+
+  // JSON Schema 2020-12 §6: a validation keyword constrains only instances of
+  // its own type and is inert on all others. Narrowing `{minimum: 3}` to
+  // "must be a number >= 3" would be stricter than the spec, not merely
+  // different — these four are the guard against over-correcting.
+  it.each([
+    ['a string', 'x'],
+    ['an array', [1]],
+    ['null', null],
+    ['a boolean', true],
+    ['an object', { a: 1 }],
+  ])('leaves a numeric constraint inert on %s', (_label, value) => {
+    expect(Value.Check(jsonSchemaToTypeBox({ minimum: 3 }), value)).toBe(true);
+  });
+
+  it('enforces minLength on a string and stays inert on a number', () => {
+    const schema = jsonSchemaToTypeBox({ minLength: 3 });
+    expect(Value.Check(schema, 'abcd')).toBe(true);
+    expect(Value.Check(schema, 'ab')).toBe(false);
+    expect(Value.Check(schema, 42)).toBe(true);
+  });
+
+  it('enforces pattern on a string and stays inert on a number', () => {
+    const schema = jsonSchemaToTypeBox({ pattern: '^a' });
+    expect(Value.Check(schema, 'abc')).toBe(true);
+    expect(Value.Check(schema, 'bbc')).toBe(false);
+    expect(Value.Check(schema, 42)).toBe(true);
+  });
+
+  it('enforces minItems on an array and stays inert on a string', () => {
+    const schema = jsonSchemaToTypeBox({ minItems: 2 });
+    expect(Value.Check(schema, [1, 2])).toBe(true);
+    expect(Value.Check(schema, [1])).toBe(false);
+    expect(Value.Check(schema, 'ab')).toBe(true);
+  });
+
+  it('enforces uniqueItems on an array and stays inert on a string', () => {
+    const schema = jsonSchemaToTypeBox({ uniqueItems: true });
+    expect(Value.Check(schema, [1, 1])).toBe(false);
+    expect(Value.Check(schema, 'aa')).toBe(true);
+  });
+
+  it('enforces minProperties on an object and stays inert on an array', () => {
+    const schema = jsonSchemaToTypeBox({ minProperties: 1 });
+    expect(Value.Check(schema, { a: 1 })).toBe(true);
+    expect(Value.Check(schema, {})).toBe(false);
+    expect(Value.Check(schema, [])).toBe(true);
+  });
+
+  it('enforces each group independently when several coexist', () => {
+    const schema = jsonSchemaToTypeBox({ minimum: 3, minLength: 3 });
+    expect(Value.Check(schema, 5)).toBe(true);
+    expect(Value.Check(schema, 1)).toBe(false);
+    expect(Value.Check(schema, 'abcd')).toBe(true);
+    expect(Value.Check(schema, 'ab')).toBe(false);
+    expect(Value.Check(schema, null)).toBe(true);
+  });
+
+  it('enforces a constraint alongside a combinator sibling', () => {
+    const schema = jsonSchemaToTypeBox({ minimum: 3, not: { const: 5 } });
+    expect(Value.Check(schema, 4)).toBe(true);
+    expect(Value.Check(schema, 5)).toBe(false);
+    expect(Value.Check(schema, 1)).toBe(false);
+    expect(Value.Check(schema, 'x')).toBe(true);
+  });
+
+  it('keeps `format` an annotation rather than an assertion', () => {
+    // §7.2.1 — the SHOULD-level warning is the validator's job, not a rejection.
+    const result = new SchemaValidator(false).validate(
+      'not-an-email' as never,
+      jsonSchemaToTypeBox({ format: 'email' }),
+    );
+    expect(result.valid).toBe(true);
+  });
+
+  it('still converts a schema carrying no keyword at all to accept-anything', () => {
+    const schema = jsonSchemaToTypeBox({});
+    expect(Value.Check(schema, 1)).toBe(true);
+    expect(Value.Check(schema, 'x')).toBe(true);
+  });
+});
+
+describe('jsonSchemaToTypeBox — type-less constraints in every nested position', () => {
+  // Every position that may hold a subschema recurses through the same
+  // conversion entry point, so one fix covers them all. Each case here failed
+  // before that fix.
+  it('enforces them inside an anyOf branch', () => {
+    const schema = jsonSchemaToTypeBox({ anyOf: [{ minLength: 3 }] });
+    expect(Value.Check(schema, 'abcd')).toBe(true);
+    expect(Value.Check(schema, 'ab')).toBe(false);
+    expect(Value.Check(schema, 42)).toBe(true);
+  });
+
+  it('enforces them inside a oneOf branch', () => {
+    const schema = jsonSchemaToTypeBox({ oneOf: [{ minimum: 3 }] });
+    expect(Value.Check(schema, 5)).toBe(true);
+    expect(Value.Check(schema, 1)).toBe(false);
+  });
+
+  it('enforces them inside an allOf branch', () => {
+    const schema = jsonSchemaToTypeBox({ allOf: [{ minimum: 3 }] });
+    expect(Value.Check(schema, 5)).toBe(true);
+    expect(Value.Check(schema, 1)).toBe(false);
+  });
+
+  it('enforces them inside a `not` subschema', () => {
+    const schema = jsonSchemaToTypeBox({ not: { minimum: 3 } });
+    expect(Value.Check(schema, 1)).toBe(true);
+    expect(Value.Check(schema, 5)).toBe(false);
+    // "x" satisfies the inert `{minimum: 3}`, so `not` excludes it.
+    expect(Value.Check(schema, 'x')).toBe(false);
+  });
+
+  it('enforces them inside an additionalProperties subschema', () => {
+    const schema = jsonSchemaToTypeBox({
+      type: 'object',
+      additionalProperties: { minimum: 3 },
+    });
+    expect(Value.Check(schema, { z: 5 })).toBe(true);
+    expect(Value.Check(schema, { z: 1 })).toBe(false);
+    expect(Value.Check(schema, { z: 'x' })).toBe(true);
+  });
+
+  it('enforces them inside a declared property subschema', () => {
+    const schema = jsonSchemaToTypeBox({
+      type: 'object',
+      properties: { v: { minLength: 3 } },
+    });
+    expect(Value.Check(schema, { v: 'abcd' })).toBe(true);
+    expect(Value.Check(schema, { v: 'ab' })).toBe(false);
+    expect(Value.Check(schema, { v: true })).toBe(true);
+  });
+
+  it('enforces them inside an items subschema', () => {
+    const schema = jsonSchemaToTypeBox({ type: 'array', items: { minimum: 3 } });
+    expect(Value.Check(schema, [5])).toBe(true);
+    expect(Value.Check(schema, [1])).toBe(false);
+    expect(Value.Check(schema, ['x'])).toBe(true);
+  });
+
+  it('enforces them inside a contains subschema', () => {
+    const schema = jsonSchemaToTypeBox({ type: 'array', contains: { minLength: 3 } });
+    expect(Value.Check(schema, ['abcd'])).toBe(true);
+    expect(Value.Check(schema, ['ab'])).toBe(false);
+  });
+});
+
+describe('jsonSchemaToTypeBox — applicator keywords (JSON Schema 2020-12 §10.3 / §11)', () => {
+  it('checks each prefixItems position', () => {
+    const schema = jsonSchemaToTypeBox({
+      type: 'array',
+      prefixItems: [{ type: 'string' }, { type: 'integer' }],
+    });
+    expect(Value.Check(schema, ['a', 1])).toBe(true);
+    expect(Value.Check(schema, ['a', 'b'])).toBe(false);
+    // §10.3.1.1 constrains only the positions that exist.
+    expect(Value.Check(schema, ['a'])).toBe(true);
+  });
+
+  it('applies `items` only past the prefix', () => {
+    const schema = jsonSchemaToTypeBox({
+      type: 'array',
+      prefixItems: [{ type: 'string' }],
+      items: { type: 'integer' },
+    });
+    expect(Value.Check(schema, ['a', 3])).toBe(true);
+    expect(Value.Check(schema, ['a', 'b'])).toBe(false);
+    expect(Value.Check(schema, [1, 3])).toBe(false);
+  });
+
+  it('checks patternProperties values and leaves additionalProperties to the unmatched keys', () => {
+    const schema = jsonSchemaToTypeBox({
+      type: 'object',
+      patternProperties: { '^S_': { type: 'string' } },
+      additionalProperties: false,
+    });
+    expect(Value.Check(schema, { S_a: 'x' })).toBe(true);
+    expect(Value.Check(schema, { S_a: 1 })).toBe(false);
+    expect(Value.Check(schema, { other: 1 })).toBe(false);
+  });
+
+  it('checks propertyNames against the key strings', () => {
+    const schema = jsonSchemaToTypeBox({ type: 'object', propertyNames: { maxLength: 3 } });
+    expect(Value.Check(schema, { ab: 1 })).toBe(true);
+    expect(Value.Check(schema, { abcdef: 1 })).toBe(false);
+  });
+
+  it('enforces dependentRequired only when the trigger key is present', () => {
+    const schema = jsonSchemaToTypeBox({ type: 'object', dependentRequired: { a: ['b'] } });
+    expect(Value.Check(schema, { a: 1, b: 2 })).toBe(true);
+    expect(Value.Check(schema, { a: 1 })).toBe(false);
+    expect(Value.Check(schema, { c: 1 })).toBe(true);
+  });
+
+  it('applies a dependentSchemas subschema to the whole object', () => {
+    const schema = jsonSchemaToTypeBox({
+      type: 'object',
+      dependentSchemas: { a: { required: ['b'] } },
+    });
+    expect(Value.Check(schema, { a: 1, b: 2 })).toBe(true);
+    expect(Value.Check(schema, { a: 1 })).toBe(false);
+  });
+
+  it('selects the then/else branch from the if outcome', () => {
+    const schema = jsonSchemaToTypeBox({
+      type: 'object',
+      if: { properties: { k: { const: 'x' } }, required: ['k'] },
+      // biome-ignore lint/suspicious/noThenProperty: `then` is the JSON Schema keyword, not a thenable.
+      then: { required: ['extra'] },
+      else: { required: ['other'] },
+    });
+    expect(Value.Check(schema, { k: 'x', extra: 1 })).toBe(true);
+    expect(Value.Check(schema, { k: 'x' })).toBe(false);
+    expect(Value.Check(schema, { k: 'y', other: 1 })).toBe(true);
+    expect(Value.Check(schema, { k: 'y' })).toBe(false);
+  });
+
+  it('asserts nothing for an `if` with no then/else', () => {
+    const schema = jsonSchemaToTypeBox({ type: 'object', if: { required: ['k'] } });
+    expect(Value.Check(schema, {})).toBe(true);
+  });
+
+  it('subtracts sibling annotations before applying unevaluatedProperties', () => {
+    const schema = jsonSchemaToTypeBox({
+      type: 'object',
+      allOf: [{ properties: { a: { type: 'string' } } }],
+      unevaluatedProperties: false,
+    });
+    expect(Value.Check(schema, { a: 'x' })).toBe(true);
+    expect(Value.Check(schema, { a: 'x', z: 1 })).toBe(false);
+  });
+
+  it('subtracts prefixItems positions before applying unevaluatedItems', () => {
+    const schema = jsonSchemaToTypeBox({
+      type: 'array',
+      prefixItems: [{ type: 'string' }],
+      unevaluatedItems: false,
+    });
+    expect(Value.Check(schema, ['a'])).toBe(true);
+    expect(Value.Check(schema, ['a', 2])).toBe(false);
+  });
+
+  it('is inert on instances of the wrong type', () => {
+    expect(Value.Check(jsonSchemaToTypeBox({ prefixItems: [{ type: 'string' }] }), 'x')).toBe(true);
+    expect(Value.Check(jsonSchemaToTypeBox({ patternProperties: { '^S_': {} } }), 42)).toBe(true);
+    expect(Value.Check(jsonSchemaToTypeBox({ propertyNames: { maxLength: 3 } }), [1, 2])).toBe(true);
+    expect(Value.Check(jsonSchemaToTypeBox({ dependentRequired: { a: ['b'] } }), 's')).toBe(true);
+  });
+
+  it('enforces a bare `required` subschema, which if/then/else relies on', () => {
+    const schema = jsonSchemaToTypeBox({ required: ['b'] });
+    expect(Value.Check(schema, { b: 1 })).toBe(true);
+    expect(Value.Check(schema, { a: 1 })).toBe(false);
+    // §6.5.3 applies to objects only.
+    expect(Value.Check(schema, 'x')).toBe(true);
+  });
+});

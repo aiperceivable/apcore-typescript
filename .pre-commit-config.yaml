@@ -26,3 +26,14 @@ repos:
         pass_filenames: false
         always_run: true
         files: \.(ts|tsx)$
+
+      # `examples/` is outside the root tsconfig `include`, so it needs its own
+      # project. apcore-rust compiles all its examples in CI; this is the
+      # TypeScript equivalent and is what catches broken example code.
+      - id: typecheck-examples
+        name: tsc -p tsconfig.examples.json
+        entry: npx tsc -p tsconfig.examples.json
+        language: system
+        pass_filenames: false
+        always_run: true
+        files: \.(ts|tsx)$

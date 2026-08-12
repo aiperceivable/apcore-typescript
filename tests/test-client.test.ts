@@ -91,7 +91,12 @@ describe('APCore construction', () => {
   it('loads config from file path via Config.load()', () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'apcore-test-'));
     const configPath = path.join(tempDir, 'apcore.yaml');
-    fs.writeFileSync(configPath, 'extensions:\n  root: /custom/path\n');
+    // `version` and `project.name` are the only two keys a config file must
+    // declare (§9.1) — Config.load validates by default.
+    fs.writeFileSync(
+      configPath,
+      'version: "1.0.0"\nproject:\n  name: client-test\nextensions:\n  root: /custom/path\n',
+    );
 
     try {
       const config = Config.load(configPath);

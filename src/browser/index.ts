@@ -181,6 +181,11 @@ export type {
   SchemaValidationResult,
 } from '../schema/types.js';
 export { toStrictSchema } from '../schema/strict.js';
+export {
+  assertOpenAiStrictCompatible,
+  detectOpenAiStrictIncompatibilities,
+} from '../schema/openai-strict.js';
+export type { AssertOpenAiStrictOptions } from '../schema/openai-strict.js';
 
 // ---- Utility helpers (pure) ----------------------------------------------
 export { matchPattern, calculateSpecificity } from '../utils/pattern.js';

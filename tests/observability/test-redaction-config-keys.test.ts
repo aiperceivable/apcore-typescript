@@ -68,12 +68,21 @@ describe('RedactionConfig key alignment (CRITICAL #4)', () => {
 
   it('legacy observability.redaction.field_patterns still honored (backwards-compat)', () => {
     const config = new Config();
-    config.set('observability.redaction.field_patterns', ['legacy_secret', 'apiKey']);
+    // CORRECTED (redaction_config.json `discriminating_payload`): this case
+    // used to configure ['legacy_secret', 'apiKey'] and assert both were
+    // redacted. Both match a SHIPPED DEFAULT anyway (`legacy_secret` contains
+    // `secret`; `apiKey` is a default), so it stayed green whether the legacy
+    // key was read or silently ignored — the exact blind spot that let
+    // apcore-rust ship a redaction config nobody read (apcore-rust#32).
+    // `username` matches no default, and `password` matches one, so the two
+    // assertions below now prove the legacy key was READ and that its value
+    // REPLACED the defaults.
+    config.set('observability.redaction.field_patterns', ['username']);
 
     const rc = RedactionConfig.fromConfig(config);
-    const result = rc.apply({ legacy_secret: 'x', apiKey: 'y', other: 'ok' });
-    expect(result.legacy_secret).toBe('***REDACTED***');
-    expect(result.apiKey).toBe('***REDACTED***');
+    const result = rc.apply({ username: 'alice', password: 'hunter2', other: 'ok' });
+    expect(result.username).toBe('***REDACTED***'); // only the legacy key can do this
+    expect(result.password).toBe('hunter2'); // ...and it replaced the defaults
     expect(result.other).toBe('ok');
   });
 
@@ -82,8 +91,12 @@ describe('RedactionConfig key alignment (CRITICAL #4)', () => {
     config.set('observability.redaction.value_patterns', ['^sk-[A-Za-z0-9]+$']);
 
     const rc = RedactionConfig.fromConfig(config);
-    const result = rc.apply({ token: 'sk-abc123', other: 'plain' });
-    expect(result.token).toBe('***REDACTED***');
+    // CORRECTED, same reason: the payload key used to be `token`, a shipped
+    // default field pattern, so it was redacted whether or not the legacy
+    // value_patterns key was read. `username` matches no default, so only a
+    // VALUE-pattern match can redact it.
+    const result = rc.apply({ username: 'sk-abc123', other: 'plain' });
+    expect(result.username).toBe('***REDACTED***');
     expect(result.other).toBe('plain');
   });
 

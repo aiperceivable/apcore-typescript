@@ -29,15 +29,23 @@ export { DEFAULTS, getDefault } from './config-defaults.js';
 /** Environment variable prefix for legacy overrides. */
 const ENV_PREFIX = 'APCORE_';
 
-/** Required configuration fields in legacy mode (dot-paths). */
-const REQUIRED_FIELDS = [
-  'version',
-  'extensions.root',
-  'schema.root',
-  'acl.root',
-  'acl.default_effect',
-  'project.name',
-] as const;
+/**
+ * Configuration keys that MUST be declared explicitly, in legacy mode (dot-paths).
+ *
+ * PROTOCOL_SPEC §9.1: a key is required **only when it has no canonical
+ * default**. Exactly two qualify — `version` and `project.name`. Every other
+ * §9.1 key carries a default in `schemas/defaults.schema.json`
+ * (`extensions.*`, `schema.*`, `acl.*`, `executor.*`, `sys_modules.*`,
+ * `observability.*`, `stream.*`), so requiring it would reject a configuration
+ * the framework resolves perfectly well. `schemas/apcore-config.schema.json`
+ * declares the same two in its `required` array.
+ *
+ * §9.3 step 1: requiredness is evaluated against the **declared** document —
+ * see {@link Config.getDeclared} — never against the tree `DEFAULTS` has been
+ * merged into. A post-merge check can never fail, because the merge has
+ * already supplied every key it would look for.
+ */
+const REQUIRED_FIELDS = ['version', 'project.name'] as const;
 
 /**
  * Field constraints in legacy mode: field -> [validator, errorMessage].
@@ -101,23 +109,6 @@ export const CONSTRAINTS: Record<string, [(v: unknown) => boolean, string]> = {
   'sys_modules.events.thresholds.latency_p99_ms': [
     (v) => isNumber(v) && v > 0,
     'must be a positive number',
-  ],
-  // open_threshold is an ERROR RATE in [0.0, 1.0] (default 0.5), NOT a count.
-  'middleware.circuit_breaker.open_threshold': [
-    (v) => isNumber(v) && v >= 0.0 && v <= 1.0,
-    'must be a number in [0.0, 1.0]',
-  ],
-  'middleware.circuit_breaker.recovery_window_ms': [
-    (v) => isInteger(v) && v >= 0,
-    'must be a non-negative integer (milliseconds)',
-  ],
-  'middleware.circuit_breaker.window_size': [
-    (v) => isInteger(v) && v >= 1,
-    'must be a positive integer',
-  ],
-  'middleware.circuit_breaker.min_samples': [
-    (v) => isInteger(v) && v >= 1,
-    'must be a positive integer',
   ],
 };
 
@@ -532,12 +523,34 @@ export function discoverConfigFile(): string | null {
  */
 export class Config {
   private _data: Record<string, unknown>;
+  /**
+   * The **declared** document: the configuration exactly as its source states
+   * it — parsed file + environment overrides + runtime `set()`/`mount()` —
+   * with the `DEFAULTS` table (and namespace defaults) NOT merged in.
+   *
+   * `_data` answers "what value does this key resolve to?"; `_declared`
+   * answers "did anybody actually say so?". `validate()` needs the second
+   * question for its required-field check (PROTOCOL_SPEC §9.3 step 1);
+   * asking the first can never fail once defaults are merged.
+   */
+  private _declared: Record<string, unknown>;
   private _yamlPath: string | null = null;
   private _mode: 'legacy' | 'namespace' = 'legacy';
   private _mounts: Map<string, Record<string, unknown>> = new Map();
+  /**
+   * Whether the originating `Config.load()` requested validation. `reload()`
+   * re-applies the same policy, so a config loaded with the default
+   * `validate: true` is re-validated on every reload instead of silently
+   * accepting a file that has since become invalid.
+   */
+  private _validateOnLoad = true;
 
   constructor(data?: Record<string, unknown>, _envStyle: EnvStyle = 'auto') {
     this._data = data ?? {};
+    // A bare `new Config(data)` has no default table merged into it, so every
+    // key the caller passed is declared. `Config.load` / `Config.fromDefaults`
+    // overwrite this with the pre-merge document.
+    this._declared = JSON.parse(JSON.stringify(this._data)) as Record<string, unknown>;
   }
 
   // -------------------------------------------------------------------------
@@ -715,6 +728,11 @@ export class Config {
       !Array.isArray(apcoreValue);
 
     let config: Config;
+    // The declared document (§9.3 step 1): the file as written, plus env
+    // overrides, with NO default table merged in. Built alongside the merged
+    // tree rather than derived from it — once defaults are merged the two are
+    // indistinguishable, which is what made the required-field check dead.
+    let declared: Record<string, unknown>;
 
     if (isNamespaceMode) {
       // Namespace mode: apply namespace defaults, file data, then env overrides
@@ -730,8 +748,32 @@ export class Config {
       // Merge file data over defaults
       merged = deepMergeDicts(merged, rawData);
 
+      // Apply legacy APCORE_* overrides to the "apcore" namespace only.
+      // PROTOCOL_SPEC §9.6.2: the `apcore` namespace keeps the §9.2 legacy
+      // merge rules, so `APCORE_EXECUTOR_DEFAULT__TIMEOUT` must still reach
+      // `apcore.executor.default_timeout` in namespace mode. Without this,
+      // prefix dispatch below matches only the registered namespace prefixes
+      // and every other APCORE_* var is silently discarded.
+      // Mirrors apcore-python config.py `_load_namespace_mode`.
+      const apcoreNs = merged['apcore'];
+      if (apcoreNs !== null && typeof apcoreNs === 'object' && !Array.isArray(apcoreNs)) {
+        merged['apcore'] = applyEnvOverrides(apcoreNs as Record<string, unknown>);
+      }
+
       // Apply namespace-aware env overrides
       merged = applyNamespaceEnvOverrides(merged);
+
+      // Same pipeline over the raw file only — no namespace defaults seeded.
+      declared = JSON.parse(JSON.stringify(rawData)) as Record<string, unknown>;
+      const declaredApcore = declared['apcore'];
+      if (
+        declaredApcore !== null &&
+        typeof declaredApcore === 'object' &&
+        !Array.isArray(declaredApcore)
+      ) {
+        declared['apcore'] = applyEnvOverrides(declaredApcore as Record<string, unknown>);
+      }
+      declared = applyNamespaceEnvOverrides(declared);
 
       config = new Config(merged);
       config._mode = 'namespace';
@@ -739,23 +781,37 @@ export class Config {
       // Legacy mode: merge defaults < file < env
       let merged = deepMergeDicts(DEFAULTS, rawData);
       merged = applyEnvOverrides(merged);
+      declared = applyEnvOverrides(rawData);
       config = new Config(merged);
       config._mode = 'legacy';
     }
 
+    config._declared = declared;
     config._yamlPath = yamlPath;
+    config._validateOnLoad = options?.validate !== false;
 
-    if (options?.validate !== false) {
+    if (config._validateOnLoad) {
       config.validate();
     }
 
     return config;
   }
 
-  /** Create a Config from default values with env overrides applied. */
+  /**
+   * Create a Config from default values with env overrides applied.
+   *
+   * The result declares nothing except whatever the environment supplies, so
+   * `validate()` on it fails the §9.1 required-field check unless
+   * `APCORE_VERSION` / `APCORE_PROJECT_NAME` are set or the caller `set()`s
+   * them. That is intentional and matches apcore-rust, where a bare
+   * `Config::default()` is likewise rejected: defaults resolve values, they do
+   * not declare a project.
+   */
   static fromDefaults(): Config {
     const data = applyEnvOverrides({ ...DEFAULTS });
-    return new Config(data);
+    const config = new Config(data);
+    config._declared = applyEnvOverrides({});
+    return config;
   }
 
   /**
@@ -786,45 +842,79 @@ export class Config {
 
   /** Get a configuration value by dot-path key. */
   get(key: string, defaultValue?: unknown): unknown {
+    return this._getFrom(this._data, key, defaultValue);
+  }
+
+  /**
+   * Like {@link Config.get} but reads the **declared** document: it answers
+   * only with values the configuration actually states (parsed file,
+   * environment override, `mount()`, or runtime `set()`), never with a value
+   * supplied by the `DEFAULTS` table or by a namespace's registered defaults.
+   *
+   * `get('extensions.root')` returns `'./extensions'` for a file that never
+   * mentions it; `getDeclared('extensions.root')` returns `undefined`.
+   *
+   * Used by {@link Config.validate} for the §9.3 step 1 required-field check.
+   * Mirrors apcore-rust's `Config::get_declared`.
+   */
+  getDeclared(key: string, defaultValue?: unknown): unknown {
+    return this._getFrom(this._declared, key, defaultValue);
+  }
+
+  /** Shared read path for {@link Config.get} and {@link Config.getDeclared}. */
+  private _getFrom(
+    source: Record<string, unknown>,
+    key: string,
+    defaultValue?: unknown,
+  ): unknown {
     if (this._mode === 'namespace') {
       const resolved = resolveNamespacePath(key);
       if (resolved === null) return defaultValue;
-      const nsData = this._data[resolved.namespace];
+      const nsData = source[resolved.namespace];
       if (nsData === undefined || nsData === null) {
         // §9.9.1: Fallback to implicit "apcore" namespace if no registered namespace matches.
         if (resolved.namespace !== 'apcore') {
-          return this.get(`apcore.${key}`, defaultValue);
+          return this._getFrom(source, `apcore.${key}`, defaultValue);
         }
         return defaultValue;
       }
       if (!resolved.subPath) return nsData;
       return getNested(nsData as Record<string, unknown>, resolved.subPath, defaultValue);
     }
-    return getNested(this._data, key, defaultValue);
+    return getNested(source, key, defaultValue);
   }
 
-  /** Set a configuration value by dot-path key. */
+  /**
+   * Set a configuration value by dot-path key.
+   *
+   * Writes both the resolved tree and the declared document: a value set at
+   * runtime is stated by the caller, not inherited from a default table, so it
+   * satisfies the required-field check.
+   */
   set(key: string, value: unknown): void {
+    this._setInto(this._data, key, value);
+    this._setInto(this._declared, key, value);
+  }
+
+  /** Shared write path for {@link Config.set}. */
+  private _setInto(target: Record<string, unknown>, key: string, value: unknown): void {
     if (this._mode === 'namespace') {
       const resolved = resolveNamespacePath(key);
       if (resolved === null) {
-        setNested(this._data, key, value);
+        setNested(target, key, value);
         return;
       }
       if (!resolved.subPath) {
-        this._data[resolved.namespace] = value;
+        target[resolved.namespace] = value;
         return;
       }
-      if (
-        typeof this._data[resolved.namespace] !== 'object' ||
-        this._data[resolved.namespace] === null
-      ) {
-        this._data[resolved.namespace] = {};
+      if (typeof target[resolved.namespace] !== 'object' || target[resolved.namespace] === null) {
+        target[resolved.namespace] = {};
       }
-      setNested(this._data[resolved.namespace] as Record<string, unknown>, resolved.subPath, value);
+      setNested(target[resolved.namespace] as Record<string, unknown>, resolved.subPath, value);
       return;
     }
-    setNested(this._data, key, value);
+    setNested(target, key, value);
   }
 
   /** Return a deep copy of the raw config data. */
@@ -905,6 +995,11 @@ export class Config {
     // Merge mount data into namespace subtree
     const existing = (this._data[namespace] ?? {}) as Record<string, unknown>;
     this._data[namespace] = deepMergeDicts(existing, mountData);
+
+    // Mounted data is an external configuration source, not a default table,
+    // so it is part of the declared document too.
+    const existingDeclared = (this._declared[namespace] ?? {}) as Record<string, unknown>;
+    this._declared[namespace] = deepMergeDicts(existingDeclared, mountData);
   }
 
   /**
@@ -963,9 +1058,15 @@ export class Config {
 
     const errors: string[] = [];
 
-    // 1. Required field check
+    // 1. Required field check (§9.3 step 1).
+    //
+    // Deliberately reads the DECLARED document, not `this._data`. `_data` has
+    // the `DEFAULTS` table merged into it, so every key this loop could ask
+    // about would already be present and the loop would be a no-op that looks
+    // like validation. Only `version` and `project.name` are checked, because
+    // they are the only §9.1 keys with no canonical default.
     for (const field of REQUIRED_FIELDS) {
-      const value = getNested(this._data, field);
+      const value = this.getDeclared(field);
       if (value === undefined || value === null) {
         errors.push(`Missing required field: '${field}'`);
       }
@@ -1116,14 +1217,22 @@ export class Config {
    * Re-read configuration from the original YAML file.
    * Only works if the Config was created via Config.load().
    * In namespace mode, re-applies namespace defaults, env overrides, and mount data.
+   *
+   * Validation is re-run when the originating `Config.load()` requested it
+   * (the default). A file that has since dropped `version` or `project.name`
+   * therefore fails the reload rather than being adopted silently. A config
+   * loaded with an explicit `{ validate: false }` keeps that opt-out.
    */
   reload(): void {
     if (this._yamlPath === null) {
       throw new ConfigError('Cannot reload: Config was not loaded from a YAML file');
     }
     const previousMounts = new Map(this._mounts);
+    // Load unvalidated: validation must run after mounts and env overrides are
+    // re-applied, otherwise it would judge an incomplete tree.
     const reloaded = Config.load(this._yamlPath, { validate: false });
     this._data = reloaded._data;
+    this._declared = reloaded._declared;
     this._mode = reloaded._mode;
     this._mounts = new Map();
 
@@ -1135,6 +1244,11 @@ export class Config {
     // Re-apply namespace env overrides in namespace mode
     if (this._mode === 'namespace') {
       this._data = applyNamespaceEnvOverrides(this._data);
+      this._declared = applyNamespaceEnvOverrides(this._declared);
+    }
+
+    if (this._validateOnLoad) {
+      this.validate();
     }
   }
 }
@@ -1171,6 +1285,50 @@ Config.registerNamespace({
       enabled: false,
       error_rate_threshold: 0.1,
       latency_p99_threshold_ms: 5000.0,
+    },
+  },
+});
+
+/**
+ * Default `obs.redaction.sensitive_keys` list (Issue #43 §5).
+ *
+ * Duplicated verbatim from `DEFAULT_REDACTION_FIELD_PATTERNS` in
+ * `observability/context-logger.ts` (and from apcore-python's
+ * `_DEFAULT_OBS_REDACTION_SENSITIVE_KEYS`) rather than imported, so that
+ * `config.ts` does not pull the middleware-bearing observability module into
+ * its import graph. Keep the three lists in sync.
+ */
+const _DEFAULT_OBS_REDACTION_SENSITIVE_KEYS: string[] = [
+  '_secret_*',
+  'password',
+  'passwd',
+  'secret',
+  'token',
+  'api_key',
+  'apikey',
+  'apiKey',
+  'access_key',
+  'private_key',
+  'authorization',
+  'auth',
+  'credential',
+  'cookie',
+  'session',
+  'bearer',
+];
+
+// The canonical `obs.*` namespace (redaction_config.json fixture). Registered
+// so `APCORE_OBS_*` env dispatch works and `config.namespace('obs')` resolves,
+// matching apcore-python config.py. `APCORE_OBS` does not collide with
+// `APCORE_OBSERVABILITY` — dispatch is longest-prefix-match.
+Config.registerNamespace({
+  name: 'obs',
+  envPrefix: 'APCORE_OBS',
+  defaults: {
+    redaction: {
+      regex_patterns: [] as string[],
+      sensitive_keys: [..._DEFAULT_OBS_REDACTION_SENSITIVE_KEYS],
+      replacement: '***REDACTED***',
     },
   },
 });

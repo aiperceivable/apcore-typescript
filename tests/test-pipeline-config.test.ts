@@ -291,6 +291,107 @@ describe('buildStrategyFromConfig', () => {
 });
 
 // ---------------------------------------------------------------------------
+// pipeline.configure field validation (Issue #34 §2)
+// ---------------------------------------------------------------------------
+
+describe('buildStrategyFromConfig — pipeline.configure field validation', () => {
+  // `BuiltinInputValidation` declares `pure`, `requires` and `provides` but NOT
+  // `ignoreErrors` / `matchModules` / `timeoutMs`. The previous `key in step`
+  // test therefore rejected exactly the fields its own error message advertised
+  // as valid.
+  it('the built-in step really does lack the optional fields (regression guard)', async () => {
+    const strategy = await buildStrategyFromConfig({}, makeFakeDeps());
+    const step = strategy.steps.find((s) => s.name === 'input_validation')!;
+    expect('ignoreErrors' in step).toBe(false);
+    expect('matchModules' in step).toBe(false);
+    expect('timeoutMs' in step).toBe(false);
+  });
+
+  // The canonical spelling. schemas/apcore-config.schema.json $defs/PipelineStep
+  // is snake_case, so this is what an operator actually writes in apcore.yaml
+  // and what every conformance fixture carries. Accepting only camelCase left
+  // three of the four fields unreachable from real YAML.
+  it('accepts the canonical snake_case spellings from apcore.yaml', async () => {
+    const strategy = await buildStrategyFromConfig(
+      {
+        configure: {
+          input_validation: {
+            ignore_errors: true,
+            match_modules: ['executor.*'],
+            pure: false,
+            timeout_ms: 500,
+          },
+        } as never,
+      },
+      makeFakeDeps(),
+    );
+    const step = strategy.steps.find((s) => s.name === 'input_validation')!;
+    expect(step.ignoreErrors).toBe(true);
+    expect(step.matchModules).toEqual(['executor.*']);
+    expect(step.pure).toBe(false);
+    expect(step.timeoutMs).toBe(500);
+  });
+
+  it('accepts the camelCase aliases (the TypeScript Step surface)', async () => {
+    const strategy = await buildStrategyFromConfig(
+      {
+        configure: {
+          input_validation: { ignoreErrors: true, matchModules: ['api.*'], timeoutMs: 250 },
+        },
+      },
+      makeFakeDeps(),
+    );
+    const step = strategy.steps.find((s) => s.name === 'input_validation')!;
+    expect(step.ignoreErrors).toBe(true);
+    expect(step.matchModules).toEqual(['api.*']);
+    expect(step.timeoutMs).toBe(250);
+  });
+
+  // docs/features/middleware-system.md "Configuration safety" ships exactly
+  // this YAML as the canonical example. A field set without requires/provides
+  // makes the spec's own example throw.
+  it('accepts requires/provides, as the spec example configures them', async () => {
+    const strategy = await buildStrategyFromConfig(
+      {
+        configure: {
+          input_validation: { requires: ['context'], provides: ['validated_inputs'] },
+        } as never,
+      },
+      makeFakeDeps(),
+    );
+    const step = strategy.steps.find((s) => s.name === 'input_validation')!;
+    expect(step.requires).toEqual(['context']);
+    expect(step.provides).toEqual(['validated_inputs']);
+  });
+
+  it('rejects an unknown field and names the canonical spellings', async () => {
+    await expect(
+      buildStrategyFromConfig(
+        { configure: { input_validation: { no_such_field: 1 } } as never },
+        makeFakeDeps(),
+      ),
+    ).rejects.toThrow(
+      /has no configurable field 'no_such_field'.*match_modules, ignore_errors, pure, timeout_ms, requires, provides/s,
+    );
+  });
+
+  // Narrower than the old `key in step` on purpose: these are the step's
+  // identity and its own mutation guards, and `in` walked the prototype chain
+  // so `execute` was accepted too — a config file could replace the step body.
+  it.each(['name', 'description', 'removable', 'replaceable', 'execute'])(
+    'rejects the non-configurable field %s',
+    async (field) => {
+      await expect(
+        buildStrategyFromConfig(
+          { configure: { input_validation: { [field]: 'x' } } as never },
+          makeFakeDeps(),
+        ),
+      ).rejects.toThrow(new RegExp(`has no configurable field '${field}'`));
+    },
+  );
+});
+
+// ---------------------------------------------------------------------------
 // Minimal stub deps for buildStrategyFromConfig
 // ---------------------------------------------------------------------------
 

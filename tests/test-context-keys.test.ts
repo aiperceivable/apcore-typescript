@@ -10,6 +10,7 @@ import {
   LOGGING_START,
   REDACTED_OUTPUT,
   RETRY_COUNT_BASE,
+  ContextKey as SubpathContextKey,
 } from '../src/context-keys.js';
 import { ContextKey } from '../src/context-key.js';
 
@@ -53,5 +54,15 @@ describe('Built-in context keys', () => {
     ]) {
       expect(key).toBeInstanceOf(ContextKey);
     }
+  });
+
+  // C5 (cross-language sync): the README advertises the `apcore-js/context-keys`
+  // subpath — mapped to this module — as an entry point for `ContextKey<T>`
+  // itself, not only for the pre-built constants.
+  it('re-exports the ContextKey class from the context-keys subpath module', () => {
+    expect(SubpathContextKey).toBeDefined();
+    expect(SubpathContextKey).toBe(ContextKey);
+    const custom = new SubpathContextKey<number>('app.custom');
+    expect(custom.name).toBe('app.custom');
   });
 });

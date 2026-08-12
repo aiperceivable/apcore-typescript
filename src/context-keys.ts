@@ -4,6 +4,12 @@
 
 import { ContextKey } from './context-key.js';
 
+// Re-exported so `import { ContextKey } from 'apcore-js/context-keys'` works:
+// the subpath is advertised in the README as the tree-shakeable entry for the
+// typed-context surface, and defining custom keys requires the class itself,
+// not only the pre-built constants below.
+export { ContextKey } from './context-key.js';
+
 // Direct keys -- used as-is by middleware
 export const TRACING_SPANS = new ContextKey<unknown[]>('_apcore.mw.tracing.spans');
 export const TRACING_SAMPLED = new ContextKey<boolean>('_apcore.mw.tracing.sampled');

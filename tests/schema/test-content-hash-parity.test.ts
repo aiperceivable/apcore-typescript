@@ -1,52 +1,77 @@
 /**
- * A-D-037 support -- compute contentHash for tricky schemas (float 1.0, unicode
- * string/key, large integer, unsorted-key object, baseline) and surface the
- * hex digests so cross-repo (Python/Rust) byte-for-byte parity can be verified.
+ * Cross-language conformance driver for schema_content_hash.json (A-D-037).
  *
- * Schemas mirror apcore/conformance/fixtures/schema_content_hash.json. The
- * fixture intentionally records no `expected` hash -- each SDK computes it and
- * the harness compares across repos.
+ * Fixture source: apcore/conformance/fixtures/schema_content_hash.json
+ * (single source of truth). The cases are LOADED from the fixture rather than
+ * hand-mirrored here: a hand-copy silently drifts from the canonical fixture,
+ * which defeats the purpose of a cross-repo hash-parity check.
+ *
+ * The fixture intentionally records no `expected` hash — each SDK computes it
+ * and the harness compares the digests across repos byte-for-byte.
+ *
+ * The fixture text is parsed with `JSON.parse` (not imported as a module) so
+ * large-integer literals never become JS source-level numbers. That is also
+ * the SDK's real canonicalization path: JSON in -> contentHash out.
  */
 
 import { describe, it, expect } from 'vitest';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { contentHash } from '../../src/schema/loader.js';
 
-// Schemas are parsed from raw JSON text (mirroring how the conformance harness
-// consumes apcore/conformance/fixtures/schema_content_hash.json) so that
-// large-integer literals are not introduced as JS source-level numbers (which
-// biome's noPrecisionLoss flags). This faithfully reproduces the SDK's real
-// canonicalization path: JSON in -> contentHash out.
-const CASES_JSON: Record<string, string> = {
-  float_one_point_zero:
-    '{"type":"object","properties":{"ratio":{"type":"number","default":1.0,"minimum":0.0,"maximum":1.0}},"required":["ratio"]}',
-  non_ascii_unicode_key_and_value:
-    '{"type":"object","properties":{"\u540d\u524d":{"type":"string","default":"caf\u00e9\u2014na\u00efve\u2014\ud83e\udd80","description":"Unicode key with combining/emoji value"},"\u03b4":{"type":"string","default":"\u03a9\u2248\u00e7\u221a\u222b"}},"required":["\u540d\u524d"]}',
-  large_integer:
-    '{"type":"object","properties":{"max_id":{"type":"integer","default":9007199254740993,"maximum":18446744073709551615}},"required":["max_id"]}',
-  nested_unsorted_keys:
-    '{"type":"object","properties":{"zeta":{"type":"string"},"alpha":{"type":"object","properties":{"yankee":{"type":"boolean"},"bravo":{"type":"integer"},"mike":{"type":"string"}}},"delta":{"type":"array","items":{"type":"number"}}},"required":["zeta","alpha"]}',
-  baseline_simple_object:
-    '{"type":"object","properties":{"name":{"type":"string"},"count":{"type":"integer"}},"required":["name"]}',
-};
+function findFixturesRoot(): string {
+  const envPath = process.env.APCORE_SPEC_REPO;
+  if (envPath) {
+    const fixtures = path.join(envPath, 'conformance', 'fixtures');
+    if (fs.existsSync(fixtures)) return fixtures;
+    throw new Error(`APCORE_SPEC_REPO=${envPath} does not contain conformance/fixtures/`);
+  }
+  const repoRoot = path.resolve(__dirname, '..', '..');
+  const sibling = path.resolve(repoRoot, '..', 'apcore', 'conformance', 'fixtures');
+  if (fs.existsSync(sibling)) return sibling;
+  throw new Error(
+    'Cannot find apcore conformance fixtures. Set APCORE_SPEC_REPO or clone ' +
+      `apcore as a sibling at ${path.resolve(repoRoot, '..', 'apcore')}.`,
+  );
+}
 
-const CASES: Record<string, unknown> = Object.fromEntries(
-  Object.entries(CASES_JSON).map(([id, json]) => [id, JSON.parse(json)]),
-);
+interface ContentHashCase {
+  id: string;
+  schema: unknown;
+  note?: string;
+}
 
-describe('contentHash parity digests (A-D-037)', () => {
+const FIXTURE = JSON.parse(
+  fs.readFileSync(path.join(findFixturesRoot(), 'schema_content_hash.json'), 'utf-8'),
+) as { test_cases: ContentHashCase[] };
+
+describe('Conformance: schema_content_hash.json (A-D-037)', () => {
+  it('loads every canonical case from the fixture', () => {
+    expect(FIXTURE.test_cases.length).toBeGreaterThan(0);
+    for (const tc of FIXTURE.test_cases) {
+      expect(typeof tc.id).toBe('string');
+      expect(tc.schema).toBeDefined();
+    }
+  });
+
   it('computes a stable 64-char hex digest for each tricky schema and reports them', () => {
     const digests: Record<string, string> = {};
-    for (const [id, schema] of Object.entries(CASES)) {
-      const hex = contentHash(schema);
-      digests[id] = hex;
-      expect(hex).toMatch(/^[0-9a-f]{64}$/);
+    for (const tc of FIXTURE.test_cases) {
+      const hex = contentHash(tc.schema);
+      digests[tc.id] = hex;
+      expect(hex, `case ${tc.id}`).toMatch(/^[0-9a-f]{64}$/);
     }
     // Determinism: hashing again yields identical digests.
-    for (const [id, schema] of Object.entries(CASES)) {
-      expect(contentHash(schema)).toBe(digests[id]);
+    for (const tc of FIXTURE.test_cases) {
+      expect(contentHash(tc.schema), `case ${tc.id}`).toBe(digests[tc.id]);
     }
     // Surface the digests for cross-repo comparison.
     // eslint-disable-next-line no-console
     console.log('A-D-037 contentHash digests (apcore-js):\n' + JSON.stringify(digests, null, 2));
+  });
+
+  it('produces distinct digests for distinct schemas', () => {
+    const digests = FIXTURE.test_cases.map((tc) => contentHash(tc.schema));
+    expect(new Set(digests).size).toBe(digests.length);
   });
 });

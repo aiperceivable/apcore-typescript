@@ -671,19 +671,32 @@ export class Registry {
 
       // Run onLoad BEFORE publishing. Handle both sync and async onLoad: call
       // it, and if it returns a Promise, await it.
+      //
+      // The ID is reserved in `_inFlight` for the whole of onLoad. `register()`
+      // computes its duplicate set as `_modules ∪ _inFlight`, so without the
+      // reservation a concurrent `register()` of the same ID slipping into the
+      // await gap is accepted and silently overwrites this module. Both
+      // apcore-python (`_in_flight.add` before `on_load`) and apcore-rust
+      // reserve here; registry-system.md is explicit that the invariants apply
+      // to every registration path — "SDKs MUST NOT create per-path
+      // exceptions".
       if (typeof modObj['onLoad'] === 'function') {
+        this._inFlight.set(modId, Promise.resolve());
         try {
           const onLoadResult = (modObj['onLoad'] as () => unknown)();
           if (onLoadResult instanceof Promise) {
             await onLoadResult;
           }
         } catch (e) {
-          // Sync throw or async rejection: emit module_load_failed, do NOT
-          // publish, warn, and skip to the next module.
+          // Sync throw or async rejection: release the reservation, emit
+          // module_load_failed, do NOT publish, warn, and skip to the next
+          // module.
+          this._inFlight.delete(modId);
           this._emitModuleLoadFailed(modId, e);
           console.warn(`[apcore:registry] onLoad failed for ${modId}, skipping:`, e);
           continue;
         }
+        this._inFlight.delete(modId);
       }
 
       // Success (including empty / no-onLoad modules): publish all state.
@@ -741,7 +754,28 @@ export class Registry {
       this._warnIfMissingApproval(moduleId, module);
     }
 
-    // 2. Duplicate detection (sync — preserves backward compat with `.toThrow()` tests)
+    // 2. Module-structure validation (sync — preserves .toThrow() compat).
+    // Runs BEFORE duplicate detection: registry-system.md "Side Effects
+    // (ordered)" puts "validate module_id and module structure" at step 2 and
+    // the duplicate check at step 3, and apcore-python validates the streaming
+    // signature before entering the lock. With the order inverted, a module
+    // declaring `streaming: true` without `stream()` reported
+    // DuplicateModuleIdError in TypeScript where Python and Rust report
+    // StreamingInterfaceError.
+    const modForStreaming = module as Record<string, unknown>;
+    const annForStreaming = modForStreaming['annotations'];
+    if (annForStreaming != null && typeof annForStreaming === 'object') {
+      const streamingFlag = (annForStreaming as Record<string, unknown>)['streaming'];
+      if (streamingFlag === true) {
+        const hasStreamMethod = typeof modForStreaming['stream'] === 'function';
+        const hasMarker = (modForStreaming as unknown as Record<symbol, unknown>)[Symbol.for('apcore.streaming')] === true;
+        if (!isStreamingModule(module as unknown as import('../module.js').Module)) {
+          throw new StreamingInterfaceError(moduleId, true, hasStreamMethod, hasMarker);
+        }
+      }
+    }
+
+    // 3. Duplicate detection (sync — preserves backward compat with `.toThrow()` tests)
     const conflict = detectIdConflicts(
       moduleId,
       new Set([...this._modules.keys(), ...this._inFlight.keys()]),
@@ -756,20 +790,6 @@ export class Registry {
         throw new InvalidInputError(conflict.message);
       }
       console.warn(`[apcore:registry] ID conflict: ${conflict.message}`);
-    }
-
-    // 3. Streaming annotation validation (sync — preserves .toThrow() compat)
-    const modForStreaming = module as Record<string, unknown>;
-    const annForStreaming = modForStreaming['annotations'];
-    if (annForStreaming != null && typeof annForStreaming === 'object') {
-      const streamingFlag = (annForStreaming as Record<string, unknown>)['streaming'];
-      if (streamingFlag === true) {
-        const hasStreamMethod = typeof modForStreaming['stream'] === 'function';
-        const hasMarker = (modForStreaming as unknown as Record<symbol, unknown>)[Symbol.for('apcore.streaming')] === true;
-        if (!isStreamingModule(module as unknown as import('../module.js').Module)) {
-          throw new StreamingInterfaceError(moduleId, true, hasStreamMethod, hasMarker);
-        }
-      }
     }
 
     // 4. Custom validator (may be async)

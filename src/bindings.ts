@@ -20,6 +20,7 @@ import {
 import type { Registry } from './registry/registry.js';
 import { inferSchemasFromModule } from './schema/extractor.js';
 import { jsonSchemaToTypeBox } from './schema/loader.js';
+import { assertOpenAiStrictCompatible } from './schema/openai-strict.js';
 
 import type { ModuleAnnotations } from './module.js';
 import { DEFAULT_ANNOTATIONS } from './module.js';
@@ -312,6 +313,21 @@ export class BindingLoader {
       if (inferred) {
         inputSchema = inferred.input;
         outputSchema = inferred.output;
+        // auto_schema: strict promises an OpenAI/Anthropic strict-compatible
+        // schema. Reject at parse time when the inferred schema cannot be made
+        // one (DECLARATIVE_CONFIG_SPEC.md §6.2 / §6.6).
+        if (binding['auto_schema'] === 'strict') {
+          assertOpenAiStrictCompatible(inputSchema as unknown as Record<string, unknown>, {
+            moduleId,
+            side: 'input',
+            filePath,
+          });
+          assertOpenAiStrictCompatible(outputSchema as unknown as Record<string, unknown>, {
+            moduleId,
+            side: 'output',
+            filePath,
+          });
+        }
       } else if ('auto_schema' in binding && binding['auto_schema'] !== false) {
         // Explicit auto_schema but inference failed → error
         throw new BindingSchemaInferenceFailedError(targetString, moduleId, filePath);

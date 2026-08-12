@@ -27,6 +27,32 @@ import { calculateSpecificity, matchPattern } from './utils/pattern.js';
 const POLICY_KEYS = new Set(['rules', 'gate_destructive', 'strict']);
 const RULE_KEYS = new Set(['pattern', 'requires_approval', 'destructive', 'reason']);
 
+/**
+ * Read a governance switch from a parsed policy document, rejecting anything
+ * that is not a real boolean.
+ *
+ * `Boolean(value)` would apply JS truthiness, which disagrees with every other
+ * SDK: `[]` is `true` in JS but `False` in Python, and `"false"` is `true` in
+ * both — while apcore-rust's serde-typed `bool` field refuses both. These
+ * switches decide whether a `destructive` annotation becomes an approval gate
+ * and whether the gate fails closed, so a silent coercion is a governance
+ * decision made by accident. `fromObject` already fails loud on unknown keys
+ * for the same reason; this extends that discipline to the values.
+ *
+ * `undefined` / `null` mean "unset" and take the documented default of `false`.
+ */
+function _requireBoolean(value: unknown, key: string): boolean {
+  if (value === undefined || value === null) return false;
+  if (typeof value !== 'boolean') {
+    const kind = Array.isArray(value) ? 'array' : typeof value;
+    throw new Error(
+      `Policy key '${key}' must be a boolean, got ${kind} (${JSON.stringify(value)}); ` +
+        'a governance switch must not be set by type coercion',
+    );
+  }
+  return value;
+}
+
 /** Overrides accepted by the {@link PolicyRule} constructor. */
 export interface PolicyRuleOverrides {
   /**
@@ -287,8 +313,8 @@ export class ExecutionPolicy {
     });
 
     return new ExecutionPolicy(rules, {
-      gateDestructive: Boolean(obj['gate_destructive'] ?? false),
-      strict: Boolean(obj['strict'] ?? false),
+      gateDestructive: _requireBoolean(obj['gate_destructive'], 'gate_destructive'),
+      strict: _requireBoolean(obj['strict'], 'strict'),
     });
   }
 }

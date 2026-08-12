@@ -30,6 +30,11 @@ export function applyLlmDescriptions(node: unknown): void {
   if ('items' in obj && typeof obj['items'] === 'object') {
     applyLlmDescriptions(obj['items']);
   }
+  if ('prefixItems' in obj && Array.isArray(obj['prefixItems'])) {
+    for (const item of obj['prefixItems'] as unknown[]) {
+      applyLlmDescriptions(item);
+    }
+  }
   for (const keyword of ['oneOf', 'anyOf', 'allOf']) {
     if (keyword in obj && Array.isArray(obj[keyword])) {
       for (const sub of obj[keyword] as unknown[]) {
@@ -72,12 +77,30 @@ export function stripExtensions(node: unknown, stripDefaults: boolean = true): v
   }
 }
 
+/**
+ * `true` when a `type` keyword declares "object", in either the string form
+ * (`"object"`) or the union form (`["object", "null"]`).
+ */
+function declaresObjectType(typeValue: unknown): boolean {
+  if (typeof typeValue === 'string') return typeValue === 'object';
+  if (Array.isArray(typeValue)) return typeValue.some((member) => member === 'object');
+  return false;
+}
+
 function convertToStrict(node: unknown): void {
   if (typeof node !== 'object' || node === null || Array.isArray(node)) return;
 
   const obj = node as Record<string, unknown>;
 
-  if (obj['type'] === 'object' && 'properties' in obj) {
+  // `type` may be a string ("object"), an array (["object", "null"] — what the
+  // nullable wrapper below produces for an optional nested object), or absent
+  // entirely: `properties` alone already implies an object schema, and
+  // requiring a `type` keyword let `{"properties": {…}}` through unhardened,
+  // which OpenAI structured outputs then rejects (A23 / spec §4.16).
+  const isObjectWithProps =
+    'properties' in obj && (!('type' in obj) || declaresObjectType(obj['type']));
+
+  if (isObjectWithProps) {
     obj['additionalProperties'] = false;
     const existingRequired = new Set(
       Array.isArray(obj['required']) ? (obj['required'] as string[]) : [],
@@ -96,18 +119,14 @@ function convertToStrict(node: unknown): void {
             (prop['type'] as string[]).push('null');
           }
         }
-      } else if ('oneOf' in prop && Array.isArray(prop['oneOf'])) {
-        const variants = prop['oneOf'] as Record<string, unknown>[];
-        if (!variants.some((v) => v['type'] === 'null')) {
-          variants.push({ type: 'null' });
-        }
-      } else if ('anyOf' in prop && Array.isArray(prop['anyOf'])) {
-        const variants = prop['anyOf'] as Record<string, unknown>[];
-        if (!variants.some((v) => v['type'] === 'null')) {
-          variants.push({ type: 'null' });
-        }
       } else {
-        properties[name] = { oneOf: [prop, { type: 'null' }] };
+        // Pure $ref or composition — wrap in anyOf with null. `anyOf`, not
+        // `oneOf`: OpenAI structured outputs accepts only `anyOf` as the
+        // nullable-union spelling, and strict mode exists to feed that adapter.
+        // An author-written `oneOf` / `anyOf` is wrapped, never appended to:
+        // pushing a `null` branch into their union rewrites the contract they
+        // declared (and, for `oneOf`, its exclusivity count).
+        properties[name] = { anyOf: [prop, { type: 'null' }] };
       }
     }
 
@@ -121,6 +140,13 @@ function convertToStrict(node: unknown): void {
   }
   if ('items' in obj && typeof obj['items'] === 'object') {
     convertToStrict(obj['items']);
+  }
+  // `prefixItems` — the Draft 2020-12 tuple form. Without this, an object
+  // sitting at a tuple position was never hardened.
+  if ('prefixItems' in obj && Array.isArray(obj['prefixItems'])) {
+    for (const item of obj['prefixItems'] as unknown[]) {
+      convertToStrict(item);
+    }
   }
   for (const keyword of ['oneOf', 'anyOf', 'allOf']) {
     if (keyword in obj && Array.isArray(obj[keyword])) {

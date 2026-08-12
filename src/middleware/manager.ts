@@ -4,15 +4,22 @@
 
 import type { Context } from '../context.js';
 import { ModuleError } from '../errors.js';
+import type { StepMiddleware } from '../pipeline.js';
 import { type Middleware, RetrySignal } from './base.js';
 
 export class MiddlewareChainError extends ModuleError {
   static override readonly DEFAULT_RETRYABLE: boolean | null = false;
 
   readonly original: Error;
-  readonly executedMiddlewares: Middleware[];
+  /**
+   * The middlewares that had already run when the chain failed, in
+   * registration order. Module-level chains carry `Middleware`; the pipeline
+   * engine reuses this error for a throwing `StepMiddleware.beforeStep`, so
+   * the element type is the union of both.
+   */
+  readonly executedMiddlewares: (Middleware | StepMiddleware)[];
 
-  constructor(original: Error, executedMiddlewares: Middleware[]) {
+  constructor(original: Error, executedMiddlewares: (Middleware | StepMiddleware)[]) {
     super('MIDDLEWARE_CHAIN_ERROR', String(original), undefined, original);
     this.name = 'MiddlewareChainError';
     this.original = original;

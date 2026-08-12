@@ -33,6 +33,20 @@ apcore is an AI-Perceivable module standard that makes every interface naturally
 - **Caching & pagination annotations** — `cacheable`, `cacheTtl`, `cacheKeyFields` for result caching; `paginated`, `paginationStyle` for paginated modules
 - **Config Bus** — Namespace-based configuration registry with typed access, env prefix dispatch, hot-reload, and external config mounting (`Config.registerNamespace()`, `config.namespace()`, `config.bind<T>()`, `config.mount()`)
 
+## What's New in v0.26.0
+
+- **`ExecutionPolicy` / `PolicyRule` execution-time governance** (#76) — An external policy can force or exempt approval on already-registered modules by ID pattern, make a `destructive` annotation imply approval via `gateDestructive`, and fail **closed** with `strict: true` when a gated module has no `ApprovalHandler`. The most specific matching rule wins; on a tie the more restrictive one does. See [Execution policy](#execution-policy) and [`examples/execution-policy.ts`](./examples/execution-policy.ts).
+- **Governance events** (#77) — `apcore.approval.decision` and `apcore.policy.override` are published on the event bus alongside the existing `apcore.acl.denied`.
+
+## What's New in v0.25.0
+
+- **Config-driven ACL discovery** (#74, D-64) — `ACL.discover(config)` resolves `acl.root` (default `./acl`) relative to the config file's own directory and loads an ACL only if that path exists; a missing path attaches **no** ACL rather than synthesizing a default-deny. Auto-wired in the `APCore` constructor. See [`examples/acl-config-driven.ts`](./examples/acl-config-driven.ts).
+
+## What's New in v0.24.0
+
+- **Per-instance `ToggleState` isolation** (#71) — each `APCore` instance owns one `ToggleState` (`new APCore({ toggleState? })`, read-only via `client.toggleState`) threaded into both the write path (`system.control.toggle_feature`) and the read path (`Executor` → module lookup), so disabling a module on one instance no longer affects another in the same process.
+- **Agent-governance conformance coverage** (#72) — drivers for the canonical `toggle_state_isolation.json` and `acl_agent_scoping.json` fixtures lock the AI-agent tool-governance scenario as a cross-language contract.
+
 ## What's New in v0.23.0
 
 - **AI error-recovery metadata at the source** (#70) — Framework errors now carry a default `userFixable` resolved per error code (`USER_FIXABLE_BY_CODE`), plus filled `aiGuidance` defaults, so the recovery contract flows to every surface (MCP/CLI/A2A) from one module/error definition instead of being backfilled per adapter. At parity with apcore-python / apcore-rust 0.23.0, locked by the shared `error_recovery_metadata.json` conformance fixture.
@@ -51,7 +65,7 @@ See [`examples/v022-tour.ts`](./examples/v022-tour.ts) for a runnable tour of ea
 ## Documentation
 
 For full documentation, including Quick Start guides and API reference, visit:
-**[https://aiperceivable.github.io/apcore/getting-started.html](https://aiperceivable.github.io/apcore/getting-started.html)**
+**[https://aiperceivable.github.io/apcore/getting-started/](https://aiperceivable.github.io/apcore/getting-started/)**
 
 ## Requirements
 
@@ -181,6 +195,7 @@ const result = await executor.call('example.greet', { name: 'World' });
 | `Context` | Request context — trace ID, identity, call chain, cancel token |
 | `Config` | Configuration — load from YAML, namespace bus, get/set/bind values |
 | `ACL` | Access control — rule-based caller/target authorization |
+| `ExecutionPolicy` / `PolicyRule` | Execution-time governance overrides (#76) — force/exempt approval by ID pattern, `gateDestructive`, `strict` fail-closed |
 | `Middleware` | Pipeline hooks — before/after/onError interception |
 | `CircuitBreakerMiddleware` | Per-(module, caller) circuit breaker — CLOSED/OPEN/HALF_OPEN with configurable threshold and cooldown |
 | `TracingMiddleware` | OTel-compatible span tracing — accepts any `OtelTracer`/`OtelSpan` without runtime `@opentelemetry/*` dependency |
@@ -251,17 +266,31 @@ Two prefix conventions are supported:
 
 | Convention | Applies to | Example |
 |------------|------------|---------|
-| `APCORE_` + `KEY_PATH` (single `_` → `.`) | Legacy flat keys | `APCORE_EXECUTOR_DEFAULT_TIMEOUT=5000` |
+| `APCORE_` + `KEY_PATH` | Legacy flat keys | `APCORE_EXECUTOR_DEFAULT__TIMEOUT=5000` |
 | `APCORE_` + namespace prefix | apcore sub-package namespaces | `APCORE_OBSERVABILITY_TRACING_ENABLED=true` |
+
+Within the suffix, a single `_` maps to `.` (a path separator) and `__` maps to a
+literal `_`. So `APCORE_EXECUTOR_DEFAULT__TIMEOUT` sets `executor.default_timeout`
+— writing `APCORE_EXECUTOR_DEFAULT_TIMEOUT` would instead target the key
+`executor.default.timeout`, which does not exist. This matches apcore-python and
+apcore-rust.
+
+Legacy `APCORE_*` overrides apply in namespace mode too: they are merged into the
+`apcore` namespace (PROTOCOL_SPEC §9.6.2), so the example above also resolves via
+`config.get('apcore.executor.default_timeout')`.
 
 apcore pre-registers the following namespaces and env prefixes:
 
 | Namespace | Env prefix | Wraps |
 |-----------|-----------|-------|
-| `observability` | `APCORE_OBSERVABILITY` | `apcore.observability.*` keys |
-| `sysModules` | `APCORE_SYS` | `apcore.sys_modules.*` keys |
+| `observability` | `APCORE_OBSERVABILITY` | `observability.*` — tracing, metrics, logging, error_history, platform_notify |
+| `obs` | `APCORE_OBS` | `obs.redaction.*` — `sensitive_keys`, `regex_patterns`, `replacement` |
+| `sys_modules` | `APCORE_SYS` | `sys_modules.*` — health, manifest, usage, control, events |
 
-Sub-packages use their own `APCORE_` prefixed name (e.g. `APCORE_MCP` for apcore-mcp). The longest-prefix-match dispatch algorithm disambiguates correctly.
+> Namespace names are **snake_case**, matching apcore-python and the YAML config
+> keys: use `config.namespace('sys_modules')`, not `'sysModules'`.
+
+Sub-packages use their own `APCORE_` prefixed name (e.g. `APCORE_MCP` for apcore-mcp). The longest-prefix-match dispatch algorithm disambiguates correctly (`APCORE_OBS_*` vs `APCORE_OBSERVABILITY_*`).
 
 ### Hot Reload
 
@@ -280,7 +309,7 @@ Configuration files support two modes. **Legacy mode** (no `apcore:` key) is ful
 ```yaml
 # Namespace mode
 apcore:
-  version: "0.22.0"
+  version: "0.26.0"
 
 _config:
   strict: true
@@ -339,6 +368,105 @@ exporter.start({ port: 9090 });
 //   apcore_usage_error_rate{module_id="math.add"} 0.0004
 //   apcore_usage_p99_latency_ms{module_id="math.add"} 45.0
 ```
+
+### Bindings
+
+`BindingLoader` registers modules from a YAML file instead of code — the
+no-code integration path.
+
+```yaml
+# format-date.binding.yaml
+spec_version: "1.0"
+bindings:
+  - module_id: "utils.format_date"
+    # "<module path>:<exported symbol>". The module path goes to Node's
+    # `import()` verbatim, so it must be a package specifier or an absolute
+    # path — a bare relative name is NOT resolved against the YAML file.
+    target: "/abs/path/to/format-date.ts:formatDateString"
+    description: "Format a date string into a specified format"
+    version: "1.0.0"
+    auto_schema: true
+```
+
+```typescript
+import { BindingLoader, Executor, Registry } from 'apcore-js';
+
+const registry = new Registry();
+const loader = new BindingLoader();
+await loader.loadBindings('./format-date.binding.yaml', registry);
+// Or every *.binding.yaml in a directory:
+// await loader.loadBindingDir('./bindings', registry);
+
+const executor = new Executor({ registry });
+await executor.call('utils.format_date', {
+  dateString: '2024-01-15',
+  outputFormat: '%B %d, %Y',
+});
+```
+
+The target is invoked as `func(inputs, context)`. Schemas come from one of four
+mutually exclusive modes: inline `input_schema` / `output_schema`, an external
+`schema_ref`, `auto_schema` (infers from the target module's exported
+`inputSchema` / `outputSchema`), or — with none specified — a permissive
+fallback. Pass `new BindingLoader({ trustedPackagePrefixes: [...] })` to refuse
+importing any target outside an allowlist.
+
+See [`examples/bindings/format-date/`](./examples/bindings/format-date/) for a
+runnable end-to-end binding.
+
+### Execution policy
+
+`ExecutionPolicy` (with `PolicyRule`) applies governance to **already-registered**
+modules at execution time, without touching their code or annotations. It is
+consulted by the approval gate (pipeline step 5).
+
+```typescript
+import { APCore, ExecutionPolicy, PolicyRule } from 'apcore-js';
+
+const policy = new ExecutionPolicy(
+  [
+    new PolicyRule('orders.delete_*', {
+      requiresApproval: true,
+      reason: 'destructive order ops need human sign-off',
+    }),
+    // A rule can also exempt: requiresApproval: false.
+    new PolicyRule('orders.read_*', { requiresApproval: false }),
+  ],
+  {
+    // Any module annotated destructive: true also needs approval.
+    gateDestructive: true,
+    // A module that needs approval but has no ApprovalHandler fails CLOSED
+    // (ApprovalDeniedError) instead of silently executing.
+    strict: true,
+  },
+);
+
+const client = new APCore({ policy, approvalHandler });
+// Runtime swap: executor.setPolicy(otherPolicy)
+```
+
+Pattern matching reuses the ACL wildcard semantics (Algorithm A08) and
+specificity scoring (A10): the most specific matching rule wins, and on a tie the
+more restrictive rule does.
+
+An operator-authored YAML/JSON governance document loads via
+`ExecutionPolicy.fromObject(parsed)`:
+
+```yaml
+gate_destructive: true
+strict: true
+rules:
+  - pattern: "orders.delete_*"
+    requires_approval: true
+    reason: "destructive order operations need human sign-off"
+```
+
+Parsing is **strict**: unknown keys throw, and `gate_destructive` / `strict` must
+be real booleans — a typo or a `"false"` string cannot silently disable a
+control.
+
+See [`examples/execution-policy.ts`](./examples/execution-policy.ts) for a
+runnable end-to-end demo of all three behaviours.
 
 ### Error Codes
 
@@ -452,7 +580,7 @@ Shows behavioral annotations and simulated database lookup.
 
 ```typescript
 import { Type } from '@sinclair/typebox';
-import { FunctionModule } from 'apcore-js';
+import { FunctionModule, createAnnotations } from 'apcore-js';
 
 const users: Record<string, { id: string; name: string; email: string }> = {
   'user-1': { id: 'user-1', name: 'Alice', email: 'alice@example.com' },
@@ -468,14 +596,18 @@ export const getUserModule = new FunctionModule({
     name: Type.String(),
     email: Type.String(),
   }),
-  annotations: {
+  // `ModuleAnnotations` is a total interface — `createAnnotations()` fills the
+  // rest (cacheable, cacheTtl, cacheKeyFields, paginated, paginationStyle,
+  // extra) from `DEFAULT_ANNOTATIONS`. A partial object literal will not
+  // compile.
+  annotations: createAnnotations({
     readonly: true,
     destructive: false,
     idempotent: true,
     requiresApproval: false,
     openWorld: true,
     streaming: false,
-  },
+  }),
   execute: (inputs) => {
     const user = users[inputs.userId as string];
     if (!user) {
@@ -494,7 +626,7 @@ Demonstrates destructive annotations, `ModuleExample` for AI-perceivable documen
 
 ```typescript
 import { Type } from '@sinclair/typebox';
-import { FunctionModule, ContextLogger } from 'apcore-js';
+import { FunctionModule, ContextLogger, createAnnotations } from 'apcore-js';
 import type { Context } from 'apcore-js';
 
 export const sendEmailModule = new FunctionModule({
@@ -504,7 +636,9 @@ export const sendEmailModule = new FunctionModule({
     to: Type.String(),
     subject: Type.String(),
     body: Type.String(),
-    apiKey: Type.String(),
+    // `x-sensitive: true` (or a `_secret_` field-name prefix) is what makes the
+    // executor redact the value in captured inputs/outputs and logs.
+    apiKey: Type.String({ 'x-sensitive': true }),
   }),
   outputSchema: Type.Object({
     status: Type.String(),
@@ -513,14 +647,14 @@ export const sendEmailModule = new FunctionModule({
   tags: ['email', 'communication', 'external'],
   version: '1.2.0',
   metadata: { provider: 'example-smtp', maxRetries: 3 },
-  annotations: {
+  annotations: createAnnotations({
     readonly: false,
     destructive: true,
     idempotent: false,
     requiresApproval: false,
     openWorld: true,
     streaming: false,
-  },
+  }),
   examples: [
     {
       title: 'Send a welcome email',
@@ -594,7 +728,7 @@ npm run build
 
 ## Links
 
-- **Documentation:** [https://aiperceivable.github.io/apcore/getting-started.html](https://aiperceivable.github.io/apcore/getting-started.html)
+- **Documentation:** [https://aiperceivable.github.io/apcore/getting-started/](https://aiperceivable.github.io/apcore/getting-started/)
 - **Specification:** [https://github.com/aiperceivable/apcore](https://github.com/aiperceivable/apcore)
 - **GitHub:** [https://github.com/aiperceivable/apcore-typescript](https://github.com/aiperceivable/apcore-typescript)
 - **npm:** [https://www.npmjs.com/package/apcore-js](https://www.npmjs.com/package/apcore-js)

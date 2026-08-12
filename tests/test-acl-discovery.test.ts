@@ -104,7 +104,10 @@ describe('ACL.discover (D-64 / #74)', () => {
     const confDir = join(tmpDir, 'conf');
     mkdirSync(confDir);
     const configPath = join(confDir, 'project.yaml');
-    writeFileSync(configPath, 'acl:\n  root: ./acl.yaml\n');
+    writeFileSync(
+      configPath,
+      'version: "1.0.0"\nproject:\n  name: acl-src-dir\nacl:\n  root: ./acl.yaml\n',
+    );
     writeFileSync(join(confDir, 'acl.yaml'), DENY_ALL_ACL);
 
     // Load from file so config.sourcePath is populated; resolution must
@@ -134,7 +137,7 @@ describe('ACL.discover (D-64 / #74)', () => {
     const config = Config.load(
       (() => {
         const p = join(tmpDir, 'project.yaml');
-        writeFileSync(p, 'project:\n  name: defaults-test\n');
+        writeFileSync(p, 'version: "1.0.0"\nproject:\n  name: defaults-test\n');
         return p;
       })(),
     );
@@ -192,7 +195,10 @@ describe('APCore bootstrap ACL activation (D-64 / #74)', () => {
     const confDir = join(tmpDir, 'nested');
     mkdirSync(confDir);
     const configPath = join(confDir, 'project.yaml');
-    writeFileSync(configPath, 'acl:\n  root: ./acl.yaml\n');
+    writeFileSync(
+      configPath,
+      'version: "1.0.0"\nproject:\n  name: acl-anchor\nacl:\n  root: ./acl.yaml\n',
+    );
     writeFileSync(join(confDir, 'acl.yaml'), DENY_ALL_ACL);
 
     const config = Config.load(configPath);

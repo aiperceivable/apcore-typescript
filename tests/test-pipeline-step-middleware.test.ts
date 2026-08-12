@@ -156,7 +156,7 @@ describe('StepMiddleware before/after order', () => {
 // ---------------------------------------------------------------------------
 
 describe('StepMiddleware onion stacking', () => {
-  it('runs beforeStep in registration order and afterStep in registration order', async () => {
+  it('runs beforeStep in registration order and afterStep in REVERSE order (onion)', async () => {
     const events: string[] = [];
     const mwA: StepMiddleware = {
       beforeStep: () => {
@@ -178,7 +178,12 @@ describe('StepMiddleware onion stacking', () => {
     engine.addStepMiddleware(mwA);
     engine.addStepMiddleware(mwB);
     await engine.run(new ExecutionStrategy('s', [makeStep('only')]), makeContext());
-    expect(events).toEqual(['A:before', 'B:before', 'A:after', 'B:after']);
+    // Onion model: beforeStep unwinds in registration order, afterStep in
+    // reverse. This used to expect ['A:before','B:before','A:after','B:after']
+    // — a straight-through order that is not an onion at all, and the assertion
+    // that kept the defect alive (pipeline_step_middleware.json
+    // `before_after_invocation_order`).
+    expect(events).toEqual(['A:before', 'B:before', 'B:after', 'A:after']);
   });
 });
 
@@ -217,7 +222,13 @@ describe('StepMiddleware onStepError', () => {
     const ctx = makeContext();
     const [output, trace] = await engine.run(strategy, ctx);
     expect(trace.success).toBe(true);
-    expect(output).toEqual({ ok: true });
+    // The recovery value BECOMES the failed step's output — a MUST in
+    // features/middleware-system.md "Normative Rules", implemented by
+    // apcore-python and apcore-rust. This assertion previously read
+    // `{ ok: true }`, encoding the old TS-only behaviour of discarding the
+    // recovery value; `next` merges onto ctx.output, so the recovered
+    // `{ recovered: true }` must still be visible alongside it.
+    expect(output).toEqual({ recovered: true, ok: true });
     // Both steps appear in trace
     expect(trace.steps.map((s) => s.name)).toEqual(['boom', 'next']);
   });
@@ -260,7 +271,12 @@ describe('StepMiddleware onStepError', () => {
       new ExecutionStrategy('s', [makeStep('boom', { throws: true })]),
       makeContext(),
     );
-    expect(calls).toEqual(['A']);
+    // onStepError runs in REVERSE registration order, so mwB is the first
+    // handler reached and its recovery short-circuits mwA. The old expectation
+    // of ['A'] encoded forward order; note that with only ONE recovering
+    // handler this case cannot tell first-wins from last-wins at all, which is
+    // why both A and B return a recovery here.
+    expect(calls).toEqual(['B']);
   });
 
   it('if all onStepError return null, the original error is re-thrown', async () => {
@@ -282,6 +298,75 @@ describe('StepMiddleware onStepError', () => {
     engine.addStepMiddleware(mw);
     await engine.run(new ExecutionStrategy('s', [makeStep('a')]), makeContext());
     expect(mw.onStepError).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// state.outputs never contains the current step — the RECOVERY path
+// ---------------------------------------------------------------------------
+
+/**
+ * `docs/features/middleware-system.md` → "What `state.outputs` contains":
+ * the map holds exactly the steps that completed BEFORE the current one, and
+ * the current step is never present in any of the three hooks. Implementations
+ * MUST NOT insert the current step's output into `state.outputs` before
+ * invoking `afterStep`; ordering the snapshot after the hook is what enforces
+ * it.
+ *
+ * `pipeline_step_middleware.json` →
+ * `state_outputs_excludes_the_current_step_in_every_hook` drives the SUCCESS
+ * and error paths (see tests/conformance-pipeline-step-middleware.test.ts).
+ * The engine snapshots on TWO paths, and the recovery one is a separate
+ * `stepOutputs[...] = …` statement that the fixture case cannot reach, because
+ * that case recovers from nothing. Moving that one statement above its
+ * `_runAfterStepHooks` call leaves the whole conformance file green, so the
+ * second copy of the ordering is pinned here.
+ */
+describe('StepMiddleware state.outputs on the recovery path', () => {
+  it('afterStep for a RECOVERED step still excludes that step from state.outputs', async () => {
+    const seen: Array<{ hook: string; step: string; keys: string[] }> = [];
+    const mw: StepMiddleware = {
+      // `state.outputs` is a live reference to the engine's own map, so the
+      // key set must be snapshotted inside the hook — reading it afterwards
+      // would observe the final map on every entry and could never fail.
+      beforeStep: (name, state) => {
+        seen.push({ hook: 'before', step: name, keys: Object.keys(state.outputs) });
+      },
+      afterStep: (name, state) => {
+        seen.push({ hook: 'after', step: name, keys: Object.keys(state.outputs) });
+      },
+      onStepError: (name) => (name === 'second' ? { recovered: true } : null),
+    };
+
+    const engine = new PipelineEngine();
+    engine.addStepMiddleware(mw);
+    const strategy = new ExecutionStrategy('s', [
+      makeStep('first', { output: { v: 1 } }),
+      makeStep('second', { throws: true }),
+      makeStep('third', { output: { v: 3 } }),
+    ]);
+    const [, trace] = await engine.run(strategy, makeContext());
+    expect(trace.success, 'the middleware recovers, so the pipeline completes').toBe(true);
+
+    const keysAt = (hook: string, step: string): string[] | undefined =>
+      seen.find((e) => e.hook === hook && e.step === step)?.keys;
+
+    // The EXACT key set, not "second is absent": an implementation that lost
+    // `first`, or one that never populated the map, would satisfy an
+    // absence-only assertion.
+    expect(
+      keysAt('after', 'second'),
+      'a RECOVERED step produced an output and the pipeline continued, but its ' +
+        'output reaches afterStep as the `result` parameter — it MUST NOT also ' +
+        'be in state.outputs',
+    ).toEqual(['first']);
+    // The pair is what makes the assertion above bite: `third` proves the map
+    // DOES gain `second` once that step is behind us, so an always-empty map
+    // cannot pass both.
+    expect(
+      keysAt('before', 'third'),
+      'a recovered step MUST still be recorded in state.outputs for LATER steps',
+    ).toEqual(['first', 'second']);
   });
 });
 

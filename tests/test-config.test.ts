@@ -108,9 +108,50 @@ describe('Config.data', () => {
   });
 });
 
+/**
+ * A Config carrying the canonical defaults PLUS the two keys that a
+ * configuration must DECLARE for itself.
+ *
+ * `Config.fromDefaults()` on its own no longer passes `validate()`:
+ * PROTOCOL_SPEC §9.1 gives `version` and `project.name` no canonical default,
+ * which is precisely why they are the only required keys, and §9.3 step 1
+ * evaluates requiredness against the declared document. Defaults resolve
+ * values; they do not declare a project.
+ */
+function defaultsPlusRequired(): Config {
+  const cfg = Config.fromDefaults();
+  cfg.set('version', '1.0.0');
+  cfg.set('project.name', 'validate-test');
+  return cfg;
+}
+
 describe('Config.validate', () => {
   it('passes with all required fields present', () => {
+    const cfg = defaultsPlusRequired();
+    expect(() => cfg.validate()).not.toThrow();
+  });
+
+  it('fails on a bare Config.fromDefaults() — defaults do not declare a config', () => {
+    // Regression guard for the dead-check bug: DEFAULTS used to invent
+    // `version: '0.16.0'` and `project.name: 'apcore'`, so this passed and the
+    // required-field loop could never fire for any input.
     const cfg = Config.fromDefaults();
+    try {
+      cfg.validate();
+      throw new Error('expected validate() to throw');
+    } catch (e) {
+      expect(e).toBeInstanceOf(ConfigError);
+      expect((e as ConfigError).code).toBe('CONFIG_INVALID');
+      expect((e as ConfigError).message).toContain("'version'");
+      expect((e as ConfigError).message).toContain("'project.name'");
+    }
+  });
+
+  it('does not require keys that carry a canonical default', () => {
+    // extensions.root / schema.root / acl.root / acl.default_effect all have
+    // defaults in defaults.schema.json, so their absence from the declared
+    // document is not an error (§9.1).
+    const cfg = new Config({ version: '1.0.0', project: { name: 'minimal' } });
     expect(() => cfg.validate()).not.toThrow();
   });
 
@@ -131,82 +172,39 @@ describe('Config.validate', () => {
   });
 
   it('validates constraints', () => {
-    const cfg = Config.fromDefaults();
+    const cfg = defaultsPlusRequired();
     cfg.set('acl.default_effect', 'invalid');
     expect(() => cfg.validate()).toThrow("must be 'allow' or 'deny'");
   });
 
   it('validates sampling_rate range', () => {
-    const cfg = Config.fromDefaults();
+    const cfg = defaultsPlusRequired();
     cfg.set('observability.tracing.sampling_rate', 2.0);
     expect(() => cfg.validate()).toThrow('[0.0, 1.0]');
   });
 
-  // A-D-03 — config-bus.md "Contract: Config.validate" constraint set.
-  // open_threshold is an ERROR RATE in [0.0, 1.0] (default 0.5), NOT a count.
-  it('rejects out-of-range middleware.circuit_breaker.open_threshold with CONFIG_INVALID', () => {
-    const cfg = Config.fromDefaults();
-    cfg.set('middleware.circuit_breaker.open_threshold', 1.5);
-    try {
-      cfg.validate();
-      throw new Error('expected validate() to throw');
-    } catch (e) {
-      expect(e).toBeInstanceOf(ConfigError);
-      expect((e as ConfigError).code).toBe('CONFIG_INVALID');
-      expect((e as ConfigError).message).toContain('middleware.circuit_breaker.open_threshold');
-    }
-  });
-
-  it('rejects integer-count open_threshold of 5 (it is a rate, not a count)', () => {
-    const cfg = Config.fromDefaults();
-    cfg.set('middleware.circuit_breaker.open_threshold', 5);
-    expect(() => cfg.validate()).toThrow('middleware.circuit_breaker.open_threshold');
-  });
-
-  it('rejects boolean open_threshold', () => {
-    const cfg = Config.fromDefaults();
-    cfg.set('middleware.circuit_breaker.open_threshold', true);
-    expect(() => cfg.validate()).toThrow('middleware.circuit_breaker.open_threshold');
-  });
-
-  it('accepts open_threshold boundary values 0.0 and 1.0', () => {
-    const cfg0 = Config.fromDefaults();
-    cfg0.set('middleware.circuit_breaker.open_threshold', 0);
-    expect(() => cfg0.validate()).not.toThrow();
-
-    const cfg1 = Config.fromDefaults();
-    cfg1.set('middleware.circuit_breaker.open_threshold', 1.0);
-    expect(() => cfg1.validate()).not.toThrow();
-  });
-
-  it('rejects middleware.circuit_breaker.window_size of 0 with CONFIG_INVALID', () => {
-    const cfg = Config.fromDefaults();
-    cfg.set('middleware.circuit_breaker.window_size', 0);
-    try {
-      cfg.validate();
-      throw new Error('expected validate() to throw');
-    } catch (e) {
-      expect(e).toBeInstanceOf(ConfigError);
-      expect((e as ConfigError).code).toBe('CONFIG_INVALID');
-      expect((e as ConfigError).message).toContain('middleware.circuit_breaker.window_size');
-    }
-  });
-
-  it('rejects middleware.circuit_breaker.min_samples of 0 with CONFIG_INVALID', () => {
-    const cfg = Config.fromDefaults();
-    cfg.set('middleware.circuit_breaker.min_samples', 0);
-    try {
-      cfg.validate();
-      throw new Error('expected validate() to throw');
-    } catch (e) {
-      expect(e).toBeInstanceOf(ConfigError);
-      expect((e as ConfigError).code).toBe('CONFIG_INVALID');
-      expect((e as ConfigError).message).toContain('middleware.circuit_breaker.min_samples');
+  // `middleware.circuit_breaker.*` was removed from the constraint table: the
+  // canonical `apcore-config.schema.json` declares MiddlewareConfig as
+  // `{ disabled }` with additionalProperties:false, so those keys were rejected
+  // by the config schema while all three SDKs happily validated them — and no
+  // SDK ever read them. The breaker's knobs are its constructor options and the
+  // declarative middleware-chain config, not a flat config namespace.
+  it('does not validate middleware.circuit_breaker.* — not a config key', () => {
+    for (const key of [
+      'middleware.circuit_breaker.open_threshold',
+      'middleware.circuit_breaker.recovery_window_ms',
+      'middleware.circuit_breaker.window_size',
+      'middleware.circuit_breaker.min_samples',
+    ]) {
+      const cfg = defaultsPlusRequired();
+      // A value that WOULD have been rejected by the old constraint.
+      cfg.set(key, -1);
+      expect(() => cfg.validate()).not.toThrow();
     }
   });
 
   it('rejects out-of-range sys_modules.events.thresholds.error_rate with CONFIG_INVALID', () => {
-    const cfg = Config.fromDefaults();
+    const cfg = defaultsPlusRequired();
     cfg.set('sys_modules.events.thresholds.error_rate', 1.5);
     try {
       cfg.validate();
@@ -219,27 +217,23 @@ describe('Config.validate', () => {
   });
 
   it('rejects sys_modules.events.thresholds.latency_p99_ms of 0 (must be > 0)', () => {
-    const cfg = Config.fromDefaults();
+    const cfg = defaultsPlusRequired();
     cfg.set('sys_modules.events.thresholds.latency_p99_ms', 0);
     expect(() => cfg.validate()).toThrow('sys_modules.events.thresholds.latency_p99_ms');
   });
 
   it('rejects new sys_modules.error_history integer constraints (< 1)', () => {
-    const cfg = Config.fromDefaults();
+    const cfg = defaultsPlusRequired();
     cfg.set('sys_modules.error_history.max_entries_per_module', 0);
     expect(() => cfg.validate()).toThrow('sys_modules.error_history.max_entries_per_module');
 
-    const cfg2 = Config.fromDefaults();
+    const cfg2 = defaultsPlusRequired();
     cfg2.set('sys_modules.error_history.max_total_entries', 0);
     expect(() => cfg2.validate()).toThrow('sys_modules.error_history.max_total_entries');
   });
 
   it('passes for a fully-valid config that exercises the new constraints', () => {
-    const cfg = Config.fromDefaults();
-    cfg.set('middleware.circuit_breaker.open_threshold', 0.5);
-    cfg.set('middleware.circuit_breaker.recovery_window_ms', 60000);
-    cfg.set('middleware.circuit_breaker.window_size', 20);
-    cfg.set('middleware.circuit_breaker.min_samples', 5);
+    const cfg = defaultsPlusRequired();
     cfg.set('sys_modules.error_history.max_entries_per_module', 50);
     cfg.set('sys_modules.error_history.max_total_entries', 500);
     cfg.set('sys_modules.events.thresholds.error_rate', 0.1);
@@ -251,10 +245,19 @@ describe('Config.validate', () => {
 describe('Config.fromDefaults', () => {
   it('creates config with default values', () => {
     const cfg = Config.fromDefaults();
-    expect(cfg.get('version')).toBe('0.16.0');
     expect(cfg.get('executor.default_timeout')).toBe(30000);
     expect(cfg.get('acl.default_effect')).toBe('deny');
-    expect(cfg.get('project.name')).toBe('apcore');
+    expect(cfg.get('extensions.root')).toBe('./extensions');
+  });
+
+  it('does NOT invent a version or a project name', () => {
+    // §9.1: these two keys have no canonical default. The table used to carry
+    // `version: '0.16.0'` (a frozen number that was neither the SDK version
+    // nor a spec value) and `project.name: 'apcore'` purely so the
+    // required-field check would always find them.
+    const cfg = Config.fromDefaults();
+    expect(cfg.get('version')).toBeUndefined();
+    expect(cfg.get('project.name')).toBeUndefined();
   });
 });
 

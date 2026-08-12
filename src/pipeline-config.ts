@@ -13,13 +13,22 @@ import type { ExecutionStrategy } from './pipeline.js';
  * Raised when YAML pipeline configuration references a step or anchor that
  * does not exist (Issue #33 §1.2). Replaces the previous warn-and-continue
  * behaviour so misconfigured `apcore.yaml` files fail loudly at load time.
+ *
+ * Emits wire code `PIPELINE_CONFIGURATION_ERROR` — the canonical code for
+ * parse-time pipeline fail-fast (D-37, see docs/features/error-system.md and
+ * the `pipeline_failfast_config` fixture, whose `error_code` is normative
+ * while the class name is not). `PIPELINE_CONFIG_INVALID` is a DIFFERENT
+ * registry entry reserved for field-level validation failures and MUST NOT
+ * be reused here. The exported class name stays `ConfigurationError` because
+ * it is public API, and matches apcore-python's `ConfigurationError`
+ * (src/apcore/pipeline.py) and apcore-rust's `PipelineError::Configuration`.
  */
 export class ConfigurationError extends ModuleError {
   static override readonly DEFAULT_RETRYABLE: boolean | null = false;
 
   constructor(message: string, options?: ErrorOptions) {
     super(
-      'PIPELINE_CONFIG_INVALID',
+      'PIPELINE_CONFIGURATION_ERROR',
       message,
       {},
       options?.cause,
@@ -246,6 +255,83 @@ interface PipelineConfig {
 }
 
 /**
+ * The `Step` fields that `pipeline.configure` may override, keyed by the
+ * CANONICAL YAML spelling and mapped to the TypeScript property name.
+ *
+ * Two spellings are accepted for every field. `schemas/apcore-config.schema.json`
+ * `$defs/PipelineStep` — and therefore every `apcore.yaml` and every
+ * cross-language conformance fixture — is snake_case (`match_modules`,
+ * `ignore_errors`, `timeout_ms`), while the TypeScript {@link Step} interface is
+ * camelCase. Accepting only camelCase made three of the four fields
+ * unreachable from real YAML: the canonical
+ *
+ * ```yaml
+ * pipeline:
+ *   configure:
+ *     input_validation:
+ *       ignore_errors: true
+ * ```
+ *
+ * threw `ConfigurationError` with a message that listed `ignoreErrors` as
+ * valid. Normalising here rather than in the caller is deliberate — a
+ * translation table living in a test (or in each downstream framework
+ * integration) is the symptom, not the fix.
+ *
+ * `requires` / `provides` are configurable because
+ * `docs/features/middleware-system.md` → "Configuration safety" documents
+ * exactly that, and apcore-python accepts them (`hasattr` over the ten
+ * attributes `BaseStep.__init__` assigns). Note that overriding them does NOT
+ * re-run `ExecutionStrategy` dependency validation — `remove()`, `replace()`
+ * and `configureStep()` do not re-validate either, and apcore-python has the
+ * same gap; a `requires:` introduced through config is checked on the next
+ * strategy construction, not on assignment.
+ *
+ * NOT configurable, and narrower than the previous `key in step` test on
+ * purpose:
+ *
+ *  - `name` — the strategy keys an O(1) `name → index` map on it; renaming a
+ *    step through YAML silently corrupts `findStepIndex`, `remove` and every
+ *    `after`/`before` anchor.
+ *  - `removable` / `replaceable` — a step's own guards against being removed or
+ *    swapped. Letting a config file flip them defeats the guard.
+ *  - `description` — not in `$defs/PipelineStep`; carries no behaviour.
+ *  - `execute` — `key in step` walks the prototype chain, so the previous
+ *    implementation accepted `execute` and let a config file replace the step
+ *    body outright.
+ */
+const CONFIGURABLE_STEP_FIELDS: ReadonlyMap<string, string> = new Map([
+  // canonical snake_case (schema + YAML + fixtures)
+  ['match_modules', 'matchModules'],
+  ['ignore_errors', 'ignoreErrors'],
+  ['pure', 'pure'],
+  ['timeout_ms', 'timeoutMs'],
+  ['requires', 'requires'],
+  ['provides', 'provides'],
+  // camelCase aliases (the TypeScript `Step` surface)
+  ['matchModules', 'matchModules'],
+  ['ignoreErrors', 'ignoreErrors'],
+  ['timeoutMs', 'timeoutMs'],
+]);
+
+/** The canonical (snake_case) spellings, for error messages. */
+const CANONICAL_CONFIGURABLE_STEP_FIELDS: readonly string[] = [
+  'match_modules',
+  'ignore_errors',
+  'pure',
+  'timeout_ms',
+  'requires',
+  'provides',
+];
+
+/**
+ * Map a `pipeline.configure` field key to the `Step` property it sets, or
+ * `undefined` when the key is not configurable.
+ */
+function resolveConfigurableStepField(key: string): string | undefined {
+  return CONFIGURABLE_STEP_FIELDS.get(key);
+}
+
+/**
  * Build an ExecutionStrategy from YAML pipeline configuration.
  *
  * Starts with `buildStandardStrategy()`, then applies:
@@ -285,14 +371,20 @@ export async function buildStrategyFromConfig(
     for (const step of strategy.steps) {
       if (step.name === stepName) {
         for (const [key, value] of Object.entries(overrides)) {
-          if (key in step) {
-            (step as unknown as Record<string, unknown>)[key] = value;
-          } else {
+          const property = resolveConfigurableStepField(key);
+          if (property === undefined) {
             throw new ConfigurationError(
-              `Pipeline step '${stepName}' has no field '${key}'. ` +
-                `Valid fields include: matchModules, ignoreErrors, pure, timeoutMs.`,
+              `Pipeline step '${stepName}' has no configurable field '${key}'. ` +
+                `Valid fields are: ${CANONICAL_CONFIGURABLE_STEP_FIELDS.join(', ')} ` +
+                `(the camelCase spellings ` +
+                `${[...CONFIGURABLE_STEP_FIELDS.keys()]
+                  .filter((k) => !CANONICAL_CONFIGURABLE_STEP_FIELDS.includes(k))
+                  .join(', ')} are also accepted). ` +
+                `'name', 'description', 'removable', 'replaceable' and 'execute' are ` +
+                `deliberately NOT configurable — see CONFIGURABLE_STEP_FIELDS.`,
             );
           }
+          (step as unknown as Record<string, unknown>)[property] = value;
         }
         break;
       }

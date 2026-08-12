@@ -2,7 +2,7 @@
  * Integration tests for the approval system through the full executor pipeline.
  */
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { Type } from '@sinclair/typebox';
 import { ACL } from '../src/acl.js';
 import type { ACLRule } from '../src/acl.js';
@@ -331,5 +331,92 @@ describe('ApprovalImports', () => {
     expect(apcore.ApprovalDeniedError).toBeDefined();
     expect(apcore.ApprovalTimeoutError).toBeDefined();
     expect(apcore.ApprovalPendingError).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// `_approval_token` is a protocol key, not part of a module's input contract
+// ---------------------------------------------------------------------------
+
+describe('_approval_token versus additionalProperties: false', () => {
+  const StrictInput = Type.Object({ a: Type.String() }, { additionalProperties: false });
+  const AnyOutput = Type.Object({}, { additionalProperties: true });
+
+  function gatedAnnotations(requiresApproval: boolean) {
+    return {
+      readonly: false,
+      destructive: false,
+      idempotent: false,
+      requiresApproval,
+      openWorld: true,
+      streaming: false,
+      cacheable: false,
+      cacheTtl: 0,
+      cacheKeyFields: null,
+      paginated: false,
+      paginationStyle: 'cursor' as const,
+      extra: {},
+    };
+  }
+
+  async function buildRegistry(requiresApproval: boolean, seen: Record<string, unknown>[]) {
+    const registry = new Registry();
+    await registry.register(
+      'probe.strict',
+      new FunctionModule({
+        moduleId: 'probe.strict',
+        inputSchema: StrictInput,
+        outputSchema: AnyOutput,
+        annotations: gatedAnnotations(requiresApproval),
+        execute: (inputs) => {
+          seen.push(inputs);
+          return { ok: inputs['a'] };
+        },
+      }),
+    );
+    return registry;
+  }
+
+  it('is stripped when the module needs no approval', async () => {
+    const seen: Record<string, unknown>[] = [];
+    const executor = new Executor({
+      registry: await buildRegistry(false, seen),
+      approvalHandler: new AutoApproveHandler(),
+    });
+    const result = await executor.call('probe.strict', { a: 'x', _approval_token: 'tok' });
+    expect(result['ok']).toBe('x');
+    expect(seen[0]).not.toHaveProperty('_approval_token');
+  });
+
+  it('is stripped when approval is required but no handler is configured', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const seen: Record<string, unknown>[] = [];
+    const executor = new Executor({ registry: await buildRegistry(true, seen) });
+    const result = await executor.call('probe.strict', { a: 'x', _approval_token: 'tok' });
+    warnSpy.mockRestore();
+    expect(result['ok']).toBe('x');
+    expect(seen[0]).not.toHaveProperty('_approval_token');
+  });
+
+  it('is stripped on the approved path', async () => {
+    const seen: Record<string, unknown>[] = [];
+    const executor = new Executor({
+      registry: await buildRegistry(true, seen),
+      approvalHandler: new AutoApproveHandler(),
+    });
+    const result = await executor.call('probe.strict', { a: 'x', _approval_token: 'tok' });
+    expect(result['ok']).toBe('x');
+    expect(seen[0]).not.toHaveProperty('_approval_token');
+  });
+
+  it('leaves the caller-supplied inputs object untouched', async () => {
+    const seen: Record<string, unknown>[] = [];
+    const executor = new Executor({
+      registry: await buildRegistry(false, seen),
+      approvalHandler: new AutoApproveHandler(),
+    });
+    const inputs: Record<string, unknown> = { a: 'x', _approval_token: 'tok' };
+    await executor.call('probe.strict', inputs);
+    expect(inputs['_approval_token']).toBe('tok');
   });
 });

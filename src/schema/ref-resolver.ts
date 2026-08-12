@@ -2,7 +2,7 @@
  * $ref resolution for JSON Schema documents following Algorithm A05.
  */
 
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import * as nodePath from 'node:path';
 import { dirname, resolve } from 'node:path';
 import yaml from 'js-yaml';
@@ -16,38 +16,84 @@ import { deepCopy } from '../utils/index.js';
 
 const INLINE_SENTINEL = '__inline__';
 
+/**
+ * The `$ref` strings that denote the document being resolved itself. Seeding the
+ * visited set with them makes a self-reference lazy from the very first
+ * encounter, so a recursive schema is never inlined even once (spec §4.15.2).
+ * The root `$id` is included because JSON Schema lets a document reference
+ * itself by identifier — `{"$id": "TreeNode", ... "$ref": "TreeNode"}`.
+ */
+function rootRefAliases(document: Record<string, unknown>): string[] {
+  const aliases = ['#', '#/'];
+  const id = document['$id'];
+  if (typeof id === 'string' && id) aliases.push(id);
+  return aliases;
+}
+
 export class RefResolver {
   private _schemasDir: string;
   private _maxDepth: number;
   private _fileCache: Map<string, Record<string, unknown>> = new Map();
 
   constructor(schemasDir: string, maxDepth: number = 32) {
+    // Realpath the root as well (Python: `Path(schemas_dir).resolve()`), so a
+    // schemas directory reached through a symlink — /tmp on macOS, a checkout
+    // under a symlinked home — still contains its own files once
+    // `_assertWithinSchemasDir` compares realpaths.
     this._schemasDir = resolve(schemasDir);
+    try {
+      this._schemasDir = realpathSync.native(this._schemasDir);
+    } catch {
+      // Directory does not exist yet; the lexical path stays as-is and every
+      // ref under it will fail on read instead.
+    }
     this._maxDepth = maxDepth;
   }
 
   resolve(schema: Record<string, unknown>, currentFile?: string | null): Record<string, unknown> {
     const result = deepCopy(schema);
     this._fileCache.set(INLINE_SENTINEL, result);
+    const visited = new Set<string>();
+    // Only meaningful for an inline document: with a `currentFile`, `#` points at
+    // that file rather than at the schema passed in.
+    if (currentFile == null) {
+      for (const alias of rootRefAliases(result)) visited.add(alias);
+    }
     try {
-      this._resolveNode(result, currentFile ?? null, new Set(), 0);
+      this._resolveNode(result, currentFile ?? null, visited, 0);
     } finally {
       this._fileCache.delete(INLINE_SENTINEL);
     }
     return result;
   }
 
+  /**
+   * Resolve one `$ref`.
+   *
+   * `fromRefChain` marks the caller as another `$ref` that had this one as its
+   * immediate target — a `$ref` → `$ref` hop that never reaches a schema body.
+   * Re-entering a reference along such a chain is a genuine cycle (spec §4.15.2
+   * "circular reference"): resolution cannot terminate and there is nothing to
+   * defer to, so `SCHEMA_CIRCULAR_REF` is raised. Re-entering a reference after
+   * descending through `properties` / `items` / a combinator is instead a
+   * *self-reference* — a recursive data structure — and the `$ref` is preserved
+   * verbatim as a lazy reference for the converter to bind.
+   */
   resolveRef(
     refString: string,
     currentFile: string | null,
     visitedRefs?: Set<string>,
     depth: number = 0,
     siblingKeys?: Record<string, unknown> | null,
+    fromRefChain: boolean = false,
   ): unknown {
     const visited = visitedRefs ?? new Set<string>();
 
     if (visited.has(refString)) {
-      throw new SchemaCircularRefError(refString);
+      if (fromRefChain) {
+        throw new SchemaCircularRefError(refString);
+      }
+      return { $ref: refString, ...(siblingKeys ?? {}) };
     }
 
     if (depth >= this._maxDepth) {
@@ -74,7 +120,7 @@ export class RefResolver {
         const nestedRef = resultObj['$ref'] as string;
         delete resultObj['$ref'];
         const nestedSiblings = Object.keys(resultObj).length > 0 ? { ...resultObj } : null;
-        result = this.resolveRef(nestedRef, effectiveFile, visited, depth + 1, nestedSiblings);
+        result = this.resolveRef(nestedRef, effectiveFile, visited, depth + 1, nestedSiblings, true);
       }
     }
 
@@ -141,7 +187,14 @@ export class RefResolver {
     }
 
     if (refString.includes('#')) {
-      const [filePart, pointer] = refString.split('#', 2);
+      // maxsplit-1 semantics, NOT JS `split('#', 2)`: the JS limit argument
+      // DROPS everything past the second field, so a malformed ref carrying two
+      // '#' would silently resolve as if the tail were not there. Python's
+      // `split("#", 1)` keeps the tail in the pointer, which then fails to
+      // resolve — the correct outcome.
+      const hashIndex = refString.indexOf('#');
+      const filePart = refString.slice(0, hashIndex);
+      const pointer = refString.slice(hashIndex + 1);
       const base = currentFile ? dirname(currentFile) : this._schemasDir;
       const resolvedPath = resolve(base, filePart);
       this._assertWithinSchemasDir(resolvedPath, refString);
@@ -154,7 +207,38 @@ export class RefResolver {
     return [resolvedPath, ''];
   }
 
-  private _assertWithinSchemasDir(resolvedPath: string, refString: string): void {
+  /**
+   * Resolve *path* through the filesystem (symlinks included) as far as it
+   * exists, mirroring Python's non-strict `Path.resolve()`.
+   *
+   * `node:path.resolve` is purely lexical — it never touches the filesystem —
+   * so a symlink inside the schemas directory that points outside it passes a
+   * lexical containment check and is then read. Missing tail segments are kept
+   * verbatim (a `$ref` to a file that does not exist must still be rejected by
+   * containment, not by an ENOENT out of the check itself).
+   */
+  private _realpathLenient(path: string): string {
+    let current = path;
+    const tail: string[] = [];
+    for (;;) {
+      try {
+        return tail.length === 0
+          ? realpathSync.native(current)
+          : nodePath.join(realpathSync.native(current), ...tail);
+      } catch {
+        const parent = dirname(current);
+        // Reached the filesystem root without finding an existing ancestor.
+        if (parent === current) return path;
+        tail.unshift(nodePath.basename(current));
+        current = parent;
+      }
+    }
+  }
+
+  private _assertWithinSchemasDir(rawResolvedPath: string, refString: string): void {
+    // Compare realpaths on both sides: `_schemasDir` is realpath'd in the
+    // constructor, so a symlinked schemas root still matches its own files.
+    const resolvedPath = this._realpathLenient(rawResolvedPath);
     if (resolvedPath === this._schemasDir) return;
     const rel = nodePath.relative(this._schemasDir, resolvedPath);
     // A path is inside schemasDir iff its relative form is non-empty, not

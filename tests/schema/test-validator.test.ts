@@ -5,6 +5,11 @@ import { SchemaValidator } from '../../src/schema/validator.js';
 import { SchemaValidationError } from '../../src/errors.js';
 import { validationResultToError } from '../../src/schema/types.js';
 import { jsonSchemaToTypeBox } from '../../src/schema/loader.js';
+import {
+  FORMAT_VALIDATORS,
+  collectSchemaFormats,
+  withFormatsAsAnnotations,
+} from '../../src/schema/formats.js';
 
 describe('SchemaValidator', () => {
   it('validates correct data', () => {
@@ -555,3 +560,389 @@ describe('validationResultToError', () => {
   });
 });
 
+
+describe('SchemaValidator — oneOf exclusivity survives a type sibling', () => {
+  // `{type, oneOf}` converts to an intersection, which used to bury the oneOf
+  // marker and silently downgrade the assertion to `anyOf` semantics.
+  const branches = [
+    { type: 'object', properties: { a: { type: 'string' } } },
+    { type: 'object', properties: { b: { type: 'string' } } },
+  ];
+
+  for (const coerceTypes of [true, false]) {
+    it(`reports SCHEMA_UNION_AMBIGUOUS when two branches match (coerceTypes=${coerceTypes})`, () => {
+      const schema = jsonSchemaToTypeBox({ type: 'object', oneOf: branches });
+      const result = new SchemaValidator(coerceTypes).validate({}, schema);
+      expect(result.valid).toBe(false);
+      expect(result.errorCode).toBe('SCHEMA_UNION_AMBIGUOUS');
+    });
+
+    it(`reports SCHEMA_UNION_NO_MATCH when no branch matches (coerceTypes=${coerceTypes})`, () => {
+      const schema = jsonSchemaToTypeBox({
+        type: 'object',
+        oneOf: [
+          { type: 'object', properties: { a: { type: 'string' } }, required: ['a'] },
+          { type: 'object', properties: { b: { type: 'number' } }, required: ['b'] },
+        ],
+      });
+      const result = new SchemaValidator(coerceTypes).validate({ c: 1 }, schema);
+      expect(result.valid).toBe(false);
+      expect(result.errorCode).toBe('SCHEMA_UNION_NO_MATCH');
+    });
+  }
+
+  it('matches the error code a bare oneOf produces for the same data', () => {
+    const bare = new SchemaValidator(false).validate({}, jsonSchemaToTypeBox({ oneOf: branches }));
+    const typed = new SchemaValidator(false).validate(
+      {},
+      jsonSchemaToTypeBox({ type: 'object', oneOf: branches }),
+    );
+    expect(typed.errorCode).toBe(bare.errorCode);
+  });
+
+  it('accepts data matching exactly one branch', () => {
+    const schema = jsonSchemaToTypeBox({
+      type: 'object',
+      oneOf: [
+        { type: 'object', properties: { a: { type: 'string' } }, required: ['a'] },
+        { type: 'object', properties: { b: { type: 'number' } }, required: ['b'] },
+      ],
+    });
+    expect(new SchemaValidator(false).validate({ a: 'x' }, schema).valid).toBe(true);
+  });
+
+  it('still enforces the type half alongside the exclusivity check', () => {
+    const schema = jsonSchemaToTypeBox({
+      type: 'string',
+      oneOf: [{ minLength: 2 }],
+    });
+    const result = new SchemaValidator(false).validate(42 as unknown as Record<string, unknown>, schema);
+    expect(result.valid).toBe(false);
+  });
+});
+
+describe('SchemaValidator — format warnings reach additionalProperties values', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('warns for a format on the additionalProperties schema', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const schema = jsonSchemaToTypeBox({
+      type: 'object',
+      additionalProperties: { type: 'string', format: 'email' },
+    });
+    const result = new SchemaValidator(false).validate({ x: 'not-an-email' }, schema);
+    expect(result.valid).toBe(true);
+    expect(result.warnLogged).toBe(true);
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining("[apcore:schema] Format 'email' validation failed at /x"),
+    );
+  });
+
+  it('does not warn when the additional value satisfies the format', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const schema = jsonSchemaToTypeBox({
+      type: 'object',
+      additionalProperties: { type: 'string', format: 'email' },
+    });
+    expect(new SchemaValidator(false).validate({ x: 'a@b.co' }, schema).valid).toBe(true);
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  it('prefers the declared property schema over additionalProperties', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const schema = jsonSchemaToTypeBox({
+      type: 'object',
+      properties: { id: { type: 'string' } },
+      additionalProperties: { type: 'string', format: 'email' },
+    });
+    new SchemaValidator(false).validate({ id: 'not-an-email', extra: 'a@b.co' }, schema);
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe('SchemaValidator — additionalProperties: false on the output side', () => {
+  const schema = jsonSchemaToTypeBox({
+    type: 'object',
+    properties: { ok: { type: 'boolean' } },
+    required: ['ok'],
+    additionalProperties: false,
+  });
+
+  it('rejects an undeclared key in an output payload', () => {
+    expect(() => new SchemaValidator(false).validateOutput({ ok: true, extra: 1 }, schema)).toThrow(
+      SchemaValidationError,
+    );
+  });
+
+  it('accepts an output payload with only declared keys', () => {
+    expect(new SchemaValidator(false).validateOutput({ ok: true }, schema)).toEqual({ ok: true });
+  });
+});
+
+describe('withFormatsAsAnnotations — registry restoration', () => {
+  it('restores a pre-existing checker when the wrapped call throws', () => {
+    const strict = (v: string): boolean => v === 'strict-only';
+    FormatRegistry.Set('apcore-restore-fmt', strict);
+    try {
+      expect(() =>
+        withFormatsAsAnnotations({ type: 'string', format: 'apcore-restore-fmt' }, () => {
+          throw new Error('boom');
+        }),
+      ).toThrow('boom');
+      expect(FormatRegistry.Get('apcore-restore-fmt')).toBe(strict);
+    } finally {
+      FormatRegistry.Delete('apcore-restore-fmt');
+    }
+  });
+
+  it('deletes a format it introduced when the wrapped call throws', () => {
+    expect(() =>
+      withFormatsAsAnnotations({ type: 'string', format: 'apcore-absent-fmt' }, () => {
+        throw new Error('boom');
+      }),
+    ).toThrow('boom');
+    expect(FormatRegistry.Has('apcore-absent-fmt')).toBe(false);
+  });
+
+  it('restores the registry when a validate() call throws', () => {
+    const schema = jsonSchemaToTypeBox({
+      type: 'object',
+      properties: { a: { type: 'string', format: 'apcore-throwing-fmt' } },
+      required: ['a'],
+    });
+    const validator = new SchemaValidator(false);
+    // validateInput throws on a missing required property, unwinding through
+    // the `finally` that restores the registry.
+    expect(() => validator.validateInput({}, schema)).toThrow(SchemaValidationError);
+    expect(FormatRegistry.Has('apcore-throwing-fmt')).toBe(false);
+  });
+});
+
+describe('collectSchemaFormats — only schema positions carry a format', () => {
+  it('ignores a format key inside default and examples values', () => {
+    const collected = collectSchemaFormats({
+      type: 'object',
+      properties: {
+        a: {
+          type: 'string',
+          default: { format: 'i-am-data' },
+          examples: [{ format: 'also-data' }],
+        },
+      },
+    });
+    expect([...collected]).toEqual([]);
+  });
+
+  it('ignores a format key inside const and enum values', () => {
+    const collected = collectSchemaFormats({
+      type: 'object',
+      const: { format: 'const-data' },
+      enum: [{ format: 'enum-data' }],
+    });
+    expect([...collected]).toEqual([]);
+  });
+
+  it('still collects a format from a real schema position', () => {
+    const collected = collectSchemaFormats({
+      type: 'object',
+      properties: { a: { type: 'string', format: 'email' } },
+      additionalProperties: { type: 'string', format: 'uuid' },
+      items: { type: 'string', format: 'date' },
+    });
+    expect([...collected].sort()).toEqual(['date', 'email', 'uuid']);
+  });
+
+  it('collects from a property whose name collides with a data keyword', () => {
+    const collected = collectSchemaFormats({
+      type: 'object',
+      properties: { default: { type: 'string', format: 'email' } },
+    });
+    expect([...collected]).toEqual(['email']);
+  });
+});
+
+describe('FORMAT_VALIDATORS — immutable', () => {
+  it('cannot be overwritten by an importer', () => {
+    const target = FORMAT_VALIDATORS as Record<string, (v: string) => boolean>;
+    expect(() => {
+      target['email'] = () => true;
+    }).toThrow(TypeError);
+    expect(FORMAT_VALIDATORS['email']?.('not-an-email')).toBe(false);
+  });
+
+  it('cannot gain a new entry', () => {
+    const target = FORMAT_VALIDATORS as Record<string, (v: string) => boolean>;
+    expect(() => {
+      target['apcore-injected'] = () => true;
+    }).toThrow(TypeError);
+    expect(FORMAT_VALIDATORS['apcore-injected']).toBeUndefined();
+  });
+});
+
+describe('SchemaValidator — anyOf error code survives a type sibling', () => {
+  const branches = [
+    { type: 'object', properties: { a: { type: 'string' } }, required: ['a'] },
+    { type: 'object', properties: { b: { type: 'number' } }, required: ['b'] },
+  ];
+
+  for (const coerceTypes of [true, false]) {
+    it(`reports SCHEMA_UNION_NO_MATCH when no branch matches (coerceTypes=${coerceTypes})`, () => {
+      const schema = jsonSchemaToTypeBox({ type: 'object', anyOf: branches });
+      const result = new SchemaValidator(coerceTypes).validate({ c: 1 }, schema);
+      expect(result.valid).toBe(false);
+      expect(result.errorCode).toBe('SCHEMA_UNION_NO_MATCH');
+    });
+  }
+
+  it('matches the error code a bare anyOf produces for the same data', () => {
+    const bare = new SchemaValidator(false).validate({ c: 1 }, jsonSchemaToTypeBox({ anyOf: branches }));
+    const typed = new SchemaValidator(false).validate(
+      { c: 1 },
+      jsonSchemaToTypeBox({ type: 'object', anyOf: branches }),
+    );
+    expect(bare.errorCode).toBe('SCHEMA_UNION_NO_MATCH');
+    expect(typed.errorCode).toBe(bare.errorCode);
+  });
+
+  it('accepts data matching several branches — anyOf has no exclusivity rule', () => {
+    // The oneOf counting must not be copied here: two matches is valid.
+    const schema = jsonSchemaToTypeBox({
+      type: 'object',
+      anyOf: [{ type: 'object' }, { type: 'object', properties: { a: { type: 'string' } } }],
+    });
+    expect(new SchemaValidator(false).validate({}, schema).valid).toBe(true);
+    expect(new SchemaValidator(false).validate({ a: 'x' }, schema).valid).toBe(true);
+  });
+
+  it('never reports SCHEMA_UNION_AMBIGUOUS for an anyOf', () => {
+    const schema = jsonSchemaToTypeBox({
+      type: 'object',
+      anyOf: [{ type: 'object' }, { type: 'object' }],
+    });
+    expect(new SchemaValidator(false).validate({}, schema).errorCode).toBeUndefined();
+  });
+
+  it('still enforces the type half alongside the anyOf check', () => {
+    const schema = jsonSchemaToTypeBox({
+      type: 'string',
+      anyOf: [{ minLength: 1 }],
+    });
+    const result = new SchemaValidator(false).validate(42 as unknown as Record<string, unknown>, schema);
+    expect(result.valid).toBe(false);
+  });
+
+  it('leaves a hand-written TypeBox union on the anyOf path', () => {
+    // No marker, so the unmarked-union fallback must still apply.
+    const schema = Type.Union([Type.String(), Type.Number()]);
+    const result = new SchemaValidator(false).validate(
+      true as unknown as Record<string, unknown>,
+      schema,
+    );
+    expect(result.errorCode).toBe('SCHEMA_UNION_NO_MATCH');
+  });
+});
+
+describe('SchemaValidator — combinators without a dedicated union code', () => {
+  // allOf / not / enum / const never had a SCHEMA_UNION_* code, bare or beside
+  // a `type`, so there is nothing to degrade. Locked so it cannot drift.
+  const cases: Array<[string, Record<string, unknown>, Record<string, unknown>]> = [
+    ['allOf', { allOf: [{ type: 'object', properties: { a: { type: 'string' } }, required: ['a'] }] }, { c: 1 }],
+    ['not', { not: { type: 'object', properties: { a: {} }, required: ['a'] } }, { a: 1 }],
+    ['enum', { enum: [{ a: 1 }] }, { a: 2 }],
+  ];
+
+  for (const [keyword, combinator, data] of cases) {
+    it(`reports SCHEMA_VALIDATION_ERROR for ${keyword} with and without a type sibling`, () => {
+      const validator = new SchemaValidator(false);
+      const bare = validator.validate(data, jsonSchemaToTypeBox(combinator));
+      const typed = validator.validate(data, jsonSchemaToTypeBox({ type: 'object', ...combinator }));
+      expect(bare.errorCode).toBe('SCHEMA_VALIDATION_ERROR');
+      expect(typed.errorCode).toBe('SCHEMA_VALIDATION_ERROR');
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// `oneOf` exclusivity is location-independent (PROTOCOL_SPEC §4.15.1)
+// ---------------------------------------------------------------------------
+
+describe('SchemaValidator nested oneOf exclusivity', () => {
+  const validator = new SchemaValidator(false);
+
+  it('rejects a nested oneOf whose branches both match', () => {
+    // Regression: `oneOf` converted to a plain TypeBox `Type.Union`, which has
+    // `anyOf` semantics, and the validator only looked for the union marker at
+    // the root and along `allOf`. A `oneOf` inside `properties` therefore
+    // accepted 3 even though both `integer` and `number` claim it — apcore-python
+    // and apcore-rust both reject it.
+    const schema = jsonSchemaToTypeBox({
+      type: 'object',
+      required: ['a'],
+      properties: { a: { oneOf: [{ type: 'integer' }, { type: 'number' }] } },
+    });
+    expect(validator.validate({ a: 3 }, schema).valid).toBe(false);
+    expect(validator.validate({ a: 3.5 }, schema).valid).toBe(true);
+    expect(validator.validate({ a: 'x' }, schema).valid).toBe(false);
+  });
+
+  it('rejects an ambiguous oneOf inside array items', () => {
+    const schema = jsonSchemaToTypeBox({
+      type: 'object',
+      required: ['a'],
+      properties: {
+        a: { type: 'array', items: { oneOf: [{ type: 'integer' }, { type: 'number' }] } },
+      },
+    });
+    expect(validator.validate({ a: [3] }, schema).valid).toBe(false);
+    expect(validator.validate({ a: [3.5] }, schema).valid).toBe(true);
+  });
+
+  it('leaves nested anyOf accepting several simultaneous matches', () => {
+    const schema = jsonSchemaToTypeBox({
+      type: 'object',
+      required: ['a'],
+      properties: { a: { anyOf: [{ type: 'integer' }, { type: 'number' }] } },
+    });
+    expect(validator.validate({ a: 3 }, schema).valid).toBe(true);
+  });
+
+  it('keeps reporting SCHEMA_UNION_AMBIGUOUS for a root-level oneOf', () => {
+    const schema = jsonSchemaToTypeBox({
+      oneOf: [
+        { type: 'object', properties: { k: { type: 'string' } } },
+        { type: 'object', properties: { k: { type: 'string' } } },
+      ],
+    });
+    const result = validator.validate({ k: 'x' }, schema);
+    expect(result.valid).toBe(false);
+    expect(result.errorCode).toBe('SCHEMA_UNION_AMBIGUOUS');
+  });
+});
+
+describe('SchemaValidator uniqueItems over non-scalar items', () => {
+  const validator = new SchemaValidator(false);
+  const schema = jsonSchemaToTypeBox({
+    type: 'object',
+    required: ['a'],
+    properties: {
+      a: {
+        type: 'array',
+        uniqueItems: true,
+        items: { type: 'object', properties: { k: { type: 'string' }, j: { type: 'integer' } } },
+      },
+    },
+  });
+
+  it('rejects duplicate objects and accepts distinct ones', () => {
+    expect(validator.validate({ a: [{ k: 'x' }, { k: 'x' }] }, schema).valid).toBe(false);
+    expect(validator.validate({ a: [{ k: 'x' }, { k: 'y' }] }, schema).valid).toBe(true);
+  });
+
+  it('ignores key order when comparing members', () => {
+    expect(
+      validator.validate({ a: [{ k: 'x', j: 1 }, { j: 1, k: 'x' }] }, schema).valid,
+    ).toBe(false);
+  });
+});

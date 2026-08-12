@@ -114,7 +114,13 @@ describe('UsageExporter (#45 §3)', () => {
 
     const periodic = new PeriodicUsageExporter(collector, exporter, 100);
     await expect(periodic.stop()).resolves.toBeUndefined();
-    expect(shutdownSpy).toHaveBeenCalledTimes(1);
+    // A no-op means shutdown() is NOT called: the exporter was never taken
+    // over, so there is nothing to flush or release. This assertion used to
+    // read `toHaveBeenCalledTimes(1)` — contradicting the test's own name and
+    // making TS the only SDK that shut down an exporter it never started
+    // (apcore-python usage_exporter.py:134, apcore-rust usage_exporter.rs:131
+    // both return early). shutdown() stays exactly-once per start().
+    expect(shutdownSpy).toHaveBeenCalledTimes(0);
   });
 
   it('logs and skips when collector.getSummary() throws', () => {

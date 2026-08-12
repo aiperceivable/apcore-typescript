@@ -88,3 +88,80 @@ describe('DEFAULT_REDACTION_FIELD_PATTERNS canonical superset (#45 §3)', () => 
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// An explicitly-empty sensitive_keys REPLACES the default (Issue #34 §4, D-54)
+// ---------------------------------------------------------------------------
+
+describe('RedactionConfig.fromConfig — absent vs. explicitly empty sensitive_keys', () => {
+  // docs/features/observability.md "Canonical default `sensitive_keys`":
+  // "Implementations MUST allow operators to fully override the default by
+  // setting `obs.redaction.sensitive_keys` in `apcore.yaml` (the override
+  // REPLACES the default; it does not merge)." An empty override is still an
+  // override, so it means "no key-based redaction" — not "unset".
+  //
+  // These keys are chosen so the assertion DISCRIMINATES: `password` and
+  // `_secret_token` both match the shipped defaults, so they come through
+  // plain only if the empty list was honoured. The previous implementation
+  // fell back on `rawFields.length > 0`, and reverting the fix was verified to
+  // leave the entire suite green — nothing pinned it.
+  const discriminating = { password: 'hunter2', _secret_token: 'abc', username: 'alice' };
+
+  function configWith(sensitiveKeys: unknown): Config {
+    return new Config({
+      version: '1.0',
+      project: { name: 'redaction-test' },
+      obs: { redaction: { sensitive_keys: sensitiveKeys } },
+    } as never);
+  }
+
+  it('an ABSENT key falls back to the shipped defaults', () => {
+    const rc = RedactionConfig.fromConfig(new Config());
+    expect(rc.fieldPatterns).toEqual([...DEFAULT_REDACTION_FIELD_PATTERNS]);
+    expect(rc.apply({ ...discriminating })).toEqual({
+      password: '***REDACTED***',
+      _secret_token: '***REDACTED***',
+      username: 'alice',
+    });
+  });
+
+  it('an explicit NULL falls back to the shipped defaults (matches apcore-python)', () => {
+    const rc = RedactionConfig.fromConfig(configWith(null));
+    expect(rc.fieldPatterns).toEqual([...DEFAULT_REDACTION_FIELD_PATTERNS]);
+    expect(rc.apply({ ...discriminating })['password']).toBe('***REDACTED***');
+  });
+
+  it('an explicitly EMPTY list disables key-based redaction entirely', () => {
+    const rc = RedactionConfig.fromConfig(configWith([]));
+    expect(rc.fieldPatterns).toEqual([]);
+    // Nothing is redacted by NAME — including `_secret_*`, which is entry [0]
+    // of the default list and not a separate hard-coded rule.
+    expect(rc.apply({ ...discriminating })).toEqual(discriminating);
+  });
+
+  it('a non-empty override replaces rather than merges with the default', () => {
+    const rc = RedactionConfig.fromConfig(configWith(['username']));
+    expect(rc.fieldPatterns).toEqual(['username']);
+    expect(rc.apply({ ...discriminating })).toEqual({
+      // `password` is in the DEFAULT list; a replacing override drops it.
+      password: 'hunter2',
+      _secret_token: 'abc',
+      username: '***REDACTED***',
+    });
+  });
+
+  it('the value-regex rule is independent of the key list and survives an empty one', () => {
+    const rc = RedactionConfig.fromConfig(
+      new Config({
+        version: '1.0',
+        project: { name: 'redaction-test' },
+        obs: { redaction: { sensitive_keys: [], regex_patterns: ['^sk-[A-Za-z0-9]+$'] } },
+      } as never),
+    );
+    expect(rc.fieldPatterns).toEqual([]);
+    expect(rc.apply({ anything: 'sk-abc123', plain: 'hello' })).toEqual({
+      anything: '***REDACTED***',
+      plain: 'hello',
+    });
+  });
+});

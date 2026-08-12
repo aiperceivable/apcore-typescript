@@ -55,6 +55,11 @@ function resolveSchema(mod: Record<string, unknown>, key: string): TSchema | nul
   return converted;
 }
 
+// `false`: the module-invocation boundary performs NO type coercion, under any
+// host configuration (TYPE_MAPPING §17.3). A contract that declares `integer`
+// receives an integer — `"42"` is a type error, not an integer spelled
+// differently — because a module's contract has to mean the same thing
+// regardless of which host loaded it.
 const _schemaValidator = new SchemaValidator(false);
 
 function validateSchema(schema: TSchema, data: Record<string, unknown>, direction: string): void {
@@ -277,7 +282,18 @@ export class BuiltinACLCheck implements Step {
       return { action: 'continue' };
     }
     const callerId = ctx.context.callerId;
-    const allowed = this._acl.check(callerId, ctx.moduleId, ctx.context);
+    // Prefer the async ACL path so conditions registered via
+    // `ACL.registerAsyncCondition()` are actually awaited. The sync evaluator
+    // fails a Promise-returning condition closed, which makes a `deny` rule
+    // guarded by an async condition silently NOT match — letting a later
+    // catch-all `allow` win (fail-open). Mirrors apcore-python
+    // `builtin_steps.py` (`hasattr(self._acl, "async_check")`); the sync
+    // `check()` remains the fallback for duck-typed ACL providers.
+    const aclLike = this._acl as unknown as { asyncCheck?: unknown };
+    const allowed =
+      typeof aclLike.asyncCheck === 'function'
+        ? await this._acl.asyncCheck(callerId, ctx.moduleId, ctx.context)
+        : this._acl.check(callerId, ctx.moduleId, ctx.context);
     if (!allowed) {
       // Publish a governance event on denial (canonical name proposed in
       // apcore#77). Guarded by dryRun so a validate() preflight probe never
@@ -360,6 +376,12 @@ export class BuiltinApprovalGate implements Step {
 
   async execute(ctx: PipelineContext): Promise<StepResult> {
     const mod = ctx.module as Record<string, unknown> | null;
+    // `_approval_token` is a protocol-level key (PROTOCOL_SPEC §7.4), not part
+    // of any module's input contract. Strip it before any exit — including the
+    // not-gated and no-handler-skip paths — so it never reaches input
+    // validation, where `additionalProperties: false` rejected it as an
+    // undeclared key, nor the module's own execute().
+    const approvalToken = this._takeApprovalToken(ctx);
 
     let decision: PolicyDecision | null = null;
     let needs: boolean;
@@ -410,19 +432,9 @@ export class BuiltinApprovalGate implements Step {
     }
 
     let result: ApprovalResult;
-    let cleanInputs = ctx.inputs;
 
-    if ('_approval_token' in ctx.inputs) {
-      const rawToken = ctx.inputs['_approval_token'];
-      // Security gate: reject a non-string token before it reaches the handler
-      // instead of coercing it (mirrors Python/Rust rejecting with
-      // GENERAL_INVALID_INPUT — the safest cross-language behavior).
-      if (typeof rawToken !== 'string') {
-        throw new InvalidInputError('_approval_token must be a string');
-      }
-      const { _approval_token: _, ...rest } = ctx.inputs;
-      cleanInputs = rest;
-      result = await this._handler.checkApproval(rawToken);
+    if (approvalToken !== null) {
+      result = await this._handler.checkApproval(approvalToken);
     } else {
       const annotations = mod?.['annotations'];
       let ann: ModuleAnnotations;
@@ -461,7 +473,6 @@ export class BuiltinApprovalGate implements Step {
     this._emitAudit(result, ctx.moduleId, ctx.context);
 
     if (result.status === 'approved') {
-      ctx.inputs = cleanInputs;
       return { action: 'continue' };
     }
 
@@ -475,6 +486,25 @@ export class BuiltinApprovalGate implements Step {
 
     // rejected or unknown
     throw new ApprovalDeniedError(result, ctx.moduleId);
+  }
+
+  /**
+   * Remove `_approval_token` from `ctx.inputs` and return it, or `null` when
+   * the caller sent none. `ctx.inputs` is replaced with a copy, never mutated
+   * in place, so the caller's own object is left untouched.
+   */
+  private _takeApprovalToken(ctx: PipelineContext): string | null {
+    if (!('_approval_token' in ctx.inputs)) return null;
+    const rawToken = ctx.inputs['_approval_token'];
+    // Security gate: reject a non-string token before it reaches the handler
+    // instead of coercing it (mirrors Python/Rust rejecting with
+    // GENERAL_INVALID_INPUT — the safest cross-language behavior).
+    if (typeof rawToken !== 'string') {
+      throw new InvalidInputError('_approval_token must be a string');
+    }
+    const { _approval_token: _, ...rest } = ctx.inputs;
+    ctx.inputs = rest;
+    return rawToken;
   }
 
   /** Warn once per dedup key (module/kind pair). */
@@ -1019,7 +1049,11 @@ export function buildPerformanceStrategy(deps: StandardStrategyDeps): ExecutionS
 export function buildMinimalStrategy(deps: StandardStrategyDeps): ExecutionStrategy {
   return new ExecutionStrategy('minimal', [
     new BuiltinContextCreation(deps.config),
-    new BuiltinModuleLookup(deps.registry),
+    // The per-instance ToggleState must be threaded through here too — the
+    // other four preset builders pass it, and omitting it silently falls back
+    // to DEFAULT_TOGGLE_STATE, so `apcore.disable(module)` on one instance
+    // leaks into every other instance using the `minimal` preset (issue #71).
+    new BuiltinModuleLookup(deps.registry, deps.toggleState ?? undefined),
     new BuiltinExecute(deps.config),
     new BuiltinReturnResult(),
   ]);

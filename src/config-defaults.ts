@@ -16,14 +16,19 @@
 /**
  * Default configuration values for legacy mode.
  *
- * NOTE: `version` is the frozen baseline for legacy-mode configs (those that
- * omit an explicit `version` field). It identifies the spec version whose
- * semantics legacy mode parses against, NOT the current SDK version. Do not
- * bump this with each spec MINOR — only when legacy-mode parsing semantics
- * actually change.
+ * This table mirrors `schemas/defaults.schema.json` in the spec repo, which is
+ * the single source of truth for canonical defaults.
+ *
+ * NOTE: `version` and `project.name` are deliberately ABSENT. PROTOCOL_SPEC
+ * §9.1 ("What is required, and why so little is") defines them as the only two
+ * keys with no canonical default, which is exactly why they are the only two
+ * required keys. Inventing defaults for them here (this table used to declare
+ * `version: '0.16.0'` and `project: { name: 'apcore' }`) made the required-field
+ * check in `Config.validate` unreachable: the merge supplied both keys before
+ * the check ran. Do not reintroduce them — a component that needs a project
+ * name at runtime MUST pass its own explicit fallback to `config.get()`.
  */
 export const DEFAULTS: Record<string, unknown> = {
-  version: '0.16.0',
   extensions: {
     root: './extensions',
     auto_discover: true,
@@ -53,9 +58,6 @@ export const DEFAULTS: Record<string, unknown> = {
     metrics: {
       enabled: false,
     },
-  },
-  project: {
-    name: 'apcore',
   },
   sys_modules: {
     enabled: false,

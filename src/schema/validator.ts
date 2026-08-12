@@ -2,17 +2,71 @@
  * SchemaValidator — validates runtime data against TypeBox schemas.
  */
 
-import { type TSchema, TypeGuard } from '@sinclair/typebox';
+import type { TSchema } from '@sinclair/typebox';
 import { Value, type ValueError } from '@sinclair/typebox/value';
 import type { SchemaValidationErrorDetail, SchemaValidationResult } from './types.js';
 import { validationResultToError } from './types.js';
-import { ONEOF_MARKER } from './constants.js';
+import { KEYWORD_MARKER } from './constants.js';
 import { FORMAT_VALIDATORS, withFormatsAsAnnotations } from './formats.js';
 
+/**
+ * The branch list of a union node, or `null` when the schema is not one.
+ *
+ * Reads `anyOf` directly rather than going through `TypeGuard.IsUnion`, because
+ * the converter emits `oneOf` as a custom kind (exclusivity has to hold at every
+ * nesting depth, which a plain `Type.Union` cannot express) while still keeping
+ * the branch array under `anyOf`.
+ */
+function _unionBranches(schema: TSchema): TSchema[] | null {
+  const branches = (schema as Record<string, unknown>)['anyOf'];
+  return Array.isArray(branches) ? (branches as TSchema[]) : null;
+}
+
+/**
+ * Find the union node carrying {@link KEYWORD_MARKER}, descending through the
+ * `allOf` members the converter produces when `oneOf` / `anyOf` has a `type`
+ * sibling. Returns `null` when the schema expresses no union assertion.
+ */
+function findMarkedUnion(schema: Record<string, unknown>): TSchema | null {
+  if (typeof schema[KEYWORD_MARKER] === 'string') return schema as TSchema;
+  const allOf = schema['allOf'];
+  if (!Array.isArray(allOf)) return null;
+  for (const member of allOf as Record<string, unknown>[]) {
+    const found = findMarkedUnion(member);
+    if (found !== null) return found;
+  }
+  return null;
+}
+
+/**
+ * Validates runtime data against a TypeBox schema.
+ *
+ * `coerceTypes` is a **library-level** knob, for a caller validating its own
+ * untyped input (a CLI parsing argv, a form handler). It does **not** reach the
+ * module-invocation boundary: `builtin-steps.ts` holds a
+ * `new SchemaValidator(false)` and never coerces, under any host configuration
+ * (TYPE_MAPPING §17.3). There is no `schema.validation.coerce_types` setting —
+ * a module's contract has to mean the same thing regardless of who loaded it.
+ *
+ * It defaults to `false`, matching the boundary and the other two SDKs. Coercion
+ * is opt-in: a validator that silently rewrites its input is the wrong default
+ * for the common case of checking data you already believe is well-formed.
+ *
+ * **Known limitation:** passing `true` does not currently coerce. It switches the
+ * check from `Value.Check` to `Value.Decode`, which applies TypeBox transforms
+ * but not type conversion — `"42"` is still rejected for `{type: "integer"}`,
+ * where apcore-python and apcore-rust accept it in their coercing mode. Closing
+ * the gap means picking a conversion semantics all three can agree on:
+ * `Value.Convert` mutates its argument in place and truncates (`"4.5"` becomes
+ * `4`), while pydantic refuses a lossy conversion. Until that is settled, treat
+ * `coerceTypes: true` as unimplemented rather than as a different dialect. The
+ * module-invocation boundary is unaffected — it never coerces on any SDK
+ * (TYPE_MAPPING §17.3).
+ */
 export class SchemaValidator {
   private _coerceTypes: boolean;
 
-  constructor(coerceTypes: boolean = true) {
+  constructor(coerceTypes: boolean = false) {
     this._coerceTypes = coerceTypes;
   }
 
@@ -31,38 +85,58 @@ export class SchemaValidator {
     const s = schema as Record<string, unknown>;
 
     // oneOf: exhaustive counting — exactly one branch must match
-    if (s[ONEOF_MARKER] === 'oneOf') {
+    if (s[KEYWORD_MARKER] === 'oneOf') {
       return this._validateOneOf(data, schema);
     }
 
-    // anyOf: at least one branch must match; use Value.Check per branch for SCHEMA_UNION_NO_MATCH
-    if ('anyOf' in s && !(ONEOF_MARKER in s)) {
+    // anyOf: at least one branch must match; use Value.Check per branch for
+    // SCHEMA_UNION_NO_MATCH. An unmarked TypeBox `Type.Union` (a schema the
+    // module author wrote by hand) gets the same treatment.
+    if (s[KEYWORD_MARKER] === 'anyOf' || ('anyOf' in s && !(KEYWORD_MARKER in s))) {
       return this._validateAnyOf(data, schema);
     }
 
+    // A `type` sibling wraps the marked union in an intersection, burying the
+    // marker one or more levels down. The union assertion still applies, so
+    // `{type: 'object', oneOf: [...]}` and `{type: 'object', anyOf: [...]}`
+    // report SCHEMA_UNION_AMBIGUOUS / SCHEMA_UNION_NO_MATCH exactly like their
+    // bare counterparts instead of degrading to SCHEMA_VALIDATION_ERROR. Only
+    // failures short-circuit here; a satisfied union falls through so the rest
+    // of the intersection (the `type` half) is still checked.
+    const nestedUnion = findMarkedUnion(s);
+    if (nestedUnion !== null) {
+      const failure = this._unionFailure(data, nestedUnion);
+      if (failure !== null) return failure;
+    }
+
+    return this._validateStructural(data, schema);
+  }
+
+  /** The plain TypeBox check, decoding first when type coercion is enabled. */
+  private _validateStructural(data: unknown, schema: TSchema): SchemaValidationResult {
+    let passed: boolean;
     if (this._coerceTypes) {
       try {
         Value.Decode(schema, data);
-        const warnLogged = this._checkFormats(data, schema);
-        return { valid: true, errors: [], ...(warnLogged && { warnLogged: true }) };
+        passed = true;
       } catch {
-        return {
-          valid: false,
-          errors: this._collectErrors(schema, data),
-          errorCode: 'SCHEMA_VALIDATION_ERROR',
-        };
+        passed = false;
       }
+    } else {
+      passed = Value.Check(schema, data);
     }
 
-    if (Value.Check(schema, data)) {
-      const warnLogged = this._checkFormats(data, schema);
-      return { valid: true, errors: [], ...(warnLogged && { warnLogged: true }) };
+    if (!passed) {
+      // Errors are collected only on the failing path — `Value.Errors` walks
+      // the whole schema.
+      return {
+        valid: false,
+        errors: this._collectErrors(schema, data),
+        errorCode: 'SCHEMA_VALIDATION_ERROR',
+      };
     }
-    return {
-      valid: false,
-      errors: this._collectErrors(schema, data),
-      errorCode: 'SCHEMA_VALIDATION_ERROR',
-    };
+    const warnLogged = this._checkFormats(data, schema);
+    return { valid: true, errors: [], ...(warnLogged && { warnLogged: true }) };
   }
 
   validateInput(data: Record<string, unknown>, schema: TSchema): Record<string, unknown> {
@@ -74,7 +148,21 @@ export class SchemaValidator {
   }
 
   private _validateOneOf(data: unknown, schema: TSchema): SchemaValidationResult {
-    if (!TypeGuard.IsUnion(schema)) {
+    const failure = this._oneOfFailure(data, schema);
+    if (failure !== null) return failure;
+    const warnLogged = this._checkFormats(data, schema);
+    return { valid: true, errors: [], ...(warnLogged && { warnLogged: true }) };
+  }
+
+  /**
+   * `oneOf` exhaustive counting: exactly one branch must match. Returns the
+   * failure result, or `null` when the data satisfies the exclusivity rule.
+   * Kept free of format reporting so it can also be applied to a marked union
+   * nested inside an intersection without warning twice.
+   */
+  private _oneOfFailure(data: unknown, schema: TSchema): SchemaValidationResult | null {
+    const branches = _unionBranches(schema);
+    if (branches === null) {
       // TypeBox 0.34 unwraps single-element unions to the branch type itself.
       // A single-branch oneOf always matches exactly one branch if the data is valid.
       if (!Value.Check(schema, data)) {
@@ -84,10 +172,8 @@ export class SchemaValidator {
           errorCode: 'SCHEMA_UNION_NO_MATCH',
         };
       }
-      const warnLogged = this._checkFormats(data, schema);
-      return { valid: true, errors: [], ...(warnLogged && { warnLogged: true }) };
+      return null;
     }
-    const branches = schema.anyOf as TSchema[];
     const matchCount = branches.filter((b) => Value.Check(b, data)).length;
     if (matchCount === 0) {
       return {
@@ -103,12 +189,24 @@ export class SchemaValidator {
         errorCode: 'SCHEMA_UNION_AMBIGUOUS',
       };
     }
+    return null;
+  }
+
+  private _validateAnyOf(data: unknown, schema: TSchema): SchemaValidationResult {
+    const failure = this._anyOfFailure(data, schema);
+    if (failure !== null) return failure;
     const warnLogged = this._checkFormats(data, schema);
     return { valid: true, errors: [], ...(warnLogged && { warnLogged: true }) };
   }
 
-  private _validateAnyOf(data: unknown, schema: TSchema): SchemaValidationResult {
-    if (!TypeGuard.IsUnion(schema)) {
+  /**
+   * `anyOf`: at least one branch must match. Unlike `oneOf` there is no
+   * exclusivity rule — several branches matching is valid — so the only failure
+   * is zero matches. Returns the failure result, or `null` when satisfied.
+   */
+  private _anyOfFailure(data: unknown, schema: TSchema): SchemaValidationResult | null {
+    const branches = _unionBranches(schema);
+    if (branches === null) {
       // TypeBox 0.34 unwraps single-element unions; treat the unwrapped schema as a single branch.
       if (!Value.Check(schema, data)) {
         return {
@@ -117,20 +215,24 @@ export class SchemaValidator {
           errorCode: 'SCHEMA_UNION_NO_MATCH',
         };
       }
-      const warnLogged = this._checkFormats(data, schema);
-      return { valid: true, errors: [], ...(warnLogged && { warnLogged: true }) };
+      return null;
     }
-    const branches = schema.anyOf as TSchema[];
-    const hasMatch = branches.some((b) => Value.Check(b, data));
-    if (!hasMatch) {
+    if (!branches.some((b) => Value.Check(b, data))) {
       return {
         valid: false,
         errors: [{ path: '/', message: 'anyOf: no branches matched', constraint: 'anyOf' }],
         errorCode: 'SCHEMA_UNION_NO_MATCH',
       };
     }
-    const warnLogged = this._checkFormats(data, schema);
-    return { valid: true, errors: [], ...(warnLogged && { warnLogged: true }) };
+    return null;
+  }
+
+  /** Apply the branch semantics the marked union's originating keyword implies. */
+  private _unionFailure(data: unknown, union: TSchema): SchemaValidationResult | null {
+    const keyword = (union as Record<string, unknown>)[KEYWORD_MARKER];
+    return keyword === 'oneOf'
+      ? this._oneOfFailure(data, union)
+      : this._anyOfFailure(data, union);
   }
 
   private _validateAndReturn(data: Record<string, unknown>, schema: TSchema): Record<string, unknown> {
@@ -203,15 +305,9 @@ export class SchemaValidator {
       return;
     }
 
-    // Object: recurse into properties
-    if (schema['type'] === 'object' && schema['properties'] && typeof data === 'object' && data !== null && !Array.isArray(data)) {
-      const props = schema['properties'] as Record<string, Record<string, unknown>>;
-      const dataObj = data as Record<string, unknown>;
-      for (const [key, propSchema] of Object.entries(props)) {
-        if (key in dataObj) {
-          this._walkFormats(dataObj[key], propSchema, `${path}${path === '/' ? '' : '/'}${key}`, warnings);
-        }
-      }
+    // Object: recurse into declared properties and the additionalProperties schema
+    if (schema['type'] === 'object' && typeof data === 'object' && data !== null && !Array.isArray(data)) {
+      this._walkObjectFormats(data as Record<string, unknown>, schema, path, warnings);
     }
 
     // Array: recurse into each element using the items schema
@@ -220,6 +316,32 @@ export class SchemaValidator {
       data.forEach((item, i) => {
         this._walkFormats(item, itemSchema, `${path === '/' ? '' : path}/${i}`, warnings);
       });
+    }
+  }
+
+  /**
+   * Recurse into an object's declared `properties` and, for the keys none of
+   * them covers, into the `additionalProperties` subschema. Skipping the latter
+   * hid every format annotation on an open-ended map — apcore-python reports
+   * that shape.
+   */
+  private _walkObjectFormats(
+    data: Record<string, unknown>,
+    schema: Record<string, unknown>,
+    path: string,
+    warnings: string[],
+  ): void {
+    const child = (key: string): string => `${path}${path === '/' ? '' : '/'}${key}`;
+    const props = (schema['properties'] ?? {}) as Record<string, Record<string, unknown>>;
+    for (const [key, propSchema] of Object.entries(props)) {
+      if (key in data) this._walkFormats(data[key], propSchema, child(key), warnings);
+    }
+
+    const additional = schema['additionalProperties'];
+    if (additional === null || typeof additional !== 'object' || Array.isArray(additional)) return;
+    for (const [key, value] of Object.entries(data)) {
+      if (key in props) continue;
+      this._walkFormats(value, additional as Record<string, unknown>, child(key), warnings);
     }
   }
 

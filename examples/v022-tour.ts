@@ -1,5 +1,8 @@
 // examples/v022-tour.ts — Tour of v0.22.0 features
-// Run: npx ts-node examples/v022-tour.ts
+// Run: node examples/v022-tour.ts   (Node 23+, or 22.6+ with --experimental-strip-types)
+//      npx tsx examples/v022-tour.ts  (any Node)
+// The file is an ESM module using top-level await; ts-node is not a dependency
+// of this repo.
 //
 // Demonstrates all five v0.22.0 surfaces in a single runnable script.
 // Sections that need external infrastructure (real A2A endpoint, durable DLQ)
@@ -87,11 +90,11 @@ class TimingMw extends Middleware {
   }
 }
 mgr.add(new TimingMw());
-try {
-  mgr.add(new TimingMw()); // duplicate identity (constructor name) — throws
-} catch (err) {
-  console.log('Caught duplicate:', (err as Error).message.split('.')[0]);
-}
+// Duplicate identity (default: constructor name). Detection WARNS — it does not
+// throw — so an existing application never breaks on an accidental double
+// registration; the console.warn carries both registration sites.
+mgr.add(new TimingMw());
+console.log('Duplicate TimingMw registered — see the [apcore:middleware] warning above.');
 mgr.add(new TimingMw(), { allowDuplicate: true });
 console.log('Two TimingMw instances coexist via allowDuplicate.');
 mgr.add(new TimingMw(), { identityKey: 'metrics-timing' });
@@ -169,7 +172,9 @@ const candidate = 'myPlugin';
 if (Config.reservedNamespaces.has(candidate)) {
   console.log(`'${candidate}' is reserved — cannot register.`);
 } else {
-  console.log(`'${candidate}' is free — safe to call Config.registerNamespace('${candidate}', ...).`);
+  console.log(
+    `'${candidate}' is free — safe to call Config.registerNamespace({ name: '${candidate}', ... }).`,
+  );
 }
 
 // Touch APCore to demonstrate end-to-end client wiring is unchanged.

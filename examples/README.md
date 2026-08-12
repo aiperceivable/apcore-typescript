@@ -1,11 +1,17 @@
 # apcore-typescript — Examples
 
-Runnable demos for the TypeScript SDK. Each top-level file is standalone — no setup beyond `pnpm install` (or `npm install`) at the repo root.
+Runnable demos for the TypeScript SDK. Each top-level file is standalone.
 
 ## Quick start
 
+Every example imports the package by its public name (`apcore-js`), which
+self-resolves to `./dist/index.js`. `dist/` is gitignored and there is no
+`prepare` build, so a fresh clone needs one build first:
+
 ```bash
 # From the apcore-typescript repo root
+pnpm install
+pnpm build          # required — examples import 'apcore-js' -> ./dist
 node examples/simple-client.ts
 ```
 
@@ -26,6 +32,7 @@ node examples/simple-client.ts
 | [`feature-toggle.ts`](feature-toggle.ts) | Runtime feature toggle: `disable()` / `enable()` a tool (blocked calls throw `ModuleDisabledError`), plus per-instance `ToggleState` isolation across two `APCore` instances (issue #71). | `node examples/feature-toggle.ts` |
 | [`middleware.ts`](middleware.ts) | User-facing `useBefore` / `useAfter` middleware: a before hook augments inputs, an after hook transforms output, with an ordered trace proving hook order. | `node examples/middleware.ts` |
 | [`events.ts`](events.ts) | Lifecycle event bus: enable `sys_modules.events`, subscribe via `on(...)`, and observe `apcore.registry.module_registered` / `apcore.module.toggled` events as the tool is registered, called, and toggled. | `node examples/events.ts` |
+| [`v022-tour.ts`](v022-tour.ts) | Tour of the six v0.22.0 surfaces in one script: `ContextKey<T>`, `StreamingModule`, middleware duplicate detection, event retry + DLQ, registry async deferred-publish, and the reserved-namespace query API. | `node examples/v022-tour.ts` |
 
 ### Module reference files
 
@@ -36,7 +43,11 @@ The files under [`modules/`](modules/) are reusable module definitions, not stan
 | [`modules/greet.ts`](modules/greet.ts) | Minimal module with TypeBox schemas. |
 | [`modules/decorated-add.ts`](modules/decorated-add.ts) | The `@module` decorator. |
 | [`modules/get-user.ts`](modules/get-user.ts) | Read-only module annotation. |
-| [`modules/send-email.ts`](modules/send-email.ts) | Full-featured module: `ModuleAnnotations`, `ModuleExample`, sensitive-field redaction, `ContextLogger`. |
+| [`modules/send-email.ts`](modules/send-email.ts) | Full-featured module: `createAnnotations()`, `ModuleExample`, `x-sensitive` field redaction, `ContextLogger`. |
+
+> Annotations are built with `createAnnotations({ ... })`, not a bare object
+> literal: `ModuleAnnotations` is a total interface, so a partial literal does
+> not compile. `pnpm run typecheck:examples` enforces this.
 
 ### Bindings
 
@@ -45,9 +56,18 @@ The [`bindings/format-date/`](bindings/format-date/) directory shows the YAML-bi
 | File | Role |
 |---|---|
 | [`bindings/format-date/binding.yaml`](bindings/format-date/binding.yaml) | Canonical binding definition. |
-| [`bindings/format-date/format-date.ts`](bindings/format-date/format-date.ts) | Target function loaded by the binding. |
+| [`bindings/format-date/format-date.ts`](bindings/format-date/format-date.ts) | Target function loaded by the binding — `(inputs, context)` signature plus the `inputSchema` / `outputSchema` exports `auto_schema: true` infers from. |
+| [`bindings/format-date/run.ts`](bindings/format-date/run.ts) | Runnable driver: loads the binding and calls it through the `Executor`. |
 
-Loading and invoking a binding from your own script: see `BindingLoader` usage in the SDK README's "Bindings" section.
+```bash
+node examples/bindings/format-date/run.ts
+```
+
+A binding `target` module path is handed to Node's `import()` verbatim, so it
+must be a package specifier or an absolute path — `run.ts` rewrites the shipped
+YAML's bare `format-date` to the absolute path of the co-located file before
+loading. See the SDK README's [Bindings](../README.md#bindings) section for the
+`BindingLoader` API.
 
 ## Pipeline demo — what to look for
 

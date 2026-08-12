@@ -43,6 +43,9 @@ jobs:
       - name: Run pre-commit checks
         run: pre-commit run --all-files
 
+      - name: Typecheck examples
+        run: pnpm run typecheck:examples
+
       - name: Build
         run: pnpm build
 

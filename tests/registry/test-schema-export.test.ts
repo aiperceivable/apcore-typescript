@@ -70,44 +70,36 @@ describe('getSchema', () => {
     expect(getSchema(registry, 'no.such.module')).toBeNull();
   });
 
-  it('returns schema record with all expected fields', () => {
+  it('returns exactly the four keys of the canonical export envelope', () => {
     const mod = createModule('test.gen');
     const registry = makeRegistry(['test.gen', mod]);
 
     const schema = getSchema(registry, 'test.gen');
     expect(schema).not.toBeNull();
+    // schemas/module-schema-export.schema.json — additionalProperties: false.
+    expect(Object.keys(schema!).sort()).toEqual([
+      'description',
+      'input_schema',
+      'module_id',
+      'output_schema',
+    ]);
     expect(schema!['module_id']).toBe('test.gen');
     expect(schema!['description']).toBe('A test module. It does many things.\nSecond paragraph.');
-    expect(schema!['version']).toBe('2.0.0');
-    expect(schema!['tags']).toEqual(['ai', 'test']);
     expect(schema!['input_schema']).toBeDefined();
     expect(schema!['output_schema']).toBeDefined();
-    expect(schema!['examples']).toHaveLength(1);
   });
 
-  it('copies tags array to prevent mutation', () => {
-    const mod = createModule('test.tags');
-    const registry = makeRegistry(['test.tags', mod]);
+  it('carries no descriptor metadata — that is system.manifest.module', () => {
+    // These five rode along until the envelope was pinned, which made this a
+    // partial, non-conforming duplicate of sys-manifest-module.schema.json and
+    // left the three SDKs emitting three different shapes.
+    const mod = createModule('test.meta');
+    const registry = makeRegistry(['test.meta', mod]);
+    const schema = getSchema(registry, 'test.meta')!;
 
-    const schema = getSchema(registry, 'test.tags');
-    const tags = schema!['tags'] as string[];
-    tags.push('injected');
-
-    expect(mod.tags).toEqual(['ai', 'test']);
-  });
-
-  it('returns empty array for tags when module has null tags', () => {
-    const mod = createModule('test.notags', { tags: null });
-    const registry = makeRegistry(['test.notags', mod]);
-    const schema = getSchema(registry, 'test.notags');
-    expect(schema!['tags']).toEqual([]);
-  });
-
-  it('returns null annotations when module has no annotations', () => {
-    const mod = createModule('test.noanno', { annotations: null });
-    const registry = makeRegistry(['test.noanno', mod]);
-    const schema = getSchema(registry, 'test.noanno');
-    expect(schema!['annotations']).toBeNull();
+    for (const key of ['name', 'version', 'tags', 'annotations', 'examples']) {
+      expect(schema).not.toHaveProperty(key);
+    }
   });
 });
 
@@ -119,7 +111,8 @@ describe('exportSchema', () => {
     const result = exportSchema(registry, 'test.json');
     const parsed = JSON.parse(result);
     expect(parsed['module_id']).toBe('test.json');
-    expect(parsed['version']).toBe('2.0.0');
+    // No `version` — the export envelope carries schemas, not descriptor metadata.
+    expect(parsed['version']).toBeUndefined();
   });
 
   it('returns YAML string when format is yaml', () => {
@@ -173,7 +166,6 @@ describe('exportSchema', () => {
     const parsed = JSON.parse(result);
     expect((parsed['input_schema'] as Record<string, unknown>)['additionalProperties']).toBe(false);
     expect(parsed['description']).toBe('A test module. It does many things.\nSecond paragraph.');
-    expect(parsed['examples']).toBeDefined();
   });
 });
 
@@ -191,7 +183,7 @@ describe('getAllSchemas', () => {
     const result = getAllSchemas(registry);
     expect(Object.keys(result).sort()).toEqual(['alpha', 'beta']);
     expect(result['alpha']['module_id']).toBe('alpha');
-    expect(result['beta']['version']).toBe('3.0.0');
+    expect(result['beta']['module_id']).toBe('beta');
   });
 });
 

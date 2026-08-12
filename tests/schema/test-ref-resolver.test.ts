@@ -3,6 +3,8 @@ import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { RefResolver } from '../../src/schema/ref-resolver.js';
+import { jsonSchemaToTypeBox } from '../../src/schema/loader-pure.js';
+import { SchemaValidator } from '../../src/schema/validator.js';
 import {
   SchemaCircularRefError,
   SchemaMaxDepthExceededError,
@@ -601,5 +603,91 @@ describe('RefResolver - cross-file $ref', () => {
     const resolved = resolver.resolve(schema);
     const props = resolved['properties'] as Record<string, unknown>;
     expect(props['x']).toEqual({});
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Self-reference vs. circular reference (PROTOCOL_SPEC §4.15)
+// ---------------------------------------------------------------------------
+
+describe('RefResolver self-references', () => {
+  const TREE = {
+    $id: 'TreeNode',
+    type: 'object',
+    required: ['value'],
+    properties: {
+      value: { type: 'string' },
+      children: { type: 'array', items: { $ref: '#' } },
+    },
+  };
+
+  it('preserves a `$ref: "#"` re-entered through properties instead of throwing', () => {
+    // Regression: every self-referencing schema was unregisterable — the resolver
+    // treated the recursion anchor as a cycle and raised SCHEMA_CIRCULAR_REF, so
+    // `SchemaLoader.resolve()` failed before the converter ever saw the schema.
+    const resolved = new RefResolver('/tmp/schemas').resolve(TREE);
+    const props = resolved['properties'] as Record<string, Record<string, unknown>>;
+    expect(props['children']['items']).toEqual({ $ref: '#' });
+  });
+
+  it('preserves a self-reference written as the document `$id`', () => {
+    const byId = {
+      ...TREE,
+      properties: {
+        value: { type: 'string' },
+        children: { type: 'array', items: { $ref: 'TreeNode' } },
+      },
+    };
+    // Previously this took the relative-file branch and threw SchemaNotFoundError
+    // looking for a file called `TreeNode` on disk.
+    const resolved = new RefResolver('/tmp/schemas').resolve(byId);
+    const props = resolved['properties'] as Record<string, Record<string, unknown>>;
+    expect(props['children']['items']).toEqual({ $ref: 'TreeNode' });
+  });
+
+  it('preserves a self-referencing `$defs` entry at the point of re-entry', () => {
+    const schema = {
+      type: 'object',
+      properties: { root: { $ref: '#/$defs/Node' } },
+      $defs: {
+        Node: {
+          type: 'object',
+          properties: { child: { $ref: '#/$defs/Node' } },
+        },
+      },
+    };
+    const resolved = new RefResolver('/tmp/schemas').resolve(schema);
+    const root = (resolved['properties'] as Record<string, Record<string, unknown>>)['root'];
+    expect(root['type']).toBe('object');
+    expect((root['properties'] as Record<string, unknown>)['child']).toEqual({
+      $ref: '#/$defs/Node',
+    });
+  });
+
+  it('still throws SchemaCircularRefError for a $ref chain that reaches no schema body', () => {
+    const resolver = new RefResolver('/tmp/schemas');
+    const schema = {
+      $ref: '#/$defs/a',
+      $defs: { a: { $ref: '#/$defs/b' }, b: { $ref: '#/$defs/a' } },
+    };
+    expect(() => resolver.resolve(schema)).toThrow(SchemaCircularRefError);
+  });
+
+  it('validates a recursive schema end to end through the module path', () => {
+    const resolved = new RefResolver('/tmp/schemas').resolve(TREE);
+    const converted = jsonSchemaToTypeBox(resolved);
+    const validator = new SchemaValidator(false);
+
+    expect(
+      validator.validate(
+        { value: 'root', children: [{ value: 'child', children: [{ value: 'grandchild' }] }] },
+        converted,
+      ).valid,
+    ).toBe(true);
+    // The recursive position must keep asserting: widening an unresolved `$ref`
+    // to accept-anything left the whole sub-tree unchecked.
+    expect(validator.validate({ value: 'root', children: [{ value: 42 }] }, converted).valid).toBe(
+      false,
+    );
   });
 });

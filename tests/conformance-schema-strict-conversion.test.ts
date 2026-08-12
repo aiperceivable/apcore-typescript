@@ -1,0 +1,68 @@
+/**
+ * Cross-language conformance driver for schema_strict_conversion.json
+ * (PROTOCOL_SPEC §4.16 / ALGORITHMS A23).
+ *
+ * Fixture source: apcore/conformance/fixtures/schema_strict_conversion.json
+ * (single source of truth). See that fixture's `driver_contract`.
+ *
+ * DRIVER CONTRACT: this suite MUST drive `toStrictSchema()` — the A23 entry
+ * point — not the exporter and not the binding wrapper. A23 is the shared
+ * deterministic surface; the three SDKs must emit the same strict schema for
+ * the same input.
+ */
+
+import { describe, it, expect } from 'vitest';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import { toStrictSchema } from '../src/schema/strict.js';
+
+interface StrictConversionCase {
+  readonly id: string;
+  readonly description?: string;
+  readonly schema: Record<string, unknown>;
+  readonly expected: Record<string, unknown>;
+}
+
+function findFixturesRoot(): string {
+  const envPath = process.env.APCORE_SPEC_REPO;
+  if (envPath) {
+    const fixtures = path.join(envPath, 'conformance', 'fixtures');
+    if (fs.existsSync(fixtures)) return fixtures;
+    throw new Error(`APCORE_SPEC_REPO=${envPath} does not contain conformance/fixtures/`);
+  }
+  const repoRoot = path.resolve(__dirname, '..');
+  const sibling = path.resolve(repoRoot, '..', 'apcore', 'conformance', 'fixtures');
+  if (fs.existsSync(sibling)) return sibling;
+  throw new Error(
+    'Cannot find apcore conformance fixtures. Set APCORE_SPEC_REPO or clone ' +
+      `apcore as a sibling at ${path.resolve(repoRoot, '..', 'apcore')}.`,
+  );
+}
+
+function loadFixture(name: string): { test_cases: readonly StrictConversionCase[] } {
+  const file = path.join(findFixturesRoot(), `${name}.json`);
+  return JSON.parse(fs.readFileSync(file, 'utf-8'));
+}
+
+describe('Conformance: to_strict_schema (A23)', () => {
+  const fixture = loadFixture('schema_strict_conversion');
+
+  fixture.test_cases.forEach((tc) => {
+    it(tc.id, () => {
+      const before = JSON.stringify(tc.schema);
+
+      const got = toStrictSchema(tc.schema);
+
+      expect(got, `[${tc.id}] ${tc.description ?? ''}`).toEqual(tc.expected);
+      // A23 MUST deep-copy — the caller's schema is never mutated.
+      expect(JSON.stringify(tc.schema), `[${tc.id}] to_strict_schema mutated its input`).toBe(
+        before,
+      );
+    });
+  });
+
+  it('fixture case ids are unique', () => {
+    const ids = fixture.test_cases.map((tc) => tc.id);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+});
