@@ -208,17 +208,31 @@ export class FileSubscriber implements EventSubscriber {
   /** Declared subscriber kind for DLQ payloads (A-D-029). */
   readonly subscriberType = 'file';
   readonly subscriberId: string;
+  /**
+   * Retry policy applied by EventEmitter._deliver (apcore#85). `onEvent`
+   * re-throws on write failure, so this policy governs real re-delivery of
+   * transient I/O errors.
+   */
+  readonly retry: RetryConfig;
   private readonly _path: string;
   private readonly _append: boolean;
   private readonly _format: string;
   private readonly _rotateBytes: number | null;
 
-  constructor(path: string, append: boolean = true, format: string = 'json', rotateBytes?: number, id?: string) {
+  constructor(
+    path: string,
+    append: boolean = true,
+    format: string = 'json',
+    rotateBytes?: number,
+    id?: string,
+    opts?: { retry?: RetryConfig },
+  ) {
     this.subscriberId = id ?? _nextSubscriberId('file');
     this._path = path;
     this._append = append;
     this._format = format;
     this._rotateBytes = rotateBytes ?? null;
+    this.retry = { ...DEFAULT_RETRY, ...(opts?.retry ?? {}) };
   }
 
   async onEvent(event: ApCoreEvent): Promise<void> {
@@ -264,12 +278,24 @@ export class StdoutSubscriber implements EventSubscriber {
   /** Declared subscriber kind for DLQ payloads (A-D-029). */
   readonly subscriberType = 'stdout';
   readonly subscriberId: string;
+  /**
+   * Retry policy applied by EventEmitter._deliver (apcore#85). `onEvent`
+   * writes straight to process.stdout, whose failures (EPIPE, closed stream)
+   * propagate — so this policy governs real re-delivery.
+   */
+  readonly retry: RetryConfig;
   private readonly _format: string;
   private readonly _levelFilter: string | null;
 
-  constructor(format: string = 'text', levelFilter?: string, id?: string) {
+  constructor(
+    format: string = 'text',
+    levelFilter?: string,
+    id?: string,
+    opts?: { retry?: RetryConfig },
+  ) {
     this.subscriberId = id ?? _nextSubscriberId('stdout');
     this._format = format;
+    this.retry = { ...DEFAULT_RETRY, ...(opts?.retry ?? {}) };
     if (levelFilter !== undefined && !(levelFilter in SEVERITY_ORDER)) {
       console.warn(
         `[apcore:events] StdoutSubscriber: unknown level_filter '${levelFilter}' — valid values: info, warn, error, fatal. All events will pass.`,

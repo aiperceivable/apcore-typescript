@@ -52,4 +52,4 @@ jobs:
       - name: Run tests
         run: pnpm test:coverage
         env:
-          APCORE_SPEC_REPO: ${{ github.workspace }}/.apcore-spec
+          CONFORMANCE_SPEC_REPO: ${{ github.workspace }}/.apcore-spec

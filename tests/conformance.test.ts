@@ -4,7 +4,7 @@
  * Fixture source: apcore/conformance/fixtures/*.json (single source of truth).
  *
  * Fixture discovery order:
- *   1. APCORE_SPEC_REPO env var (explicit override)
+ *   1. CONFORMANCE_SPEC_REPO env var (explicit override)
  *   2. Sibling ../apcore/ directory (standard workspace layout & CI)
  */
 
@@ -118,34 +118,11 @@ import {
 } from '../src/observability/index.js';
 import { DEFAULT_REDACTION_FIELD_PATTERNS } from '../src/observability/context-logger.js';
 import { TraceContext } from '../src/trace-context.js';
+import { findFixturesRoot } from './spec-repo.js';
 
 // ---------------------------------------------------------------------------
 // Fixture discovery
 // ---------------------------------------------------------------------------
-
-function findFixturesRoot(): string {
-  // 1. APCORE_SPEC_REPO env var
-  const envPath = process.env.APCORE_SPEC_REPO;
-  if (envPath) {
-    const fixtures = path.join(envPath, 'conformance', 'fixtures');
-    if (fs.existsSync(fixtures)) return fixtures;
-    throw new Error(
-      `APCORE_SPEC_REPO=${envPath} does not contain conformance/fixtures/`,
-    );
-  }
-
-  // 2. Sibling ../apcore/ directory
-  const repoRoot = path.resolve(__dirname, '..'); // apcore-typescript/
-  const sibling = path.resolve(repoRoot, '..', 'apcore', 'conformance', 'fixtures');
-  if (fs.existsSync(sibling)) return sibling;
-
-  throw new Error(
-    'Cannot find apcore conformance fixtures.\n\n' +
-    'Fix one of:\n' +
-    '  1. Set APCORE_SPEC_REPO to the apcore spec repo path\n' +
-    `  2. Clone apcore as a sibling: git clone <apcore-url> ${path.resolve(repoRoot, '..', 'apcore')}\n`,
-  );
-}
 
 const FIXTURES_ROOT = findFixturesRoot();
 

@@ -23,22 +23,7 @@ import { Registry } from '../src/registry/registry.js';
 import { EventEmitter } from '../src/events/emitter.js';
 import type { ApCoreEvent } from '../src/events/emitter.js';
 import { DuplicateModuleIdError, ModuleError } from '../src/errors.js';
-
-function findFixturesRoot(): string {
-  const envPath = process.env.APCORE_SPEC_REPO;
-  if (envPath) {
-    const fixtures = path.join(envPath, 'conformance', 'fixtures');
-    if (fs.existsSync(fixtures)) return fixtures;
-    throw new Error(`APCORE_SPEC_REPO=${envPath} does not contain conformance/fixtures/`);
-  }
-  const repoRoot = path.resolve(__dirname, '..');
-  const sibling = path.resolve(repoRoot, '..', 'apcore', 'conformance', 'fixtures');
-  if (fs.existsSync(sibling)) return sibling;
-  throw new Error(
-    'Cannot find apcore conformance fixtures. Set APCORE_SPEC_REPO or clone ' +
-      `apcore as a sibling at ${path.resolve(repoRoot, '..', 'apcore')}.`,
-  );
-}
+import { findFixturesRoot } from './spec-repo.js';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const FIXTURE = JSON.parse(

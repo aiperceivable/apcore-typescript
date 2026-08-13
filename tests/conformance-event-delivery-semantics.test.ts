@@ -18,22 +18,7 @@ import { EventEmitter, createEvent } from '../src/events/emitter.js';
 import type { ApCoreEvent, EventSubscriber } from '../src/events/emitter.js';
 import type { RetryConfig } from '../src/events/retry.js';
 import { StdoutSubscriber } from '../src/events/subscribers.js';
-
-function findFixturesRoot(): string {
-  const envPath = process.env.APCORE_SPEC_REPO;
-  if (envPath) {
-    const fixtures = path.join(envPath, 'conformance', 'fixtures');
-    if (fs.existsSync(fixtures)) return fixtures;
-    throw new Error(`APCORE_SPEC_REPO=${envPath} does not contain conformance/fixtures/`);
-  }
-  const repoRoot = path.resolve(__dirname, '..');
-  const sibling = path.resolve(repoRoot, '..', 'apcore', 'conformance', 'fixtures');
-  if (fs.existsSync(sibling)) return sibling;
-  throw new Error(
-    'Cannot find apcore conformance fixtures. Set APCORE_SPEC_REPO or clone ' +
-      `apcore as a sibling at ${path.resolve(repoRoot, '..', 'apcore')}.`,
-  );
-}
+import { findFixturesRoot } from './spec-repo.js';
 
 const DLQ_EVENT_TYPE = 'apcore.event.delivery_failed';
 

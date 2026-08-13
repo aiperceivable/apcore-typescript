@@ -19,6 +19,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { jsonSchemaToTypeBox } from '../src/schema/loader-pure.js';
 import { SchemaValidator } from '../src/schema/validator.js';
+import { findFixturesRoot } from './spec-repo.js';
 
 interface KeywordParityCase {
   readonly id: string;
@@ -27,22 +28,6 @@ interface KeywordParityCase {
   /** Every case validates an object against an object-typed root schema. */
   readonly input: Record<string, unknown>;
   readonly expected_valid: boolean;
-}
-
-function findFixturesRoot(): string {
-  const envPath = process.env.APCORE_SPEC_REPO;
-  if (envPath) {
-    const fixtures = path.join(envPath, 'conformance', 'fixtures');
-    if (fs.existsSync(fixtures)) return fixtures;
-    throw new Error(`APCORE_SPEC_REPO=${envPath} does not contain conformance/fixtures/`);
-  }
-  const repoRoot = path.resolve(__dirname, '..');
-  const sibling = path.resolve(repoRoot, '..', 'apcore', 'conformance', 'fixtures');
-  if (fs.existsSync(sibling)) return sibling;
-  throw new Error(
-    'Cannot find apcore conformance fixtures. Set APCORE_SPEC_REPO or clone ' +
-      `apcore as a sibling at ${path.resolve(repoRoot, '..', 'apcore')}.`,
-  );
 }
 
 function loadFixture(name: string): { test_cases: readonly KeywordParityCase[] } {

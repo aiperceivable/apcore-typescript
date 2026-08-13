@@ -15,6 +15,7 @@ import { UsageCollector, UsageMiddleware } from '../observability/usage.js';
 import type { EventSubscriber } from '../events/emitter.js';
 import { createEvent, EventEmitter } from '../events/emitter.js';
 import { WebhookSubscriber, A2ASubscriber, FileSubscriber, StdoutSubscriber, FilterSubscriber } from '../events/subscribers.js';
+import type { RetryConfig } from '../events/retry.js';
 import { PlatformNotifyMiddleware } from '../middleware/platform-notify.js';
 import { HealthSummaryModule, HealthModule } from './health.js';
 import { ManifestFullModule, ManifestModule } from './manifest.js';
@@ -67,18 +68,53 @@ type SubscriberFactory = (config: Record<string, unknown>) => EventSubscriber;
 
 const _subscriberFactories: Map<string, SubscriberFactory> = new Map();
 
+/**
+ * Parse a subscriber's nested `retry:` block into a RetryConfig.
+ *
+ * Implements the per-subscriber retry policy documented in
+ * docs/features/event-system.md §"Per-Subscriber Retry Policy" (apcore#85).
+ * The block is optional and may be partial — omitted keys fall back to
+ * DEFAULT_RETRY when the subscriber merges it.
+ *
+ * Returns `undefined` when no `retry:` block is present, so the subscriber
+ * applies DEFAULT_RETRY unchanged.
+ */
+function _parseRetryConfig(config: Record<string, unknown>): RetryConfig | undefined {
+  const nested = config['retry'];
+  if (typeof nested !== 'object' || nested === null || Array.isArray(nested)) {
+    return undefined;
+  }
+  const raw = nested as Record<string, unknown>;
+  const retry: RetryConfig = {};
+  if (typeof raw['max_attempts'] === 'number') retry.maxAttempts = raw['max_attempts'];
+  if (typeof raw['initial_backoff_ms'] === 'number') {
+    retry.initialBackoffMs = raw['initial_backoff_ms'];
+  }
+  if (typeof raw['max_backoff_ms'] === 'number') retry.maxBackoffMs = raw['max_backoff_ms'];
+  if (typeof raw['backoff_multiplier'] === 'number') {
+    retry.backoffMultiplier = raw['backoff_multiplier'];
+  }
+  return retry;
+}
+
 function _registerBuiltInFactories(): void {
   _subscriberFactories.set('webhook', (config: Record<string, unknown>): EventSubscriber => {
     const url = config['url'] as string;
     const headers = config['headers'] as Record<string, string> | undefined;
     const retryCount = config['retry_count'] as number | undefined;
     const timeoutMs = config['timeout_ms'] as number | undefined;
-    // v0.22.0 A-D-EVT-001: subscriber-internal retry loop removed; configure
-    // the unified EventEmitter retry policy by translating retry_count
-    // (legacy: number of additional retries) to maxAttempts (1 + retry_count).
-    const opts: { timeoutMs?: number; retry?: { maxAttempts?: number } } = {};
+    const opts: { timeoutMs?: number; retry?: RetryConfig } = {};
     if (timeoutMs !== undefined) opts.timeoutMs = timeoutMs;
-    if (retryCount !== undefined) opts.retry = { maxAttempts: retryCount + 1 };
+    // The nested `retry:` block is canonical (apcore#85) and wins outright.
+    // v0.22.0 A-D-EVT-001: subscriber-internal retry loop removed; the legacy
+    // flat retry_count shorthand (deprecated, webhook-only) is still translated
+    // to maxAttempts (1 + retry_count) when no nested block is present.
+    const nestedRetry = _parseRetryConfig(config);
+    if (nestedRetry !== undefined) {
+      opts.retry = nestedRetry;
+    } else if (retryCount !== undefined) {
+      opts.retry = { maxAttempts: retryCount + 1 };
+    }
     return new WebhookSubscriber(url, headers, opts);
   });
 
@@ -86,8 +122,10 @@ function _registerBuiltInFactories(): void {
     const platformUrl = config['platform_url'] as string;
     const auth = config['auth'] as string | Record<string, string> | undefined;
     const timeoutMs = config['timeout_ms'] as number | undefined;
-    const opts: { timeoutMs?: number } = {};
+    const opts: { timeoutMs?: number; retry?: RetryConfig } = {};
     if (timeoutMs !== undefined) opts.timeoutMs = timeoutMs;
+    const retry = _parseRetryConfig(config);
+    if (retry !== undefined) opts.retry = retry;
     return new A2ASubscriber(platformUrl, auth, opts);
   });
 
@@ -99,13 +137,31 @@ function _registerBuiltInFactories(): void {
     const append = config['append'] as boolean | undefined;
     const format = config['format'] as string | undefined;
     const rotateBytes = config['rotate_bytes'] as number | undefined;
-    return new FileSubscriber(path, append, format, rotateBytes);
+    const retry = _parseRetryConfig(config);
+    // `id` is positional #5 and is not read from config in any SDK — pass
+    // undefined so the auto-generated subscriber ID is used, as before.
+    return new FileSubscriber(
+      path,
+      append,
+      format,
+      rotateBytes,
+      undefined,
+      retry !== undefined ? { retry } : undefined,
+    );
   });
 
   _subscriberFactories.set('stdout', (config: Record<string, unknown>): EventSubscriber => {
     const format = config['format'] as string | undefined;
     const levelFilter = config['level_filter'] as string | undefined;
-    return new StdoutSubscriber(format, levelFilter);
+    const retry = _parseRetryConfig(config);
+    // `id` is positional #3 and is not read from config in any SDK — pass
+    // undefined so the auto-generated subscriber ID is used, as before.
+    return new StdoutSubscriber(
+      format,
+      levelFilter,
+      undefined,
+      retry !== undefined ? { retry } : undefined,
+    );
   });
 
   _subscriberFactories.set('filter', (config: Record<string, unknown>): EventSubscriber => {
@@ -121,7 +177,13 @@ function _registerBuiltInFactories(): void {
     const delegate = delegateFactory(delegateConfig);
     const includeEvents = config['include_events'] as string[] | undefined;
     const excludeEvents = config['exclude_events'] as string[] | undefined;
-    return new FilterSubscriber(delegate, includeEvents, excludeEvents);
+    const retry = _parseRetryConfig(config);
+    return new FilterSubscriber(
+      delegate,
+      includeEvents,
+      excludeEvents,
+      retry !== undefined ? { retry } : undefined,
+    );
   });
 }
 
