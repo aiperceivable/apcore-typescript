@@ -22,7 +22,7 @@ import * as path from 'node:path';
 import { Registry } from '../src/registry/registry.js';
 import { EventEmitter } from '../src/events/emitter.js';
 import type { ApCoreEvent } from '../src/events/emitter.js';
-import { DuplicateModuleIdError } from '../src/errors.js';
+import { DuplicateModuleIdError, ModuleError } from '../src/errors.js';
 
 function findFixturesRoot(): string {
   const envPath = process.env.APCORE_SPEC_REPO;
@@ -72,22 +72,34 @@ describe('Conformance: registry_load_ordering.json', () => {
         await sleep(delayMs / 2);
         // Mid-onLoad: the module must be invisible to every discovery API.
         midLoadListed.push(registry.list().includes(modId));
-        midLoadGot.push(registry.has(modId) ? registry.get(modId) : null);
+        // get() is called unconditionally: routing it through has() first would
+        // have made this assert has() twice and never exercise get() at all.
+        midLoadGot.push(registry.get(modId));
         await sleep(delayMs / 2);
         observed['_test.warmed'] = true;
       },
     };
 
-    await registry.register(modId, mod);
+    // `expect(expected['registration_succeeds']).toBe(true)` used to stand here
+    // — the fixture compared to itself. Whether register() resolved is the
+    // observation.
+    let registered = false;
+    await registry.register(modId, mod).then(() => {
+      registered = true;
+    });
+    expect(registered).toBe(expected['registration_succeeds']);
 
-    expect(expected['registration_succeeds']).toBe(true);
     if (expected['post_register_visible']) {
       expect(registry.list()).toContain(modId);
       expect(registry.get(modId)).not.toBeNull();
     }
     if (!expected['concurrent_check_visible']) {
       expect(midLoadListed).toEqual([false]);
-      expect(midLoadGot).toEqual([null]);
+      // Bound to the fixture. The key used to be `concurrent_check_get_raises:
+      // "MODULE_NOT_FOUND"`, a behaviour no SDK implements — get() returns the
+      // empty value for an id that is not visible, per registry-system.md "On
+      // success (not found)". It is now `concurrent_check_get_returns: null`.
+      expect(midLoadGot).toEqual([expected['concurrent_check_get_returns'] ?? null]);
     }
     for (const [key, value] of Object.entries(expected['on_load_observed_data'] ?? {})) {
       expect(observed[key]).toEqual(value);
@@ -129,13 +141,30 @@ describe('Conformance: registry_load_ordering.json', () => {
       },
     };
 
-    await expect(registry.register(modId, failing)).rejects.toThrow(
-      expected['registration_error_message'],
-    );
+    let thrown: unknown = null;
+    try {
+      await registry.register(modId, failing);
+    } catch (e) {
+      thrown = e;
+    }
     await emitter.flush();
 
-    expect(registry.list()).not.toContain(modId);
-    expect(registry.has(modId)).toBe(false);
+    // `registration_raises` names the HOST exception the callback threw, not an
+    // apcore code: register() MUST re-raise it unchanged. Wrapping it in an
+    // apcore error (or swallowing it) is the regression this catches — the
+    // message alone would survive both.
+    if (expected['registration_raises']) {
+      expect(thrown).toBeInstanceOf(ConnectionError);
+      expect((thrown as Error).name).toBe('ConnectionError');
+      expect((thrown as Error).message).toBe(expected['registration_error_message']);
+      expect(thrown).not.toBeInstanceOf(ModuleError);
+    }
+
+    expect(registry.list().includes(modId)).toBe(expected['post_register_list_contains']);
+    expect(registry.has(modId)).toBe(expected['post_register_visible']);
+    // Same correction: the key declared a raise no SDK performs and is now
+    // `post_register_get_returns: null`, which is observable.
+    expect(registry.get(modId)).toBe(expected['post_register_get_returns'] ?? null);
 
     if (expected['load_failed_event_emitted']) {
       expect(loadFailed).toHaveLength(1);

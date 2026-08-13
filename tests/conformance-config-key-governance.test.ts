@@ -41,6 +41,7 @@ interface GovernanceFixture {
   canonical_defaults: Record<string, unknown>;
   canonical_sources: string[];
   driver_contract: { sources: string };
+  test_cases: Array<{ id: string; expected: Record<string, unknown> }>;
 }
 
 const fixture: GovernanceFixture = JSON.parse(
@@ -68,6 +69,14 @@ function flatten(tree: Record<string, unknown>, prefix = ''): Record<string, unk
 const defaultKeys = flatten(DEFAULTS);
 const constraintKeys = Object.keys(CONSTRAINTS);
 
+/** The case's own `expected`, so the empty lists come from the fixture rather
+ * than from a literal typed twice into this file. */
+function expectedFor(caseId: string): Record<string, unknown> {
+  const found = (fixture.test_cases ?? []).find((c) => c.id === caseId);
+  if (!found) throw new Error(`Fixture case '${caseId}' not found`);
+  return found.expected;
+}
+
 describe('Conformance: configuration key-surface governance', () => {
   it('DEFAULTS declares no key the canonical schemas do not allow', () => {
     // apcore-config.schema.json is additionalProperties:false, so a user config
@@ -80,7 +89,7 @@ describe('Conformance: configuration key-surface governance', () => {
         .map((k) => `${k} = ${JSON.stringify(defaultKeys[k])}`)
         .join('\n  ')}\nEither add them to a schema in apcore/schemas/ (and regenerate ` +
         'the fixture) or remove them from DEFAULTS.',
-    ).toEqual([]);
+    ).toEqual(expectedFor('sdk_default_table_declares_no_undeclared_key')['violations']);
   });
 
   it('CONSTRAINTS validates no key the canonical schemas do not allow', () => {
@@ -90,7 +99,7 @@ describe('Conformance: configuration key-surface governance', () => {
     expect(
       violations,
       `CONSTRAINTS validates keys no canonical schema allows:\n  ${violations.join('\n  ')}`,
-    ).toEqual([]);
+    ).toEqual(expectedFor('sdk_constraint_table_declares_no_undeclared_key')['violations']);
   });
 
   it('reproduces every canonical default', () => {
@@ -102,11 +111,21 @@ describe('Conformance: configuration key-surface governance', () => {
       `defaults.schema.json declares defaults DEFAULTS does not carry:\n  ${missing
         .map((k) => `${k} = ${JSON.stringify(canonical[k])}`)
         .join('\n  ')}`,
-    ).toEqual([]);
+    ).toEqual(expectedFor('sdk_reproduces_every_canonical_default')['missing']);
   });
 
-  it.each(Object.keys(canonical).sort())('default for %s matches the canonical value', (key) => {
-    expect(defaultKeys[key]).toEqual(canonical[key]);
+  it('default values match the canonical values', () => {
+    // Reported as one list rather than one assertion per key: `mismatched` is
+    // the fixture's unit, and a per-key loop that stops at the first failure
+    // hides how wide the drift is.
+    const mismatched = Object.keys(canonical)
+      .sort()
+      .filter((k) => k in defaultKeys && JSON.stringify(defaultKeys[k]) !== JSON.stringify(canonical[k]))
+      .map((k) => `${k}: SDK ${JSON.stringify(defaultKeys[k])} != canonical ${JSON.stringify(canonical[k])}`);
+    expect(
+      mismatched,
+      `DEFAULTS disagrees with defaults.schema.json:\n  ${mismatched.join('\n  ')}`,
+    ).toEqual(expectedFor('sdk_default_values_match_canonical_defaults')['mismatched']);
   });
 
   it('the fixture is derived, not authored', () => {

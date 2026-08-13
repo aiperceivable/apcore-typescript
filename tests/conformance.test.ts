@@ -720,24 +720,44 @@ describe('apcore Conformance Suite (TypeScript)', () => {
   });
 
   // --- approval_gate ---
+  //
+  // Not asserted here: the fixture's HTTP-status expectation (403 for
+  // APPROVAL_DENIED, 202 for APPROVAL_PENDING). apcore-typescript exposes no
+  // code-to-HTTP mapping — neither does apcore-python or apcore-rust — because
+  // the mapping lives in the transport adapters (express-apcore, fastapi-apcore)
+  // rather than in the SDK. There is nothing on the thrown error to observe, and
+  // restating the number from the fixture would assert nothing. The wire code,
+  // which IS the SDK's contract, is asserted below.
   describe('Approval Gate', () => {
     const approvalFixture = loadFixture('approval_gate');
 
     approvalFixture.test_cases.forEach((tc: any) => {
       it(tc.id, async () => {
-        // Build a mock handler if configured
+        // Build a mock handler whenever the fixture says one is configured.
+        // (It used to be built only when `approval_result` was also present,
+        // which made `skip_when_approval_not_required` — handler configured,
+        // module does not declare requires_approval — run with no handler at
+        // all, i.e. it tested the wrong skip branch.)
         let handler: any = null;
-        if (tc.approval_handler_configured && tc.approval_result !== null) {
+        let handlerCalls = 0;
+        if (tc.approval_handler_configured) {
+          const raw = tc.approval_result ?? { status: 'approved' };
           const result: ApprovalResult = {
-            status: tc.approval_result.status,
-            approvedBy: tc.approval_result.approved_by,
-            reason: tc.approval_result.reason,
-            approvalId: tc.approval_result.approval_id,
-            metadata: tc.approval_result.metadata,
+            status: raw.status,
+            approvedBy: raw.approved_by ?? null,
+            reason: raw.reason ?? null,
+            approvalId: raw.approval_id ?? null,
+            metadata: raw.metadata ?? null,
           };
           handler = {
-            requestApproval: async () => result,
-            checkApproval: async () => result,
+            requestApproval: async () => {
+              handlerCalls += 1;
+              return result;
+            },
+            checkApproval: async () => {
+              handlerCalls += 1;
+              return result;
+            },
           };
         }
 
@@ -771,6 +791,9 @@ describe('apcore Conformance Suite (TypeScript)', () => {
             thrown = e as Error;
           }
           expect(thrown).not.toBeNull();
+          // The wire code is the cross-language contract; the class name is
+          // per-SDK (apcore-rust has ErrorCode variants, not classes).
+          expect((thrown as ModuleError).code).toBe(tc.expected.error_code);
           if (tc.expected.error_code === 'APPROVAL_DENIED') {
             expect(thrown).toBeInstanceOf(ApprovalDeniedError);
           } else if (tc.expected.error_code === 'APPROVAL_PENDING') {
@@ -778,6 +801,9 @@ describe('apcore Conformance Suite (TypeScript)', () => {
             expect((thrown as ApprovalPendingError).approvalId).toBe(tc.expected.approval_id);
           }
         }
+        // Whether the gate actually consulted the handler — the discriminator
+        // for both skip cases, which otherwise look identical to "proceed".
+        expect(handlerCalls > 0).toBe(tc.expected.gate_invoked);
       });
     });
   });
@@ -812,11 +838,31 @@ describe('apcore Conformance Suite (TypeScript)', () => {
 
         if (tc.expected.outcome === 'ok') {
           let loadOrder: string[];
-          expect(() => {
-            loadOrder = resolveDependencies(modulesList, null, moduleVersions);
-          }).not.toThrow();
-          if (tc.expected.load_order) {
-            expect(loadOrder!).toEqual(tc.expected.load_order);
+          const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+          try {
+            expect(() => {
+              loadOrder = resolveDependencies(modulesList, null, moduleVersions);
+            }).not.toThrow();
+            if (tc.expected.load_order) {
+              expect(loadOrder!).toEqual(tc.expected.load_order);
+            }
+            for (const [from, to] of (tc.expected['skipped_edges'] ?? []) as string[][]) {
+              // A skipped edge has two observable consequences. (1) The SDK says
+              // so: resolveDependencies warns naming both ends before dropping
+              // the edge. (2) The edge is gone from the graph, so `from` is no
+              // longer forced after `to` — with the deterministic sorted
+              // zero-in-degree queue that puts `from` first. Keeping the edge
+              // would invert the order.
+              const messages = warn.mock.calls.map((c) => c.map(String).join(' '));
+              expect(
+                messages.some(
+                  (m) => m.includes(from) && m.includes(to) && m.includes('skipping'),
+                ),
+              ).toBe(true);
+              expect(loadOrder!.indexOf(from)).toBeLessThan(loadOrder!.indexOf(to));
+            }
+          } finally {
+            warn.mockRestore();
           }
         } else {
           expect(() => resolveDependencies(modulesList, null, moduleVersions)).toThrow(
@@ -1296,11 +1342,15 @@ describe('apcore Conformance Suite (TypeScript)', () => {
       const executedSteps = trace.steps.filter((s) => !s.skipped);
       const lastExecuted = executedSteps[executedSteps.length - 1];
       expect(lastExecuted.name).toBe(tc.expected.last_step_executed);
-      expect(tc.expected.steps_after_skipped).toBe(true);
-      // Steps after stopAfter must not appear in the trace at all
+      // `expect(tc.expected.steps_after_skipped).toBe(true)` used to stand here:
+      // it compared the fixture to itself and could not fail on SDK behaviour.
+      // The observation is the trace — steps after the run_until stop point must
+      // not appear in it at all.
       const allNames = trace.steps.map((s) => s.name);
-      expect(allNames).not.toContain('execute');
-      expect(allNames).not.toContain('return_result');
+      if (tc.expected['steps_after_skipped']) {
+        expect(allNames).not.toContain('execute');
+        expect(allNames).not.toContain('return_result');
+      }
     });
 
     // 5. step_lookup_is_not_linear
@@ -1771,7 +1821,12 @@ describe('apcore Conformance Suite (TypeScript)', () => {
 
       expect(thrown).toBeInstanceOf(CircuitBreakerOpenError);
       expect(moduleReached).toBe(tc.expected.module_reached); // false
-      expect(tc.expected.error).toBe('CircuitBreakerOpenError');
+      // CORRECTED: this read `expect(tc.expected.error).toBe('CircuitBreakerOpenError')`
+      // — a fixture-to-itself comparison on a class name. apcore-rust has no such
+      // class, only ErrorCode::CircuitBreakerOpen, so the wire code is the only
+      // cross-language contract (the fixture now says so in
+      // `error_class_name_is_not_the_contract`). Assert the code on the thrown error.
+      expect((thrown as CircuitBreakerOpenError).code).toBe(tc.expected['error_code']);
     });
 
     // --- 6. circuit_breaker_half_open_probe ---
@@ -1994,7 +2049,9 @@ describe('apcore Conformance Suite (TypeScript)', () => {
 
       const history = new ErrorHistory();
       expect(history.store).toBeInstanceOf(InMemoryObservabilityStore);
-      expect(tc.expected.store_type).toBe('InMemoryObservabilityStore');
+      // Was `expect(tc.expected.store_type).toBe('InMemoryObservabilityStore')`
+      // — the fixture compared to itself. Read the store the SDK actually built.
+      expect(history.store.constructor.name).toBe(tc.expected['store_type']);
     });
 
     // --- 2. batch_processor_buffers_spans ---
@@ -2017,7 +2074,7 @@ describe('apcore Conformance Suite (TypeScript)', () => {
         );
       }
 
-      expect(exporter.getSpans().length).toBe(tc.expected.spans_exported_immediately);
+      expect(exporter.getSpans().length).toBe(tc.expected['spans_exported_immediately']);
       expect(processor.queueSize).toBe(tc.expected.queue_size);
       expect(processor.spansDropped).toBe(tc.expected.spans_dropped);
 
@@ -2547,18 +2604,18 @@ describe('apcore Conformance Suite (TypeScript)', () => {
       const tc = sysHardeningFixture.test_cases.find((t: any) => t.id === 'overrides_persisted_on_update');
       expect(tc).toBeDefined();
 
+      const expected = tc['expected'];
       const config = new Config({});
       const emitter = new EventEmitter();
       const updateMod = new UpdateConfigModule(config, emitter, { overridesPath: tmpOverridesPath });
 
       const result = updateMod.execute(tc.action.input, null);
-      expect(result['success']).toBe(true);
+      expect(result['success']).toBe(expected['call_success']);
 
-      expect(fs.existsSync(tmpOverridesPath)).toBe(true);
+      expect(fs.existsSync(tmpOverridesPath)).toBe(expected['overrides_file_written']);
       const fileContent = fs.readFileSync(tmpOverridesPath, 'utf-8');
       const parsed = yaml.load(fileContent) as Record<string, unknown>;
-      const expected = tc.expected.overrides_file_contains;
-      for (const [key, value] of Object.entries(expected)) {
+      for (const [key, value] of Object.entries(expected['overrides_file_contains'])) {
         expect(parsed[key]).toBe(value);
       }
     });
@@ -2568,27 +2625,54 @@ describe('apcore Conformance Suite (TypeScript)', () => {
       const tc = sysHardeningFixture.test_cases.find((t: any) => t.id === 'overrides_loaded_on_startup');
       expect(tc).toBeDefined();
 
+      const expected = tc['expected'];
       // Write overrides file with override values
       fs.writeFileSync(tmpOverridesPath, yaml.dump(tc.setup.overrides_file_content), 'utf-8');
 
-      // Build base config
-      const baseData: Record<string, unknown> = { 'sys_modules.enabled': true };
+      // The base config is a real file, not an in-memory dict, so
+      // `base_not_modified` has something to observe: applying overrides at
+      // startup must layer in memory and never write back to the config source.
+      const baseConfigPath = `${tmpOverridesPath}.base.yaml`;
+      const baseDoc: Record<string, unknown> = { sys_modules: { enabled: true } };
       for (const [key, value] of Object.entries(tc.setup.base_config as Record<string, unknown>)) {
-        baseData[key] = value;
+        // Fixture keys are dot-paths; the file form is nested.
+        const parts = key.split('.');
+        let cursor = baseDoc;
+        for (const part of parts.slice(0, -1)) {
+          if (typeof cursor[part] !== 'object' || cursor[part] === null) cursor[part] = {};
+          cursor = cursor[part] as Record<string, unknown>;
+        }
+        cursor[parts[parts.length - 1]] = value;
       }
-      const config = new Config(baseData);
-      config.set('sys_modules.enabled', true);
-      for (const [key, value] of Object.entries(tc.setup.base_config as Record<string, unknown>)) {
-        config.set(key, value);
+      fs.writeFileSync(baseConfigPath, yaml.dump(baseDoc), 'utf-8');
+      const baseBytesBefore = fs.readFileSync(baseConfigPath, 'utf-8');
+
+      try {
+        // validate:false keeps the case on the override-layering contract
+        // rather than on canonical-schema coverage of the two keys used here.
+        const config = Config.load(baseConfigPath, { validate: false });
+        const resolved = expected['resolved_value'];
+        // Pre-condition: before overrides land, the base file's value is what resolves.
+        expect(config.get(resolved['key'])).toBe(
+          (tc.setup.base_config as Record<string, unknown>)[resolved['key']],
+        );
+
+        const registry = new Registry();
+        const executor = new Executor({ registry });
+        registerSysModules(registry, executor, config, null, { overridesPath: tmpOverridesPath });
+
+        expect(config.get(resolved['key'])).toBe(resolved['value']);
+
+        if (expected['base_not_modified']) {
+          expect(fs.readFileSync(baseConfigPath, 'utf-8')).toBe(baseBytesBefore);
+          const reparsed = yaml.load(baseBytesBefore) as Record<string, any>;
+          expect(reparsed['executor']['default_timeout']).toBe(
+            (tc.setup.base_config as Record<string, unknown>)['executor.default_timeout'],
+          );
+        }
+      } finally {
+        if (fs.existsSync(baseConfigPath)) fs.unlinkSync(baseConfigPath);
       }
-
-      const registry = new Registry();
-      const executor = new Executor({ registry });
-
-      registerSysModules(registry, executor, config, null, { overridesPath: tmpOverridesPath });
-
-      const expected = tc.expected.resolved_value;
-      expect(config.get(expected.key)).toBe(expected.value);
     });
 
     // --- 3. audit_entry_records_actor ---
@@ -2606,18 +2690,22 @@ describe('apcore Conformance Suite (TypeScript)', () => {
 
       updateMod.execute(tc.action.input, ctx);
 
+      const expected = tc['expected'];
       const entries = auditStore.query();
-      expect(entries.length).toBe(tc.expected.audit_entries_count);
+      expect(entries.length).toBe(expected['audit_entries_count']);
 
       const entry = entries[0];
-      expect(entry.action).toBe(tc.expected.audit_entry.action);
-      expect(entry.targetModuleId).toBe(tc.expected.audit_entry.target_module_id);
-      expect(entry.actorId).toBe(tc.expected.audit_entry.actor_id);
-      expect(entry.actorType).toBe(tc.expected.audit_entry.actor_type);
-      expect(tc.expected.timestamp_present).toBe(true);
-      expect(entry.timestamp).toBeTruthy();
-      expect(tc.expected.trace_id_present).toBe(true);
-      expect(entry.traceId).toBeTruthy();
+      const expectedEntry = expected['audit_entry'];
+      expect(entry.action).toBe(expectedEntry['action']);
+      expect(entry.targetModuleId).toBe(expectedEntry['target_module_id']);
+      expect(entry.actorId).toBe(expectedEntry['actor_id']);
+      expect(entry.actorType).toBe(expectedEntry['actor_type']);
+      // Was `expect(tc.expected.timestamp_present).toBe(true)` — the fixture
+      // asserting itself. The entry the SDK wrote is the observation.
+      expect(entry.timestamp != null && entry.timestamp !== '').toBe(
+        expected['timestamp_present'],
+      );
+      expect(entry.traceId != null && entry.traceId !== '').toBe(expected['trace_id_present']);
     });
 
     // --- 4. audit_entry_records_change ---
@@ -2642,16 +2730,18 @@ describe('apcore Conformance Suite (TypeScript)', () => {
 
       toggleMod.execute(tc.action.input, ctx);
 
+      const expected = tc['expected'];
       const entries = auditStore.query();
-      expect(entries.length).toBe(tc.expected.audit_entries_count);
+      expect(entries.length).toBe(expected['audit_entries_count']);
 
       const entry = entries[0];
-      expect(entry.action).toBe(tc.expected.audit_entry.action);
-      expect(entry.targetModuleId).toBe(tc.expected.audit_entry.target_module_id);
-      expect(entry.actorId).toBe(tc.expected.audit_entry.actor_id);
-      expect(entry.actorType).toBe(tc.expected.audit_entry.actor_type);
-      expect(entry.change.before).toBe(tc.expected.audit_entry.change.before);
-      expect(entry.change.after).toBe(tc.expected.audit_entry.change.after);
+      const expectedEntry = expected['audit_entry'];
+      expect(entry.action).toBe(expectedEntry['action']);
+      expect(entry.targetModuleId).toBe(expectedEntry['target_module_id']);
+      expect(entry.actorId).toBe(expectedEntry['actor_id']);
+      expect(entry.actorType).toBe(expectedEntry['actor_type']);
+      expect(entry.change.before).toBe(expectedEntry['change']['before']);
+      expect(entry.change.after).toBe(expectedEntry['change']['after']);
     });
 
     // --- 5. prometheus_usage_exports_calls_total ---
@@ -2680,9 +2770,9 @@ describe('apcore Conformance Suite (TypeScript)', () => {
       const output = exporter.export();
       const elapsed = Date.now() - start;
 
-      expect(elapsed).toBeLessThan(tc.expected.export_within_timeout_ms);
+      expect(elapsed).toBeLessThan(tc['expected']['export_within_timeout_ms']);
 
-      for (const expectedLine of tc.expected.metrics_endpoint_contains as string[]) {
+      for (const expectedLine of tc['expected']['metrics_endpoint_contains'] as string[]) {
         expect(output).toContain(expectedLine);
       }
     });
@@ -2717,14 +2807,25 @@ describe('apcore Conformance Suite (TypeScript)', () => {
       const reloadMod = new ReloadModule(registry, emitter);
       const result = await reloadMod.execute(tc.action.input, null) as Record<string, unknown>;
 
-      expect(result['success']).toBe(true);
+      const expected = tc['expected'];
+      expect(result['success']).toBe(expected['call_success']);
       const reloadedModules = result['reloaded_modules'] as string[];
-      for (const expectedId of tc.expected.reloaded_modules as string[]) {
+      for (const expectedId of expected['reloaded_modules'] as string[]) {
         expect(reloadedModules).toContain(expectedId);
       }
-      for (const notReloadedId of tc.expected.not_reloaded as string[]) {
+      for (const notReloadedId of expected['not_reloaded'] as string[]) {
         expect(reloadedModules).not.toContain(notReloadedId);
+        // Not reloaded is not the same as unregistered — the module outside the
+        // path filter must still be there afterwards.
+        expect(registry.has(notReloadedId)).toBe(true);
       }
+      // NOT asserted: the fixture's ordering expectation (see the report note on
+      // this case). `_reloadWithPathFilter` sorts the matched ids
+      // lexicographically and never consults the dependency graph, unlike
+      // apcore-python's `_topo_order`, so there is no dependency ordering to
+      // observe here — and the fixture's three modules declare no dependencies
+      // on each other, so every permutation is a valid linearization anyway.
+      // Asserting anything about the order would pass whatever the SDK did.
     });
 
     // --- 7. reload_module_id_and_filter_conflict ---
@@ -2735,15 +2836,20 @@ describe('apcore Conformance Suite (TypeScript)', () => {
       const registry = new Registry();
       const emitter = new EventEmitter();
       const reloadMod = new ReloadModule(registry, emitter);
+      const expected = tc['expected'];
 
-      await expect(reloadMod.execute(tc.action.input, null)).rejects.toThrow(ModuleReloadConflictError);
-
+      let succeeded = false;
+      let thrown: any = null;
       try {
         await reloadMod.execute(tc.action.input, null);
-      } catch (err: any) {
-        expect(err.code).toBe(tc.expected.error_code);
-        expect(err.message).toContain(tc.expected.error_message_contains);
+        succeeded = true;
+      } catch (err) {
+        thrown = err;
       }
+      expect(succeeded).toBe(expected['call_success']);
+      expect(thrown).toBeInstanceOf(ModuleReloadConflictError);
+      expect(thrown.code).toBe(expected['error_code']);
+      expect(thrown.message).toContain(expected['error_message_contains']);
     });
 
     // --- 8. startup_fail_on_error_true_raises ---
@@ -2764,16 +2870,20 @@ describe('apcore Conformance Suite (TypeScript)', () => {
       const config = new Config({ sys_modules: { enabled: true, events: { enabled: true } } });
       const executor = new Executor({ registry: failingRegistry });
 
-      expect(() =>
-        registerSysModules(failingRegistry, executor, config, null, { failOnError: true }),
-      ).toThrow(SysModuleRegistrationError);
-
+      const expected = tc['expected'];
+      let raised = false;
+      let thrown: any = null;
       try {
         registerSysModules(failingRegistry, executor, config, null, { failOnError: true });
-      } catch (err: any) {
-        expect(err.code).toBe(tc.expected.error_code);
-        expect(err.message).toContain(tc.expected.error_includes_module_id);
+      } catch (err) {
+        raised = true;
+        thrown = err;
       }
+      expect(raised).toBe(expected['raises']);
+      expect(thrown).toBeInstanceOf(SysModuleRegistrationError);
+      expect(thrown.code).toBe(expected['error_code']);
+      // The operator has to be able to tell WHICH system module failed.
+      expect(thrown.message).toContain(expected['error_includes_module_id']);
     });
 
     // --- 9. startup_fail_on_error_false_continues ---
@@ -2794,21 +2904,64 @@ describe('apcore Conformance Suite (TypeScript)', () => {
       const config = new Config({ sys_modules: { enabled: true, events: { enabled: true } } });
       const executor = new Executor({ registry: failingRegistry });
 
-      // Must not throw
-      expect(() =>
-        registerSysModules(failingRegistry, executor, config, null, { failOnError: false }),
-      ).not.toThrow();
+      const expected = tc['expected'];
+      // The fixture names a log LEVEL, so the assertion has to be able to tell
+      // levels apart: the failure must reach the level it names and no other.
+      // Downgrading the failure to a warning is exactly the regression this
+      // catches, and it is invisible to a "did not throw" check.
+      const consoleForLevel: Record<string, 'error' | 'warn' | 'log'> = {
+        ERROR: 'error',
+        WARN: 'warn',
+        INFO: 'log',
+      };
+      const spies = {
+        error: vi.spyOn(console, 'error').mockImplementation(() => undefined),
+        warn: vi.spyOn(console, 'warn').mockImplementation(() => undefined),
+        log: vi.spyOn(console, 'log').mockImplementation(() => undefined),
+      };
+      let raised = false;
+      try {
+        try {
+          registerSysModules(failingRegistry, executor, config, null, { failOnError: false });
+        } catch {
+          raised = true;
+        }
+        const namingFailure = (level: 'error' | 'warn' | 'log'): string[] =>
+          spies[level].mock.calls
+            .map((c) => c.map((a) => String(a)).join(' '))
+            .filter((m) => m.includes(targetModuleId));
 
-      // Remaining modules (other than the failed one) should be registered
-      expect(tc.expected.remaining_modules_registered).toBe(true);
-      expect(failingRegistry.has('system.health.module')).toBe(true);
+        expect(raised).toBe(expected['raises']);
+        const declared = consoleForLevel[expected['log_level_on_failure'] as string];
+        expect(declared).toBeDefined();
+        expect(namingFailure(declared).length).toBeGreaterThan(0);
+        for (const level of ['error', 'warn', 'log'] as const) {
+          if (level !== declared) expect(namingFailure(level)).toEqual([]);
+        }
+      } finally {
+        for (const spy of Object.values(spies)) spy.mockRestore();
+      }
+
+      // Remaining modules (other than the failed one) are registered. This used
+      // to be `expect(tc.expected.remaining_modules_registered).toBe(true)` — a
+      // fixture-to-itself comparison — beside an ungated registry check.
+      if (expected['remaining_modules_registered']) {
+        expect(failingRegistry.has('system.health.module')).toBe(true);
+        expect(failingRegistry.has(targetModuleId)).toBe(false);
+      }
     });
 
-    // --- 10. rust_register_returns_result (TypeScript: skip language=rust) ---
+    // --- 10. rust_register_returns_result ---
+    // Out of scope for this SDK: the case is tagged language=rust and its
+    // expectations describe the shape of Rust's return type
+    // (Result / Ok / Err variants, no Option, no panic). TypeScript signals
+    // failure by throwing, so there is no return value to inspect and no
+    // honest TypeScript equivalent to invent — those keys belong to the Rust
+    // driver. The language tag is asserted so that removing it (i.e. making the
+    // case cross-language) surfaces here instead of silently staying unread.
     it('rust_register_returns_result', () => {
       const tc = sysHardeningFixture.test_cases.find((t: any) => t.id === 'rust_register_returns_result');
       expect(tc).toBeDefined();
-      // This case is Rust-specific; TypeScript uses throw/catch, not Result types
       expect(tc.language).toBe('rust');
     });
   });
@@ -3107,63 +3260,101 @@ describe('apcore Conformance Suite (TypeScript)', () => {
       return tokens[handle];
     }
 
-    function makeEchoExecutor(): { executor: Executor; moduleSeesExecutor: () => unknown } {
-      const registry = new Registry();
-      let seen: unknown = null;
-      registry.register('test.echo', new FunctionModule({
-        execute: (inputs, context) => {
-          seen = context.executor;
-          return { echoed: inputs };
-        },
-        moduleId: 'test.echo',
-        inputSchema: Type.Object({}, { additionalProperties: true }),
-        outputSchema: Type.Object({}, { additionalProperties: true }),
-        description: 'Echo with executor capture',
-      }));
-      const executor = new Executor({ registry });
-      return { executor, moduleSeesExecutor: () => seen };
+    // The v0.22.0 normative caller-input list. Pinned here so the
+    // "X is not a parameter" checks below cannot pass vacuously: if
+    // createParamNames() ever fails to parse the signature it returns
+    // something that does not equal this list, and the case goes red
+    // instead of silently finding no `executor` parameter in an empty array.
+    const NORMATIVE_CREATE_PARAMS = [
+      'identity',
+      'traceParent',
+      'cancelToken',
+      'data',
+      'services',
+      'globalDeadline',
+    ];
+
+    /**
+     * Parameter names declared by `Context.create`, read off the function
+     * source at runtime.
+     *
+     * `executor_is_not_a_parameter`, `caller_id_is_not_a_parameter` and
+     * `no_separate_tracestate_parameter` are *signature* contracts — the
+     * fixture's wording is "MUST NOT be a public Context.create() parameter".
+     * Passing a value positionally and watching where it lands only describes
+     * what slot 1 happens to do today; reading the parameter list is what goes
+     * red the moment someone re-adds the slot.
+     */
+    function createParamNames(): string[] {
+      const src = Context.create.toString();
+      const open = src.indexOf('(');
+      let depth = 0;
+      let close = -1;
+      for (let i = open; i < src.length; i++) {
+        if (src[i] === '(') depth += 1;
+        else if (src[i] === ')') {
+          depth -= 1;
+          if (depth === 0) {
+            close = i;
+            break;
+          }
+        }
+      }
+      if (open === -1 || close === -1) return [];
+      return src
+        .slice(open + 1, close)
+        .split(',')
+        .map((p) => p.split('=')[0].trim())
+        .filter((p) => p.length > 0);
     }
 
-    function makeSlowExecutor(): Executor {
+    /**
+     * Executor over every module id the fixture calls, recording the
+     * `context.executor` each invocation observes. The recording is what makes
+     * `executor_bound_on_first_call` / `executor_identity_stable` assertable:
+     * TypeScript's Context is copy-on-write, so the caller-held reference never
+     * observes the binding (the fixture calls this out as conforming) and the
+     * module's view is the only place the bound executor is visible.
+     */
+    function makeEchoExecutor(): {
+      executor: Executor;
+      executorsSeen: () => unknown[];
+    } {
       const registry = new Registry();
-      registry.register('test.target', new FunctionModule({
-        execute: () => ({ ok: true }),
-        moduleId: 'test.target',
-        inputSchema: Type.Object({}, { additionalProperties: true }),
-        outputSchema: Type.Object({ ok: Type.Boolean() }),
-        description: 'Target',
-      }));
-      registry.register('local.target', new FunctionModule({
-        execute: () => ({ ok: true }),
-        moduleId: 'local.target',
-        inputSchema: Type.Object({}, { additionalProperties: true }),
-        outputSchema: Type.Object({ ok: Type.Boolean() }),
-        description: 'Local target',
-      }));
-      registry.register('local.slow', new FunctionModule({
-        execute: () => ({ ok: true }),
-        moduleId: 'local.slow',
-        inputSchema: Type.Object({}, { additionalProperties: true }),
-        outputSchema: Type.Object({ ok: Type.Boolean() }),
-        description: 'Local slow',
-      }));
-      return new Executor({ registry });
+      const seen: unknown[] = [];
+      for (const moduleId of ['test.echo', 'test.target', 'local.target', 'local.slow']) {
+        registry.register(
+          moduleId,
+          new FunctionModule({
+            execute: (inputs, context) => {
+              seen.push(context.executor);
+              return { ok: true, echoed: inputs };
+            },
+            moduleId,
+            inputSchema: Type.Object({}, { additionalProperties: true }),
+            outputSchema: Type.Object({}, { additionalProperties: true }),
+            description: 'Echo with executor capture',
+          }),
+        );
+      }
+      return { executor: new Executor({ registry }), executorsSeen: () => [...seen] };
     }
 
     fixture.test_cases.forEach((tc: any) => {
       it(tc.id, async () => {
+        const expected = tc['expected'] ?? {};
         switch (tc.id) {
           case 'create_minimal_all_defaults': {
             const ctx = Context.create();
-            expect(ctx.traceId).toMatch(new RegExp(tc.expected.trace_id_pattern));
-            expect(ctx.identity).toBeNull();
-            expect(ctx.executor).toBeNull();
-            expect(ctx.cancelToken).toBeNull();
-            expect(ctx.services).toBeNull();
-            expect(ctx.globalDeadline).toBeNull();
-            expect(ctx.callerId).toBeNull();
-            expect(ctx.callChain).toEqual([]);
-            expect(Object.keys(ctx.data)).toEqual([]);
+            expect(ctx.traceId).toMatch(new RegExp(expected['trace_id_pattern']));
+            expect(ctx.identity).toBe(expected['identity']);
+            expect(ctx.executor).toBe(expected['executor']);
+            expect(ctx.cancelToken).toBe(expected['cancel_token']);
+            expect(ctx.services).toBe(expected['services']);
+            expect(ctx.globalDeadline).toBe(expected['global_deadline']);
+            expect(ctx.callerId).toBe(expected['caller_id']);
+            expect(ctx.callChain).toEqual(expected['call_chain']);
+            expect(Object.keys(ctx.data).length === 0).toBe(expected['data_empty']);
             break;
           }
           case 'create_with_identity_only': {
@@ -3173,18 +3364,18 @@ describe('apcore Conformance Suite (TypeScript)', () => {
               tc.input.identity.roles,
             );
             const ctx = Context.create(id);
-            expect(ctx.traceId).toMatch(new RegExp(tc.expected.trace_id_pattern));
-            expect(ctx.identity?.id).toBe(tc.expected.identity_id);
-            expect(ctx.executor).toBeNull();
-            expect(ctx.cancelToken).toBeNull();
+            expect(ctx.traceId).toMatch(new RegExp(expected['trace_id_pattern']));
+            expect(ctx.identity?.id).toBe(expected['identity_id']);
+            expect(ctx.executor).toBe(expected['executor']);
+            expect(ctx.cancelToken).toBe(expected['cancel_token']);
             break;
           }
           case 'create_with_cancel_token': {
             const token = getToken(tc.input.cancel_token_handle);
             const ctx = Context.create(undefined, undefined, token);
-            expect(ctx.cancelToken).not.toBeNull();
-            expect(ctx.cancelToken).toBe(token);
-            expect(ctx.executor).toBeNull();
+            expect(ctx.cancelToken !== null).toBe(expected['cancel_token_bound']);
+            expect(ctx.cancelToken === token).toBe(expected['cancel_token_matches_input']);
+            expect(ctx.executor).toBe(expected['executor_at_create_time']);
             break;
           }
           case 'create_with_global_deadline': {
@@ -3192,54 +3383,93 @@ describe('apcore Conformance Suite (TypeScript)', () => {
               undefined, undefined, undefined, undefined, undefined,
               tc.input.global_deadline as number,
             );
-            expect(ctx.globalDeadline).toBe(tc.expected.global_deadline);
-            expect(ctx.executor).toBeNull();
+            expect(ctx.globalDeadline).toBe(expected['global_deadline']);
+            expect(ctx.executor).toBe(expected['executor']);
             break;
           }
           case 'create_rejects_executor_input': {
-            // TS enforces by signature: no `executor` parameter exists on
-            // Context.create(). Verify by reading the function's parameter
-            // count and confirming no executor slot is present.
-            // (TS removes the parameter entirely; this is the strongest
-            // possible form of the contract.)
-            expect(typeof Context.create).toBe('function');
-            // The slot-1 type is `Identity | null`, not `Executor`. We can't
-            // introspect that at runtime, but if a caller passes an object
-            // shaped like an Executor, the Context.identity ends up being
-            // that object (incorrect use) — Context.executor stays null.
+            const params = createParamNames();
+            expect(params).toEqual(NORMATIVE_CREATE_PARAMS);
+            if (expected['executor_is_not_a_parameter']) {
+              expect(params.filter((p) => /executor/i.test(p))).toEqual([]);
+            }
+            // Belt and braces: an Executor-shaped object pushed into the only
+            // object-typed leading slot lands on `identity`, never on
+            // `executor`, so "pass executor at construction" stays impossible
+            // through the public API.
             const fakeExecutor = { name: 'fake' };
             const ctx = Context.create(fakeExecutor as any);
             expect(ctx.executor).toBeNull();
             break;
           }
           case 'create_rejects_caller_id_input': {
-            // No caller_id slot exists. Top-level Context.create() always
-            // yields callerId === null regardless of caller intent.
+            const params = createParamNames();
+            expect(params).toEqual(NORMATIVE_CREATE_PARAMS);
+            if (expected['caller_id_is_not_a_parameter']) {
+              expect(params.filter((p) => /caller/i.test(p))).toEqual([]);
+            }
             const ctx = Context.create();
-            expect(ctx.callerId).toBeNull();
+            expect(ctx.callerId).toBe(expected['caller_id_after_create']);
             break;
           }
           case 'executor_binds_on_first_call_local': {
-            const { executor, moduleSeesExecutor } = makeEchoExecutor();
+            const { executor, executorsSeen } = makeEchoExecutor();
             const ctx = Context.create();
-            expect(ctx.executor).toBeNull();
-            await executor.call('test.echo', {}, ctx);
-            // Module observed the bound executor on its child context.
-            expect(moduleSeesExecutor()).toBe(executor);
+            expect(ctx.executor).toBe(expected['executor_at_create_time']);
+
+            let bindingError: unknown = null;
+            let completed = false;
+            try {
+              await executor.call(tc.input.call_module, {}, ctx);
+              completed = true;
+            } catch (e) {
+              bindingError = e;
+            }
+            // Binding first, then completion: a binding that starts refusing a
+            // fresh Context trips `raised_binding_error`, while a call that dies
+            // for any other reason trips `call_succeeded`. Asserting completion
+            // first would have collapsed both regressions onto one expectation.
+            expect(bindingError instanceof ContextBindingError).toBe(
+              expected['raised_binding_error'],
+            );
+            expect(completed).toBe(expected['call_succeeded']);
+            // The binding actually happened: the module saw the executor.
+            expect(executorsSeen()).toEqual([executor]);
             break;
           }
           case 'executor_binds_idempotent_same_instance': {
-            const { executor } = makeEchoExecutor();
+            const { executor, executorsSeen } = makeEchoExecutor();
             const ctx = Context.create();
-            for (const mid of tc.input.calls as string[]) {
-              await executor.call(mid, {}, ctx);
+            const calls = tc.input.calls as string[];
+
+            let raised: unknown = null;
+            for (const mid of calls) {
+              try {
+                await executor.call(mid, {}, ctx);
+              } catch (e) {
+                raised = e;
+                break;
+              }
             }
-            // No throw => rebind on same instance is a noop.
+            const seen = executorsSeen();
+            if (expected['rebind_noop']) {
+              // Reusing one Context across N calls on the same Executor is a
+              // no-op from the 2nd call on: every call runs and none raises.
+              // Asserted before `raised_error` so a rebind that starts throwing
+              // is attributed to this expectation rather than to that one.
+              expect(seen).toHaveLength(calls.length);
+              expect(raised).toBeNull();
+            }
+            expect(raised !== null).toBe(expected['raised_error']);
+            if (expected['executor_identity_stable'] && tc.input.same_executor) {
+              expect(new Set(seen).size).toBe(1);
+              expect(seen[0]).toBe(executor);
+            }
             break;
           }
           case 'executor_rejects_cross_executor_rebind': {
-            const a = makeSlowExecutor();
-            const b = makeSlowExecutor();
+            const { executor: a } = makeEchoExecutor();
+            const { executor: b } = makeEchoExecutor();
             // Bind to A using the internal helper, then try B — TS chooses
             // the "raise ContextBindingError" branch of expected_one_of.
             const ctx = Context.create()._withExecutor(a);
@@ -3247,101 +3477,88 @@ describe('apcore Conformance Suite (TypeScript)', () => {
             break;
           }
           case 'child_propagates_executor': {
-            const a = makeSlowExecutor();
-            const parent = Context.create()._withExecutor(a);
+            const { executor: a } = makeEchoExecutor();
+            const root = tc.input.bind_executor
+              ? Context.create()._withExecutor(a)
+              : Context.create();
+            // The parent is given a non-empty call_chain on purpose:
+            // "caller_id from the parent's chain tip" is only distinguishable
+            // from "caller_id copied from the parent" when the two differ.
+            const parent = root.child('orchestrator.main');
             const child = parent.child(tc.input.create_child_module_id);
-            expect(child.executor).toBe(parent.executor);
-            expect(child.callChain[child.callChain.length - 1]).toBe(
-              tc.input.create_child_module_id,
+
+            expect(child.executor === parent.executor).toBe(
+              expected['child_executor_matches_parent'],
             );
+            if (expected['child_caller_id_from_parent_chain_tip']) {
+              expect(child.callerId).toBe(parent.callChain[parent.callChain.length - 1]);
+              expect(child.callerId).not.toBe(parent.callerId);
+            }
+            if (expected['child_call_chain_appends_target']) {
+              expect(child.callChain).toEqual([
+                ...parent.callChain,
+                tc.input.create_child_module_id,
+              ]);
+            }
             break;
           }
           case 'child_propagates_cancel_token': {
             const token = getToken(tc.input.create_with_cancel_token);
             const parent = Context.create(undefined, undefined, token);
             const child = parent.child(tc.input.create_child_module_id);
-            expect(child.cancelToken).not.toBeNull();
-            expect(child.cancelToken).toBe(parent.cancelToken);
+            expect(child.cancelToken !== null).toBe(expected['child_cancel_token_bound']);
+            expect(child.cancelToken === parent.cancelToken).toBe(
+              expected['child_cancel_token_matches_parent'],
+            );
             break;
           }
           case 'deserialize_then_call_binds_local_executor': {
-            const serialized = { ...tc.input.serialized_context };
-            const restored = Context.fromJSON(serialized);
+            const restored = Context.fromJSON({ ...tc.input.serialized_context });
             // §5.7 invariants: stripped fields are null after deserialize.
-            expect(restored.executor).toBeNull();
-            expect(restored.cancelToken).toBeNull();
-            expect(restored.services).toBeNull();
-            expect(restored.globalDeadline).toBeNull();
-            expect(restored.callerId).toBe(tc.expected.caller_id_preserved);
+            expect(restored.executor).toBe(expected['executor_after_deserialize']);
+            expect(restored.cancelToken).toBe(expected['cancel_token_after_deserialize']);
+            expect(restored.services).toBe(expected['services_after_deserialize']);
+            expect(restored.globalDeadline).toBe(expected['global_deadline_after_deserialize']);
+            expect(restored.callerId).toBe(expected['caller_id_preserved']);
 
-            const { executor, moduleSeesExecutor } = makeEchoExecutor();
-            // Use the existing test.echo registration; the fixture's
-            // call_module ("local.target") matters semantically but for the
-            // binding contract we just need any registered module.
-            await executor.call('test.echo', {}, restored);
-            expect(moduleSeesExecutor()).toBe(executor);
-            break;
-          }
-          case 'distributed_cancel_token_synthesized_locally': {
-            // The TS SDK does NOT yet synthesize a fresh local CancelToken
-            // inside the pipeline (no remote-receive entry point exists in
-            // this SDK). Verify the invariant we DO enforce: a deserialized
-            // Context has cancelToken === null, and any local cancel
-            // semantics rely on the caller attaching a fresh token.
-            const serialized = {
-              _context_version: 1,
-              trace_id: '4bf92f3577b34da6a3ce929d0e0e4736',
-              caller_id: null,
-              call_chain: [],
-              identity: null,
-              data: {},
-            };
-            const restored = Context.fromJSON(serialized);
-            expect(restored.cancelToken).toBeNull();
-            break;
-          }
-          case 'distributed_global_deadline_recomputed_locally': {
-            // Same caveat as cancel_token: the TS Executor recomputes
-            // global_deadline from its own config on every entry (see
-            // BuiltinContextCreation in src/builtin-steps.ts). Verify the
-            // serialization-level invariant: a deserialized Context has
-            // globalDeadline === null.
-            const serialized = {
-              _context_version: 1,
-              trace_id: '4bf92f3577b34da6a3ce929d0e0e4736',
-              caller_id: null,
-              call_chain: [],
-              identity: null,
-              data: {},
-            };
-            const restored = Context.fromJSON(serialized);
-            expect(restored.globalDeadline).toBeNull();
+            const { executor, executorsSeen } = makeEchoExecutor();
+            await executor.call(tc.input.call_module, {}, restored);
+            if (expected['executor_bound_on_first_call']) {
+              // The receiving node's Executor bound itself to the arriving
+              // Context under the same rule as a locally created one.
+              expect(executorsSeen()).toEqual([executor]);
+            }
             break;
           }
           case 'distributed_cancel_token_post_deserialize_null': {
-            const serialized = {
-              _context_version: 1,
-              trace_id: '4bf92f3577b34da6a3ce929d0e0e4736',
-              caller_id: null,
-              call_chain: [],
-              identity: null,
-              data: {},
-            };
-            const restored = Context.fromJSON(serialized);
-            expect(restored.cancelToken).toBeNull();
+            // Serialize a Context that DOES hold a token: the invariant is that
+            // a token cannot ride across a process boundary, so the outbound
+            // wire form must not carry it in the first place. Round-tripping a
+            // hand-written payload with no token in it asserts nothing.
+            const withToken = Context.create(undefined, undefined, new CancelToken());
+            const wire = withToken.toJSON();
+            if (expected['no_in_context_token_rides_across_processes']) {
+              expect(Object.keys(wire).filter((k) => /cancel|token/i.test(k))).toEqual([]);
+              expect(JSON.stringify(wire)).not.toContain('CancelToken');
+            }
+            const restored = Context.fromJSON(wire);
+            expect(restored.cancelToken).toBe(expected['cancel_token_after_deserialize']);
             break;
           }
           case 'distributed_global_deadline_post_deserialize_null': {
-            const serialized = {
-              _context_version: 1,
-              trace_id: '4bf92f3577b34da6a3ce929d0e0e4736',
-              caller_id: null,
-              call_chain: [],
-              identity: null,
-              data: {},
-            };
-            const restored = Context.fromJSON(serialized);
-            expect(restored.globalDeadline).toBeNull();
+            // Same shape: serialize a Context that HAS a global_deadline and
+            // assert the field never reaches the wire, so a remote deadline
+            // cannot ride in on it.
+            const withDeadline = Context.create(
+              undefined, undefined, undefined, undefined, undefined, 1234567890.5,
+            );
+            const wire = withDeadline.toJSON();
+            if (expected['no_remote_deadline_rides_via_global_deadline_field']) {
+              expect(Object.keys(wire).filter((k) => /deadline/i.test(k))).toEqual([]);
+              expect(JSON.stringify(wire)).not.toContain('1234567890.5');
+            }
+            const restored = Context.fromJSON(wire);
+            expect(restored.globalDeadline).toBe(expected['global_deadline_after_deserialize']);
             break;
           }
           case 'tracestate_carried_inside_traceparent': {
@@ -3353,10 +3570,17 @@ describe('apcore Conformance Suite (TypeScript)', () => {
               tracestate: tc.input.trace_parent.tracestate,
             };
             const ctx = Context.create(null, tp as any);
-            expect(ctx.traceId).toBe(tc.expected.trace_id);
-            // Tracestate is preserved via the two scalar keys (cross-language
-            // parity: `_apcore.trace.flags` + `_apcore.trace.state`).
-            expect(ctx.data['_apcore.trace.state']).toEqual(tp.tracestate);
+            expect(ctx.traceId).toBe(expected['trace_id']);
+            if (expected['tracestate_preserved']) {
+              // Tracestate is preserved via the two scalar keys (cross-language
+              // parity: `_apcore.trace.flags` + `_apcore.trace.state`).
+              expect(ctx.data['_apcore.trace.state']).toEqual(tp.tracestate);
+            }
+            if (expected['no_separate_tracestate_parameter']) {
+              const params = createParamNames();
+              expect(params).toEqual(NORMATIVE_CREATE_PARAMS);
+              expect(params.filter((p) => /trace_?state/i.test(p))).toEqual([]);
+            }
             break;
           }
           default:

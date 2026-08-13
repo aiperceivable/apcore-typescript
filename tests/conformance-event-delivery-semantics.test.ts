@@ -11,7 +11,7 @@
  * the DLQ event itself is never retried.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { EventEmitter, createEvent } from '../src/events/emitter.js';
@@ -62,6 +62,8 @@ class CountingSubscriber implements EventSubscriber {
   readonly subscriberType: string;
   readonly retry: RetryConfig;
   readonly eventPattern = '*';
+  /** Monotonic-clock timestamp of every delivery attempt, for backoff checks. */
+  readonly attemptTimes: number[] = [];
   private readonly _failAttempts: 'all' | number[];
   private _calls = 0;
 
@@ -83,6 +85,7 @@ class CountingSubscriber implements EventSubscriber {
 
   async onEvent(_event: ApCoreEvent): Promise<void> {
     this._calls += 1;
+    this.attemptTimes.push(performance.now());
     if (this._failAttempts === 'all') {
       throw new Error(`Simulated permanent failure (attempt ${this._calls})`);
     }
@@ -127,6 +130,26 @@ describe('Conformance: event_delivery_semantics.json', () => {
 
     expect(sub.callCount).toBe(expected['attempt_count']);
     expect(dlq.received.length > 0).toBe(expected['dlq_event_emitted']);
+
+    // Exponential backoff between attempts. Wall clock is the only place the
+    // delay is observable, so the bounds are one-sided-tight: a timer never
+    // fires early, so `>= declared` is exact, while the upper bound is loose
+    // enough to survive a busy CI box. Dropping the backoff entirely collapses
+    // both gaps to ~0; making it constant collapses the ratio.
+    const declaredDelays = expected['backoff_delays_ms'] as number[];
+    const gaps = sub.attemptTimes
+      .slice(1)
+      .map((t, i) => t - sub.attemptTimes[i]);
+    expect(gaps).toHaveLength(declaredDelays.length);
+    declaredDelays.forEach((declared, i) => {
+      // 1ms of slack: setTimeout resolution is coarser than performance.now().
+      expect(gaps[i]).toBeGreaterThanOrEqual(declared - 1);
+      expect(gaps[i]).toBeLessThan(declared + 500);
+    });
+    if (declaredDelays.length > 1) {
+      const multiplier = setup['retry']['backoff_multiplier'] as number;
+      expect(gaps[1] / gaps[0]).toBeGreaterThan(multiplier * 0.6);
+    }
   });
 
   it('permanent_failure_emits_dlq_event', async () => {
@@ -199,34 +222,86 @@ describe('Conformance: event_delivery_semantics.json', () => {
       },
     });
 
-    const trigger = tc['trigger']['event'];
-    emitter.emit(createEvent(trigger['name'], null, 'info', trigger['payload'] ?? {}));
-    await emitter.flush();
+    // "MUST log at ERROR and discard" — the log is the only trace a discarded
+    // DLQ delivery leaves, so it is part of the contract, not decoration.
+    const errorLog = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    let errorLines: string[] = [];
+    try {
+      const trigger = tc['trigger']['event'];
+      emitter.emit(createEvent(trigger['name'], null, 'info', trigger['payload'] ?? {}));
+      await emitter.flush();
+      // Snapshot before restoring: mockRestore() also clears the recorded calls.
+      errorLines = errorLog.mock.calls.map((c) => c.map((a) => String(a)).join(' '));
+    } finally {
+      errorLog.mockRestore();
+    }
 
     expect(primary.callCount).toBe(expected['primary_attempt_count']);
     expect(recorder.received.length > 0).toBe(expected['dlq_event_emitted']);
     // The DLQ event is delivered ONCE regardless of the DLQ subscriber's own
     // retry config — otherwise a broken DLQ sink becomes an infinite loop.
     expect(brokenDlqCalls).toBe(expected['dlq_subscriber_attempt_count']);
-    // …and its failure must not produce a second-order DLQ event.
+
+    const dlqFailureLogs = errorLines.filter((m) => m.includes('DLQ subscriber'));
+    expect(dlqFailureLogs).toHaveLength(expected['error_log_count']);
+
+    // …and the failure must not produce a second-order DLQ event.
     const secondOrder = recorder.received.filter(
       (e) => String(e.data['subscriber_id'] ?? '') === dlqCfg['id'],
     );
-    expect(secondOrder).toHaveLength(0);
+    expect(secondOrder.length > 0).toBe(expected['second_order_dlq_event_emitted']);
   });
 
-  it('subscriber_id_sdk_generated_when_omitted', () => {
+  it('subscriber_id_sdk_generated_when_omitted', async () => {
     const tc = caseById('subscriber_id_sdk_generated_when_omitted');
+    const setup = tc['setup'];
     const expected = tc['expected'];
+    const trigger = tc['trigger']['event'];
 
-    const sub1 = new StdoutSubscriber();
-    const sub2 = new StdoutSubscriber();
+    // The contract is that the generated id is used "consistently across all
+    // DLQ events emitted by that subscriber", so the ids have to be read off
+    // the DLQ events — reading them off the constructors asserts the id
+    // generator and nothing about delivery.
+    const emitter = new EventEmitter();
+    const recorder = new DlqRecorder();
+    emitter.subscribe(recorder);
 
+    const subs = (setup['subscribers'] as Array<Record<string, any>>).map((cfg) => {
+      const sub = new StdoutSubscriber();
+      // The built-in `stdout` factory drops the config's `retry` block (see the
+      // report), so the fixture's policy is attached directly to the instance —
+      // which is where EventEmitter reads it from.
+      Object.assign(sub, { retry: buildRetry(cfg['retry']) });
+      return sub;
+    });
+    for (const sub of subs) emitter.subscribe(sub);
+
+    // Make the real sink fail, and only for this event: StdoutSubscriber
+    // writes through process.stdout, so that write is the failure point.
+    const originalWrite = process.stdout.write.bind(process.stdout);
+    const writeSpy = vi
+      .spyOn(process.stdout, 'write')
+      .mockImplementation((chunk: any, ...rest: any[]): boolean => {
+        if (typeof chunk === 'string' && chunk.includes(trigger['name'])) {
+          throw new Error('stdout sink unavailable');
+        }
+        return (originalWrite as any)(chunk, ...rest);
+      });
+    try {
+      emitter.emit(createEvent(trigger['name'], null, 'info', trigger['payload'] ?? {}));
+      await emitter.flush();
+    } finally {
+      writeSpy.mockRestore();
+    }
+
+    expect(recorder.received).toHaveLength(expected['dlq_events_emitted']);
+    const reportedIds = recorder.received.map((e) => String(e.data['subscriber_id']));
     if (expected['subscriber_ids_distinct']) {
-      expect(sub1.subscriberId).not.toBe(sub2.subscriberId);
+      expect(new Set(reportedIds).size).toBe(reportedIds.length);
     }
     const pattern = new RegExp(expected['subscriber_ids_pattern']);
-    expect(sub1.subscriberId).toMatch(pattern);
-    expect(sub2.subscriberId).toMatch(pattern);
+    for (const id of reportedIds) expect(id).toMatch(pattern);
+    // Same id the subscriber carries — the DLQ event does not mint a new one.
+    expect(reportedIds.sort()).toEqual(subs.map((s) => s.subscriberId).sort());
   });
 });
