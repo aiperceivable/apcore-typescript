@@ -21,6 +21,7 @@ import {
 import { jsonSchemaToTypeBox } from './schema/loader-pure.js';
 import { SchemaValidator } from './schema/validator.js';
 import { DEFAULTS, getDefault } from './config-defaults.js';
+import { collectUndeclaredFrameworkKeys } from './config-key-surface.js';
 
 // Re-exported so existing `import { DEFAULTS, getDefault } from './config.js'`
 // paths keep working unchanged.
@@ -1080,6 +1081,12 @@ export class Config {
       }
     }
 
+    // 3. reject_unknown_framework_keys (§9.10). Step 1 of Algorithm A12-NS runs
+    //    it in legacy mode too, where the whole document *is* the `apcore`
+    //    namespace — the closedness of the schema sections does not depend on
+    //    which of the two file layouts the operator picked.
+    errors.push(...this._undeclaredFrameworkKeyErrors(this._data));
+
     if (errors.length > 0) {
       throw new ConfigError(
         `Configuration validation failed (${errors.length} error(s)):\n` +
@@ -1121,28 +1128,76 @@ export class Config {
       errors.push(...issues);
     }
 
+    // §9.10 step 2: reject_unknown_framework_keys over the `apcore` namespace.
+    if (apcore !== undefined && apcore !== null) {
+      errors.push(...this._undeclaredFrameworkKeyErrors(apcore as Record<string, unknown>));
+    }
+
+    // Strict mode: reject unknown namespaces (§9.10 step 3b).
+    //
+    // Collected rather than thrown on sight, and collected BEFORE the single
+    // throw below rather than after it, per §9.10 step 4 ("If any errors
+    // collected → throw with all errors"). Failing here on the first unknown
+    // namespace, as this did, costs the operator one restart per typo and hides
+    // every other problem in the file behind whichever one the map happened to
+    // yield first.
+    if (this._strictModeEnabled()) {
+      const knownKeys = new Set([...Array.from(_globalNsRegistry.keys()), 'apcore', '_config']);
+      for (const key of Object.keys(this._data)) {
+        if (!knownKeys.has(key)) {
+          errors.push(`Unknown namespace '${key}' in strict mode`);
+        }
+      }
+    }
+
     if (errors.length > 0) {
       throw new ConfigError(
         `Configuration validation failed (${errors.length} error(s)):\n` +
           errors.map((e) => `  - ${e}`).join('\n'),
       );
     }
+  }
 
-    // Strict mode: reject unknown namespaces
-    const configMeta = this._data['_config'];
-    const isStrict =
-      configMeta !== null &&
-      typeof configMeta === 'object' &&
-      (configMeta as Record<string, unknown>)['strict'] === true;
+  /**
+   * Whether `_config.strict` is enabled (PROTOCOL_SPEC §9.6.3).
+   *
+   * Read from `this._data` so it works in both modes: `_config` is a top-level
+   * key of the document in namespace mode and of the legacy document alike.
+   */
+  private _strictModeEnabled(): boolean {
+    const meta = this._data['_config'];
+    return (
+      meta !== null &&
+      typeof meta === 'object' &&
+      (meta as Record<string, unknown>)['strict'] === true
+    );
+  }
 
-    if (isStrict) {
-      const knownKeys = new Set([...Array.from(_globalNsRegistry.keys()), 'apcore', '_config']);
-      for (const key of Object.keys(this._data)) {
-        if (!knownKeys.has(key)) {
-          throw new ConfigError(`Unknown namespace '${key}' in strict mode`);
-        }
-      }
-    }
+  /**
+   * `reject_unknown_framework_keys(apcoreData, meta_config)` — PROTOCOL_SPEC §9.10.
+   *
+   * Every framework section in `schemas/apcore-config.schema.json` is
+   * `additionalProperties: false`. That closedness is enforced in two tiers:
+   *
+   * - **`strict` absent or `false` (the default).** Step 1 returns immediately.
+   *   The unknown key stays in the tree and stays readable through
+   *   {@link Config.get}; it is never pruned. "The operator wrote it and it
+   *   vanished" is indistinguishable from "the operator never wrote it", so
+   *   discarding it is worse than keeping it.
+   * - **`strict: true`.** Every offending key is reported, in one
+   *   `CONFIG_INVALID`, so one restart shows the whole problem.
+   *
+   * `allow_unknown` deliberately does not participate. §9.6.3 defines it for
+   * unknown top-level *namespaces*; stretching one field across two
+   * granularities would make its meaning depend on where it is read.
+   *
+   * @returns The error strings to accumulate — empty unless strict is on.
+   */
+  private _undeclaredFrameworkKeyErrors(apcoreData: Record<string, unknown>): string[] {
+    if (!this._strictModeEnabled()) return [];
+    return collectUndeclaredFrameworkKeys(apcoreData).map(
+      (key) => `Unknown key '${key}' (strict mode enabled)`,
+    );
   }
 
   /**

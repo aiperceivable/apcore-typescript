@@ -227,16 +227,12 @@ export {
   CircuitBreakerMiddleware,
   CircuitBreakerState,
   CTX_CIRCUIT_STATE,
-  CTX_TRACING_SPAN_ID,
   validateContextKey,
   isAsyncHandler,
 } from '../middleware/index.js';
 export type {
   RetryConfig,
   CircuitBreakerOptions,
-  OtelTracer,
-  OtelSpan,
-  TracingMiddlewareOptions,
   ContextKeyWriter,
   ContextKeyValidation,
 } from '../middleware/index.js';

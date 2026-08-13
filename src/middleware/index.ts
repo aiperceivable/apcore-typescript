@@ -14,7 +14,5 @@ export {
   CTX_CIRCUIT_STATE,
 } from './circuit-breaker.js';
 export type { CircuitBreakerOptions } from './circuit-breaker.js';
-export { TracingMiddleware, CTX_TRACING_SPAN_ID } from './tracing.js';
-export type { OtelTracer, OtelSpan, TracingMiddlewareOptions } from './tracing.js';
 export { validateContextKey, isAsyncHandler } from './context-namespace.js';
 export type { ContextKeyWriter, ContextKeyValidation } from './context-namespace.js';

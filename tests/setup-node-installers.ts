@@ -10,6 +10,5 @@
  */
 
 import '../src/acl-file.js';
-import '../src/middleware/tracing-otel-default.js';
 import '../src/sys-modules/overrides-file.js';
 import '../src/sys-modules/install.js';

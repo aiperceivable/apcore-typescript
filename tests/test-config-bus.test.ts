@@ -682,8 +682,15 @@ _config:
 unknown_namespace:
   foo: bar
 `);
-    expect(() => Config.load(yamlPath, { validate: true }))
-      .toThrow(ConfigError);
+    // CORRECTED: this asserted only that *something* threw. §9.10 step 4 now
+    // collects the unknown-namespace error with every other validation error
+    // and raises once, so the message is a `Configuration validation failed
+    // (N error(s))` list rather than the bare sentence it used to be. A
+    // raise-only assertion is satisfied either way — and would also have been
+    // satisfied by a strict mode that rejected the file for some unrelated
+    // reason — so it now asserts that the offending namespace is actually named.
+    expect(() => Config.load(yamlPath, { validate: true })).toThrow(ConfigError);
+    expect(() => Config.load(yamlPath, { validate: true })).toThrow(/unknown_namespace/);
   });
 
   it('does not throw for known namespaces in strict mode', () => {

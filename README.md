@@ -24,7 +24,7 @@ apcore is an AI-Perceivable module standard that makes every interface naturally
 - **Binding loader** — YAML-based module registration for no-code integration
 - **Access control (ACL)** — Pattern-based rules with identity types, roles, and call-depth conditions
 - **Approval system** — Pluggable approval gate in the executor pipeline with sync and async (polling) flows, built-in handlers, and tracing integration
-- **Middleware** — Onion-model middleware with before/after/onError hooks and error recovery; built-in `CircuitBreakerMiddleware` (CLOSED/OPEN/HALF_OPEN) and OTel-compatible `TracingMiddleware`
+- **Middleware** — Onion-model middleware with before/after/onError hooks and error recovery; built-in `CircuitBreakerMiddleware` (CLOSED/OPEN/HALF_OPEN); tracing is provided by the observability `TracingMiddleware`
 - **Observability** — Tracing (spans + `BatchSpanProcessor` + exporters), metrics (counters + histograms + Prometheus export with `/metrics`/`/healthz`/`/readyz`), structured logging with `RedactionConfig`
 - **System modules** — Built-in `system.*` modules for AI bidirectional introspection: health, manifest, usage, and runtime control (`update_config`, `reload_module`, `toggle_feature`). Audit trail via `AuditStore`, config persistence via `overridesPath`, usage metrics in Prometheus, bulk reload via `path_filter` glob
 - **Event system** — `EventEmitter` with subscriber-level `CircuitBreakerWrapper`, built-in `FileSubscriber`, `StdoutSubscriber`, `FilterSubscriber`, and pluggable custom types
@@ -198,7 +198,7 @@ const result = await executor.call('example.greet', { name: 'World' });
 | `ExecutionPolicy` / `PolicyRule` | Execution-time governance overrides (#76) — force/exempt approval by ID pattern, `gateDestructive`, `strict` fail-closed |
 | `Middleware` | Pipeline hooks — before/after/onError interception |
 | `CircuitBreakerMiddleware` | Per-(module, caller) circuit breaker — CLOSED/OPEN/HALF_OPEN with configurable threshold and cooldown |
-| `TracingMiddleware` | OTel-compatible span tracing — accepts any `OtelTracer`/`OtelSpan` without runtime `@opentelemetry/*` dependency |
+| `TracingMiddleware` | Span tracing — `apcore.module.execute` spans kept as a stack in `_apcore.mw.tracing.spans` with `parent_span_id` links; self-contained, no runtime `@opentelemetry/*` dependency |
 | `EventEmitter` | Event system — subscribe, emit, flush |
 | `CircuitBreakerWrapper` | Subscriber-level circuit breaker — protects `EventEmitter` subscribers from cascading failures |
 | `AsyncTaskManager` | Background task execution — injectable store, retry with backoff, opt-in reaper |

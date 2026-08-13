@@ -13,12 +13,16 @@
  * missing Rust default table that resolved 15 documented keys to null. None was
  * findable by any existing test.
  */
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
+import yaml from 'js-yaml';
 
-import { CONSTRAINTS } from '../src/config.js';
+import { Config, CONSTRAINTS } from '../src/config.js';
 import { DEFAULTS } from '../src/config-defaults.js';
+import { FRAMEWORK_CONFIG_KEYS } from '../src/config-key-surface.js';
+import { ConfigError } from '../src/errors.js';
 
 function findFixturesRoot(): string {
   const envPath = process.env.APCORE_SPEC_REPO;
@@ -40,8 +44,16 @@ interface GovernanceFixture {
   allowed_keys: string[];
   canonical_defaults: Record<string, unknown>;
   canonical_sources: string[];
-  driver_contract: { sources: string };
-  test_cases: Array<{ id: string; expected: Record<string, unknown> }>;
+  driver_contract: {
+    sources: string;
+    strict_enumerates_every_key: string;
+    default_tier_must_be_asserted_by_reading_it_back: string;
+  };
+  test_cases: Array<{
+    id: string;
+    expected: Record<string, unknown>;
+    config?: Record<string, unknown>;
+  }>;
 }
 
 const fixture: GovernanceFixture = JSON.parse(
@@ -72,10 +84,44 @@ const constraintKeys = Object.keys(CONSTRAINTS);
 /** The case's own `expected`, so the empty lists come from the fixture rather
  * than from a literal typed twice into this file. */
 function expectedFor(caseId: string): Record<string, unknown> {
+  return caseFor(caseId).expected;
+}
+
+function caseFor(caseId: string): GovernanceFixture['test_cases'][number] {
   const found = (fixture.test_cases ?? []).find((c) => c.id === caseId);
   if (!found) throw new Error(`Fixture case '${caseId}' not found`);
-  return found.expected;
+  return found;
 }
+
+/** Expand a case's flat `{ "executor.max_call_depth": 7 }` into the nested
+ * mapping a YAML config file actually holds. */
+function nestDotPaths(flat: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [dotPath, value] of Object.entries(flat)) {
+    const parts = dotPath.split('.');
+    let node = out;
+    for (const part of parts.slice(0, -1)) {
+      if (!(part in node) || typeof node[part] !== 'object' || node[part] === null) {
+        node[part] = {};
+      }
+      node = node[part] as Record<string, unknown>;
+    }
+    node[parts[parts.length - 1] as string] = value;
+  }
+  return out;
+}
+
+/**
+ * The two required keys, added to every case's config.
+ *
+ * PROTOCOL_SPEC §9.1 makes `version` and `project.name` the only keys with no
+ * canonical default, and therefore the only two `Config.validate` requires. The
+ * fixture's `config` maps list the keys each case is *about*; without these two
+ * every case would fail on a missing-required-field error that has nothing to do
+ * with what it is testing — and the strict case would then "pass" a raise-only
+ * assertion for entirely the wrong reason.
+ */
+const REQUIRED_BASE = { version: '1.0.0', project: { name: 'fixture' } } as const;
 
 describe('Conformance: configuration key-surface governance', () => {
   it('DEFAULTS declares no key the canonical schemas do not allow', () => {
@@ -128,6 +174,22 @@ describe('Conformance: configuration key-surface governance', () => {
     ).toEqual(expectedFor('sdk_default_values_match_canonical_defaults')['mismatched']);
   });
 
+  it('FRAMEWORK_CONFIG_KEYS is the canonical key surface, verbatim', () => {
+    // `src/config-key-surface.ts` cannot parse the schemas at run time — they
+    // live in the spec repo and the npm package ships `dist` only — so it
+    // carries a committed projection of them. THIS is what stops that
+    // projection from being a hardcoded list that drifts: `allowed_keys` is
+    // regenerated from schemas/ by the spec repo's own generator, so a section
+    // added to apcore-config.schema.json turns up here as a diff rather than as
+    // a key strict mode silently rejects.
+    expect(
+      [...FRAMEWORK_CONFIG_KEYS],
+      'src/config-key-surface.ts has drifted from schemas/. Regenerate the ' +
+        'fixture (python3 conformance/generate_config_key_governance.py --write) ' +
+        'and copy allowed_keys into FRAMEWORK_CONFIG_KEYS.',
+    ).toEqual(fixture.allowed_keys);
+  });
+
   it('the fixture is derived, not authored', () => {
     // Guard the guard: if the fixture ever stops naming its generator, the next
     // person to hand-edit it will make it a second source of truth.
@@ -138,5 +200,171 @@ describe('Conformance: configuration key-surface governance', () => {
       'schemas/defaults.schema.json',
       'schemas/sys-modules.schema.json',
     ]);
+  });
+});
+
+/**
+ * The two behavioural halves of the same rule (PROTOCOL_SPEC §9.10,
+ * `reject_unknown_framework_keys`): a key no schema declares is KEPT by
+ * default and REJECTED under `_config.strict`.
+ *
+ * Both cases run in legacy mode, which is where the clause is easiest to get
+ * wrong — step 1 of Algorithm A12-NS runs the sub-algorithm there too, on a
+ * document that has no `apcore:` key because the whole file *is* the `apcore`
+ * namespace. `describes both modes` below repeats the pair in namespace mode.
+ */
+describe('Conformance: unknown keys inside a framework section', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'apcore-framework-keys-'));
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  /** Write a case's config as a legacy-mode YAML file and return its path. */
+  function writeLegacy(config: Record<string, unknown>): string {
+    const file = path.join(tmpDir, 'apcore.yaml');
+    fs.writeFileSync(file, yaml.dump({ ...REQUIRED_BASE, ...nestDotPaths(config) }));
+    return file;
+  }
+
+  /** The same config nested one level down under `apcore:`, which is what
+   * flips mode detection to namespace mode. */
+  function writeNamespace(config: Record<string, unknown>): string {
+    const file = path.join(tmpDir, 'apcore.yaml');
+    const nested = nestDotPaths(config);
+    // `_config` is a top-level sibling of `apcore`, never a key inside it.
+    const meta = nested['_config'];
+    delete nested['_config'];
+    const doc: Record<string, unknown> = { apcore: { ...REQUIRED_BASE, ...nested } };
+    if (meta !== undefined) doc['_config'] = meta;
+    fs.writeFileSync(file, yaml.dump(doc));
+    return file;
+  }
+
+  /** Split a case's config into the key it declares legally and the key(s) it
+   * does not, read off `allowed_keys` rather than retyped — the case is about
+   * the distinction, so the driver should not be free to disagree about which
+   * key is which. */
+  function partition(config: Record<string, unknown>): {
+    declared: string[];
+    undeclared: string[];
+  } {
+    const keys = Object.keys(config).filter((k) => !k.startsWith('_config.'));
+    return {
+      declared: keys.filter((k) => allowed.has(k)),
+      undeclared: keys.filter((k) => !allowed.has(k)),
+    };
+  }
+
+  it('unknown_framework_key_is_retained_by_default', () => {
+    const tc = caseFor('unknown_framework_key_is_retained_by_default');
+    const config = tc.config as Record<string, unknown>;
+    const { declared, undeclared } = partition(config);
+    expect(declared).toHaveLength(1);
+    expect(undeclared).toHaveLength(1);
+    const [declaredKey] = declared as [string];
+    const [undeclaredKey] = undeclared as [string];
+
+    const cfg = Config.load(writeLegacy(config), { validate: true });
+
+    // The assertion the fixture's `default_tier_must_be_asserted_by_reading_it_back`
+    // demands. `expect(() => load()).not.toThrow()` is ALSO satisfied by an
+    // implementation that parsed the key into a typed record and dropped it on
+    // the floor, which is the exact defect this case exists to catch — so the
+    // key is read back through get(), the public path an operator would use.
+    expect(cfg.get(undeclaredKey), `'${undeclaredKey}' was written to the config and vanished`).toBe(
+      tc.expected['get_undeclared_key'],
+    );
+    // Its declared neighbour still resolves, i.e. retaining the stray key did
+    // not cost the section its normal parse.
+    expect(cfg.get(declaredKey)).toBe(tc.expected['get_declared_key']);
+  });
+
+  it('unknown_framework_key_is_rejected_under_strict', () => {
+    const tc = caseFor('unknown_framework_key_is_rejected_under_strict');
+    const config = tc.config as Record<string, unknown>;
+    const offending = tc.expected['error_names_all_offending_keys'] as string[];
+    // The case declares its two undeclared keys in DIFFERENT sections on
+    // purpose; if that ever collapses to one section, or to one key, the
+    // enumeration assertion below stops meaning anything.
+    expect(partition(config).undeclared.sort()).toEqual([...offending].sort());
+    expect(new Set(offending.map((k) => k.split('.')[0])).size).toBe(2);
+
+    let raised: unknown;
+    try {
+      Config.load(writeLegacy(config), { validate: true });
+    } catch (e) {
+      raised = e;
+    }
+
+    expect(raised, 'strict mode accepted a key no canonical schema declares').toBeInstanceOf(
+      ConfigError,
+    );
+    expect((raised as ConfigError).code).toBe(tc.expected['error_code']);
+
+    // `strict_enumerates_every_key`: reported as the set of keys MISSING from
+    // the message rather than one `toContain` per key, because a per-key loop
+    // stops at the first and an implementation that fails on the first
+    // offending key would then look like it merely mis-worded one message —
+    // when what it actually costs the operator is one restart per typo.
+    const message = (raised as ConfigError).message;
+    const unreported = offending.filter((key) => !message.includes(key));
+    expect(
+      unreported,
+      `the error named only some of the offending keys. Missing: ${unreported.join(
+        ', ',
+      )}\nActual message:\n${message}`,
+    ).toEqual([]);
+  });
+
+  it('applies in namespace mode as well as legacy mode', () => {
+    // §9.10 runs the sub-algorithm from step 1 (legacy) AND step 2 (the
+    // `apcore` namespace). The two cases above pin legacy; this pins that
+    // moving the same keys under an `apcore:` key changes nothing.
+    const retained = caseFor('unknown_framework_key_is_retained_by_default');
+    const retainedConfig = retained.config as Record<string, unknown>;
+    const cfg = Config.load(writeNamespace(retainedConfig), { validate: true });
+    for (const key of partition(retainedConfig).undeclared) {
+      expect(cfg.get(key), `'${key}' vanished in namespace mode`).toBe(
+        retained.expected['get_undeclared_key'],
+      );
+    }
+
+    const rejected = caseFor('unknown_framework_key_is_rejected_under_strict');
+    const rejectedConfig = rejected.config as Record<string, unknown>;
+    const offending = rejected.expected['error_names_all_offending_keys'] as string[];
+    let raised: unknown;
+    try {
+      Config.load(writeNamespace(rejectedConfig), { validate: true });
+    } catch (e) {
+      raised = e;
+    }
+    expect(raised).toBeInstanceOf(ConfigError);
+    const message = (raised as ConfigError).message;
+    expect(offending.filter((key) => !message.includes(key))).toEqual([]);
+  });
+
+  it('leaves a config with no undeclared key alone under strict', () => {
+    // The counterweight: strict mode must not start rejecting the payload-shaped
+    // values the schemas declare as leaves. `pipeline.steps` entries and
+    // `id_map.overrides` are user-shaped maps — walking INTO them would report
+    // every one of their keys as undeclared.
+    const file = path.join(tmpDir, 'apcore.yaml');
+    fs.writeFileSync(
+      file,
+      yaml.dump({
+        ...REQUIRED_BASE,
+        _config: { strict: true },
+        id_map: { overrides: { 'legacy.name': 'executor.email.send' } },
+        pipeline: { steps: [{ name: 'custom', type: 'middleware', handler: 'x.y' }] },
+        obs: { redaction: { sensitive_keys: ['token'] } },
+        sys_modules: { enabled: true, events: { enabled: true } },
+      }),
+    );
+    expect(() => Config.load(file, { validate: true })).not.toThrow();
   });
 });

@@ -91,8 +91,6 @@ import {
 // Public export name (audit D2-001): middleware circuit-breaker state enum is
 // publicly exported as `CircuitBreakerState` for cross-SDK parity (matches apcore-rust).
 import { CircuitBreakerState } from '../src/index.js';
-import { TracingMiddleware } from '../src/middleware/tracing.js';
-import type { OtelTracer, OtelSpan } from '../src/middleware/tracing.js';
 import {
   AsyncTaskManager,
   TaskStatus,
@@ -113,6 +111,7 @@ import {
   BatchSpanProcessor,
   InMemoryExporter,
   createSpan,
+  TracingMiddleware,
   MetricsCollector,
   PrometheusExporter,
   RedactionConfig,
@@ -1906,73 +1905,61 @@ describe('apcore Conformance Suite (TypeScript)', () => {
       expect(emitter.emitted).toContain(tc.expected.event_emitted);
     });
 
-    // --- 8. tracing_span_created ---
-    it('tracing_span_created', () => {
-      const tc = middlewareHardeningFixture.test_cases.find(
-        (t: any) => t.id === 'tracing_span_created',
-      );
-      expect(tc).toBeDefined();
-
-      const spanId = 'mock-span-id-9abc';
-      const capturedAttributes: Record<string, string> = {};
-
-      const mockSpan: OtelSpan = {
-        spanContext: () => ({ spanId }),
-        setAttribute(k: string, v: string) {
-          capturedAttributes[k] = v;
-        },
-        setStatus: vi.fn(),
-        end: vi.fn(),
-      };
-
-      const mockTracer: OtelTracer = {
-        startSpan: vi.fn((_name: string) => mockSpan),
-      };
-
-      const mw = new TracingMiddleware({ tracer: mockTracer });
-      const ctx = new Context(tc.input.trace_id, tc.input.caller_id, []);
-
-      mw.before(tc.input.module_id, {}, ctx);
-
-      // Verify span was created with the module_id as span name
-      expect(tc.expected.span_created).toBe(true);
-      expect((mockTracer.startSpan as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]).toBe(
-        tc.expected.span_name,
-      );
-
-      // Verify mandatory span attributes
-      for (const [attr, val] of Object.entries(tc.expected.span_attributes as Record<string, string>)) {
-        expect(capturedAttributes[attr]).toBe(val);
-      }
-
-      // Verify span_id stored in context
-      expect(tc.expected.span_id_stored_in_context).toBe(true);
-      expect(ctx.data[tc.expected.context_key]).toBe(spanId);
-    });
-
-    // --- 9. tracing_noop_without_otel ---
+    // --- 8. tracing_noop_without_otel ---
+    //
+    // The `tracing_span_created` driver that used to sit here has been DELETED,
+    // not skipped. It drove `src/middleware/tracing.ts` — the implementation of
+    // middleware-system.md §1.3, which is now withdrawn — and asserted rules that
+    // contradict the surviving contract: a span named after `module_id` (the
+    // protocol spec §12 / T08-007 requires the constant `apcore.module.execute`,
+    // with the module id as an attribute) and a single span id in
+    // `_apcore.mw.tracing.span_id` (the surviving contract stores a *stack* in
+    // `_apcore.mw.tracing.spans` with explicit `parent_span_id` links, because a
+    // single slot is overwritten by the first nested module call). The fixture
+    // case was removed upstream along with the section. Span creation is covered
+    // by the observability suite against `observability/tracing.ts`.
     it('tracing_noop_without_otel', () => {
       const tc = middlewareHardeningFixture.test_cases.find(
         (t: any) => t.id === 'tracing_noop_without_otel',
       );
       expect(tc).toBeDefined();
 
-      // No tracer injected; @opentelemetry/api is not installed → no-op mode
-      const mw = new TracingMiddleware({ tracer: null });
+      // Driver-input precondition (NOT an SDK expectation): this driver models
+      // the no-OpenTelemetry environment the case names. apcore-js tracing is
+      // self-contained, so that environment is simply the normal one.
+      expect(tc.input.otel_available).toBe(false);
+
+      const mw = new TracingMiddleware(new InMemoryExporter());
       const ctx = new Context(tc.input.trace_id, tc.input.caller_id, []);
 
-      let errorRaised = false;
+      let error: unknown = null;
       try {
         mw.before(tc.input.module_id, {}, ctx);
         mw.after(tc.input.module_id, {}, {}, ctx);
-      } catch {
-        errorRaised = true;
+      } catch (err) {
+        error = err;
       }
 
-      expect(errorRaised).toBe(tc.expected.error_raised); // false
-      expect(tc.expected.span_created).toBe(false);
-      expect(ctx.data['_apcore.mw.tracing.span_id']).toBeUndefined();
-      expect(tc.expected.execution_continues).toBe(true);
+      // Bind every expectation to an OBSERVATION. Reading
+      // `expect(tc.expected.execution_continues).toBe(true)` would compare the
+      // fixture to itself and could never fail on SDK behaviour.
+      expect(error !== null).toBe(tc.expected.error_raised); // false
+      expect(error === null).toBe(tc.expected.execution_continues); // true
+
+      // `span_created: false` means "no *OpenTelemetry* span exists to create".
+      // Observe it the only way that can actually fail: the package must not
+      // pull in the OTel SDK at all, in any dependency class.
+      const pkg = JSON.parse(
+        fs.readFileSync(path.resolve(__dirname, '..', 'package.json'), 'utf-8'),
+      );
+      const otelDeps = [
+        ...Object.keys(pkg.dependencies ?? {}),
+        ...Object.keys(pkg.peerDependencies ?? {}),
+        ...Object.keys(pkg.optionalDependencies ?? {}),
+      ].filter((name: string) => name.startsWith('@opentelemetry/'));
+      expect(otelDeps).toEqual([]);
+      // An OTel span could only exist if the OTel SDK did.
+      expect(otelDeps.length > 0).toBe(tc.expected.span_created);
     });
 
     // Bonus: HALF_OPEN → OPEN (failed probe re-opens circuit) — not in fixture but required by spec
@@ -2004,7 +1991,7 @@ describe('apcore Conformance Suite (TypeScript)', () => {
       expect(emitter.emitted.filter((e) => e === 'apcore.circuit.opened').length).toBeGreaterThanOrEqual(2);
     });
 
-    // --- 10. async_detection_coroutine_function ---
+    // --- 9. async_detection_coroutine_function ---
     it('async_detection_coroutine_function', () => {
       const tc = middlewareHardeningFixture.test_cases.find(
         (t: any) => t.id === 'async_detection_coroutine_function',

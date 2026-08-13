@@ -24,7 +24,6 @@
   "sideEffects": [
     "./dist/index.js",
     "./dist/acl-file.js",
-    "./dist/middleware/tracing-otel-default.js",
     "./dist/sys-modules/install.js",
     "./dist/sys-modules/overrides-file.js"
   ],

@@ -22,7 +22,6 @@
 // browser-safe runtime modules. Must be imported before any user-facing
 // re-export so the loaders are in place before APCore consumers run.
 import './acl-file.js';
-import './middleware/tracing-otel-default.js';
 import './sys-modules/overrides-file.js';
 import './sys-modules/install.js';
 
@@ -192,16 +191,12 @@ export {
   CircuitBreakerMiddleware,
   CircuitBreakerState,
   CTX_CIRCUIT_STATE,
-  CTX_TRACING_SPAN_ID,
   validateContextKey,
   isAsyncHandler,
 } from './middleware/index.js';
 export type {
   RetryConfig,
   CircuitBreakerOptions,
-  OtelTracer,
-  OtelSpan,
-  TracingMiddlewareOptions,
   ContextKeyWriter,
   ContextKeyValidation,
 } from './middleware/index.js';
