@@ -88,10 +88,11 @@ describe('ReloadModule path_filter (Issue #45.4)', () => {
   // is a valid linearization and an assertion against it passes whatever the
   // SDK does. These cases use module ids whose lexicographic order is the
   // WRONG one — `executor.alpha` depends on `executor.zulu` — so `.sort()`
-  // and a real topological sort cannot both pass. Promoting a case of this
-  // shape into the canonical fixture is a spec-repo decision and is still
-  // outstanding; apcore-python pins the same contract locally in
-  // `test_declared_dependency_reloads_before_its_dependent`.
+  // and a real topological sort cannot both pass. A case of this shape is now
+  // canonical — `reload_order_is_topological_not_alphabetical` in the same
+  // fixture, driven from tests/conformance.test.ts. The cases below stay as the
+  // repo-local edge coverage the canonical case does not carry (code-declared
+  // vs metadata-declared, non-list values, cycles).
   // -------------------------------------------------------------------------
 
   /** Re-discovery of an unchanged source tree re-registers what was unregistered. */
