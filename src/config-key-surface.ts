@@ -56,6 +56,12 @@
  */
 export const FRAMEWORK_CONFIG_KEYS: readonly string[] = [
   "$schema",
+  // Config Bus meta-configuration (§9.6.3). Declared at the schema root, which
+  // is additionalProperties: false — without it a legacy apcore.yaml enabling
+  // strict mode would fail its own canonical schema, and `_config.strcit` is
+  // exactly the typo one least wants silently ignored.
+  "_config.allow_unknown",
+  "_config.strict",
   "acl.audit.enabled",
   "acl.audit.include_denied",
   "acl.audit.log_level",
