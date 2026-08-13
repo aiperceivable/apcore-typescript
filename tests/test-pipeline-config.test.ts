@@ -499,13 +499,13 @@ describe('buildStrategyFromConfig — pipeline.configure field validation', () =
         { configure: { input_validation: { requires: ['context'] } } as never },
         makeFakeDeps(),
       ),
-    ).rejects.toThrow(/has no configurable field 'requires'/);
+    ).rejects.toThrow(/non-configurable field(?:s)?: 'requires'/);
     await expect(
       buildStrategyFromConfig(
         { configure: { input_validation: { provides: ['validated_inputs'] } } as never },
         makeFakeDeps(),
       ),
-    ).rejects.toThrow(/has no configurable field 'provides'/);
+    ).rejects.toThrow(/non-configurable field(?:s)?: 'provides'/);
   });
 
   // The rejection above is only worth anything because the contract it
@@ -535,7 +535,7 @@ describe('buildStrategyFromConfig — pipeline.configure field validation', () =
         makeFakeDeps(),
       ),
     ).rejects.toThrow(
-      /has no configurable field 'no_such_field'.*match_modules, ignore_errors, pure, timeout_ms/s,
+      /non-configurable field(?:s)?: 'no_such_field'.*match_modules, ignore_errors, pure, timeout_ms/s,
     );
   });
 
@@ -571,7 +571,7 @@ describe('buildStrategyFromConfig — pipeline.configure field validation', () =
           { configure: { input_validation: { [field]: 'x' } } as never },
           makeFakeDeps(),
         ),
-      ).rejects.toThrow(new RegExp(`has no configurable field '${field}'`));
+      ).rejects.toThrow(new RegExp(`non-configurable field(?:s)?: '${field}'`));
     },
   );
 });

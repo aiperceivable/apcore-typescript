@@ -482,22 +482,37 @@ export async function buildStrategyFromConfig(
     }
     for (const step of strategy.steps) {
       if (step.name === stepName) {
+        // EVERY offending key, not the first. One restart shows the whole
+        // problem instead of one restart per typo, and it keeps the conformance
+        // assertion portable: stopping at the first makes the message depend on
+        // key iteration order, which differs by language — `serde_json::Map` is
+        // sorted while JS objects and Python dicts preserve insertion order, so
+        // a fixture naming one key would pass here and fail on apcore-rust for
+        // no behavioural reason.
+        const unknownKeys = Object.keys(overrides).filter(
+          (k) => resolveConfigurableStepField(k) === undefined,
+        );
+        if (unknownKeys.length > 0) {
+          const named = unknownKeys.map((k) => `'${k}'`).join(', ');
+          const noun = unknownKeys.length === 1 ? 'field' : 'fields';
+          throw new ConfigurationError(
+            `Pipeline step '${stepName}' has ${unknownKeys.length} non-configurable ` +
+              `${noun}: ${named}. ` +
+              `Valid fields are: ${CANONICAL_CONFIGURABLE_STEP_FIELDS.join(', ')} ` +
+              `(the camelCase spellings ` +
+              `${[...CONFIGURABLE_STEP_FIELDS.keys()]
+                .filter((k) => !CANONICAL_CONFIGURABLE_STEP_FIELDS.includes(k))
+                .join(', ')} are also accepted). ` +
+              `'requires' and 'provides' are a step's capability contract and are ` +
+              `declared by the step implementation, never by configuration; ` +
+              `'name', 'description', 'removable', 'replaceable' and 'execute' are ` +
+              `deliberately NOT configurable — see CONFIGURABLE_STEP_FIELDS.`,
+          );
+        }
+        // Every key is known to be configurable — the check above rejected the
+        // whole entry otherwise, so there is no per-key failure branch here.
         for (const [key, value] of Object.entries(overrides)) {
-          const property = resolveConfigurableStepField(key);
-          if (property === undefined) {
-            throw new ConfigurationError(
-              `Pipeline step '${stepName}' has no configurable field '${key}'. ` +
-                `Valid fields are: ${CANONICAL_CONFIGURABLE_STEP_FIELDS.join(', ')} ` +
-                `(the camelCase spellings ` +
-                `${[...CONFIGURABLE_STEP_FIELDS.keys()]
-                  .filter((k) => !CANONICAL_CONFIGURABLE_STEP_FIELDS.includes(k))
-                  .join(', ')} are also accepted). ` +
-                `'requires' and 'provides' are a step's capability contract and are ` +
-                `declared by the step implementation, never by configuration; ` +
-                `'name', 'description', 'removable', 'replaceable' and 'execute' are ` +
-                `deliberately NOT configurable — see CONFIGURABLE_STEP_FIELDS.`,
-            );
-          }
+          const property = resolveConfigurableStepField(key) as string;
           (step as unknown as Record<string, unknown>)[property] = value;
         }
         break;

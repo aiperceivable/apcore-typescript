@@ -191,7 +191,13 @@ function expectParseTimeRejection(tc: FailfastCase, error: unknown): void {
     tc.expected['raises'],
   );
   expect(error).toBeInstanceOf(ConfigurationError);
-  expect((error as Error).message).toContain(tc.expected['error_message_contains'] as string);
+  // `error_message_contains` is a string OR an array of fragments — every one
+  // must appear. The array form arrived with driver_contract.name_every_offending_key:
+  // an error MUST name every offending key, so a case can require both.
+  const fragments = tc.expected['error_message_contains'];
+  for (const fragment of Array.isArray(fragments) ? fragments : [fragments]) {
+    expect((error as Error).message).toContain(fragment as string);
+  }
   // The wire code is the contract. The class name is shared by all three
   // SDKs and therefore distinguishes nothing.
   expect((error as ConfigurationError).code).toBe(tc.expected['error_code']);
@@ -276,10 +282,17 @@ describe('Conformance: pipeline configuration fail-fast (pipeline_failfast_confi
     const { error, strategy } = await buildFrom(tc);
     expectParseTimeRejection(tc, error);
     // No strategy is handed back, so nothing can have been mutated on the way
-    // to the throw. `provides` is in the same map as `requires`; whichever key
-    // is visited first, the whole entry is refused.
+    // to the throw.
     expect(strategy).toBeNull();
-    expect((error as Error).message).toMatch(/no configurable field '(requires|provides)'/);
+    // driver_contract.name_every_offending_key: BOTH keys, not whichever the
+    // map happened to visit first. The order-tolerant `(requires|provides)`
+    // this assertion used to carry passed against an implementation that
+    // reported one and stopped — and that implementation fails the same
+    // fixture on apcore-rust, whose serde_json::Map is sorted rather than
+    // insertion-ordered.
+    for (const key of ['requires', 'provides']) {
+      expect((error as Error).message).toContain(`'${key}'`);
+    }
 
     // And the rule that this rejection exists to protect still fires. Under
     // the built-in contract `requires = ["module"]`, an input_validation with
@@ -408,6 +421,7 @@ describe('Conformance: pipeline configuration fail-fast (pipeline_failfast_confi
       'assert_the_wire_code',
       'canonical_code',
       'configurable_set_is_four',
+      'name_every_offending_key',
       'one_way_to_say_it',
       'parse_time',
       'read_the_field_back_off_the_step',
