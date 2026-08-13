@@ -28,9 +28,26 @@ export interface Step {
   /** Per-step timeout in milliseconds. 0 = no per-step timeout. */
   readonly timeoutMs?: number;
 
-  /** PipelineContext fields this step reads (e.g. "module", "context"). Advisory only. */
+  /**
+   * PipelineContext fields this step reads (e.g. "module", "context").
+   *
+   * ENFORCED, not advisory: {@link ExecutionStrategy} validates the pair at
+   * construction and throws {@link PipelineDependencyError} when a `requires`
+   * entry is not in the union of `seedProvides` and the `provides` of every
+   * preceding step. `docs/features/middleware-system.md` § Configuration
+   * safety states that as a MUST. The "Advisory only" these two comments used
+   * to carry described the pre-#33 `console.warn`; it was left behind when
+   * that warn became a throw in #33, and corrected in apcore#89.
+   *
+   * Declared by the step IMPLEMENTATION. `pipeline.configure` cannot set it —
+   * see `CONFIGURABLE_STEP_FIELDS` in `pipeline-config.ts`.
+   */
   readonly requires?: readonly string[];
-  /** PipelineContext fields this step writes (e.g. "output", "validated_inputs"). Advisory only. */
+  /**
+   * PipelineContext fields this step writes (e.g. "output",
+   * "validated_inputs"). Enforced and implementation-declared, exactly as
+   * {@link Step.requires} above.
+   */
   readonly provides?: readonly string[];
 
   execute(ctx: PipelineContext): Promise<StepResult>;

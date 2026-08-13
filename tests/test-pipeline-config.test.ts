@@ -4,12 +4,14 @@
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
+  ConfigurationError,
   _resolveStep,
   buildStrategyFromConfig,
   registerStepType,
   registeredStepTypes,
   unregisterStepType,
 } from '../src/pipeline-config.js';
+import { ExecutionStrategy, PipelineDependencyError } from '../src/pipeline.js';
 import type { Step, StepResult } from '../src/pipeline.js';
 
 // ---------------------------------------------------------------------------
@@ -291,6 +293,131 @@ describe('buildStrategyFromConfig', () => {
 });
 
 // ---------------------------------------------------------------------------
+// pipeline.steps entry field validation (apcore#89)
+//
+// `schemas/apcore-config.schema.json` `$defs/PipelineStep` is
+// `additionalProperties: false` and nothing enforced it. Two defects lived
+// behind that, and the second is the one that bites an operator who spells
+// everything correctly:
+//
+//   1. An unknown key was accepted and dropped. `tiemout_ms: 5000` built a
+//      step with `timeoutMs === 0` and said nothing.
+//   2. The CANONICAL snake_case keys were dropped too. `StepDefinition`,
+//      `_resolveStep` and `ConfiguredStep` are all camelCase, so on a `steps:`
+//      entry `timeout_ms` / `ignore_errors` / `match_modules` never reached the
+//      step — only `pure` worked, because it is spelled the same in both. This
+//      is the identical defect that was fixed for `configure:` one pass
+//      earlier, still fully present one key over.
+// ---------------------------------------------------------------------------
+
+describe('buildStrategyFromConfig — pipeline.steps entry field validation', () => {
+  it('rejects an unknown key on a steps entry and names it', async () => {
+    const type = uniqueType('closed-set');
+    registerStepType(type, () => makeMinimalStep('probe'));
+    try {
+      await expect(
+        buildStrategyFromConfig(
+          { steps: [{ name: 'probe', type, after: 'execute', tiemout_ms: 5000 }] },
+          makeFakeDeps(),
+        ),
+      ).rejects.toThrow(/Pipeline step 'probe' has no field 'tiemout_ms'/);
+    } finally {
+      unregisterStepType(type);
+    }
+  });
+
+  it('names the position when the entry has no usable name', async () => {
+    await expect(
+      buildStrategyFromConfig({ steps: [{ nope: 1 }] }, makeFakeDeps()),
+    ).rejects.toThrow(/at pipeline\.steps\[0\] has no field 'nope'/);
+  });
+
+  // The canonical wire spelling has to reach the built step, or closing the
+  // key set would only have certified these three as valid while they kept
+  // doing nothing.
+  it('applies the canonical snake_case fields to the inserted step', async () => {
+    const type = uniqueType('snake-entry');
+    registerStepType(type, () => makeMinimalStep('snake-probe'));
+    try {
+      const strategy = await buildStrategyFromConfig(
+        {
+          steps: [
+            {
+              name: 'snake-probe',
+              type,
+              after: 'execute',
+              match_modules: ['executor.*'],
+              ignore_errors: true,
+              pure: true,
+              timeout_ms: 5000,
+            },
+          ],
+        },
+        makeFakeDeps(),
+      );
+      const step = strategy.steps.find((s) => s.name === 'snake-probe')!;
+      expect(step.matchModules).toEqual(['executor.*']);
+      expect(step.ignoreErrors).toBe(true);
+      expect(step.pure).toBe(true);
+      expect(step.timeoutMs).toBe(5000);
+    } finally {
+      unregisterStepType(type);
+    }
+  });
+
+  // This SDK's own idiomatic alias surface, deliberately not exercised by the
+  // fixture. It kept working across the fix — it was the ONLY spelling that
+  // worked before it.
+  it('still applies the camelCase aliases to the inserted step', async () => {
+    const type = uniqueType('camel-entry');
+    registerStepType(type, () => makeMinimalStep('camel-probe'));
+    try {
+      const strategy = await buildStrategyFromConfig(
+        {
+          steps: [
+            {
+              name: 'camel-probe',
+              type,
+              after: 'execute',
+              matchModules: ['api.*'],
+              ignoreErrors: true,
+              timeoutMs: 250,
+            },
+          ],
+        },
+        makeFakeDeps(),
+      );
+      const step = strategy.steps.find((s) => s.name === 'camel-probe')!;
+      expect(step.matchModules).toEqual(['api.*']);
+      expect(step.ignoreErrors).toBe(true);
+      expect(step.timeoutMs).toBe(250);
+    } finally {
+      unregisterStepType(type);
+    }
+  });
+
+  it('raises before the step factory runs (parse time, not build time)', async () => {
+    const type = uniqueType('never-called');
+    let called = 0;
+    registerStepType(type, () => {
+      called += 1;
+      return makeMinimalStep('never');
+    });
+    try {
+      await expect(
+        buildStrategyFromConfig(
+          { steps: [{ name: 'never', type, after: 'execute', bogus: true }] },
+          makeFakeDeps(),
+        ),
+      ).rejects.toThrow(ConfigurationError);
+      expect(called).toBe(0);
+    } finally {
+      unregisterStepType(type);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // pipeline.configure field validation (Issue #34 §2)
 // ---------------------------------------------------------------------------
 
@@ -347,21 +474,58 @@ describe('buildStrategyFromConfig — pipeline.configure field validation', () =
     expect(step.timeoutMs).toBe(250);
   });
 
-  // docs/features/middleware-system.md "Configuration safety" ships exactly
-  // this YAML as the canonical example. A field set without requires/provides
-  // makes the spec's own example throw.
-  it('accepts requires/provides, as the spec example configures them', async () => {
+  // CORRECTED (apcore#89). This test used to be
+  // `accepts requires/provides, as the spec example configures them`, and it
+  // asserted that `configure` wrote both fields onto the step. It encoded the
+  // wrong behaviour, from the wrong source: the "canonical example" it cited
+  // in docs/features/middleware-system.md was itself the defect, and that
+  // page now carries a warning box saying so.
+  //
+  // A step's `requires` / `provides` are its capability contract, declared by
+  // the implementation. `schemas/apcore-config.schema.json`
+  // `$defs/ConfigurableStepFields` is `additionalProperties: false` over four
+  // fields and DECLARATIVE_CONFIG_SPEC.md §4.2 says the same in words.
+  //
+  // Measured on this SDK before the fix: the assignment landed as an own
+  // property on the built step, and `_validateDependencies` read the
+  // rewritten value — so the built-in `input_validation`, which requires
+  // `module` from `module_lookup`, could be rewritten to require `context`,
+  // after which a strategy missing `module_lookup` constructed cleanly and
+  // the `PipelineDependencyError` MUST could never fire for it. The
+  // regression guard below pins that.
+  it('rejects requires/provides — a step capability contract is not configurable', async () => {
+    await expect(
+      buildStrategyFromConfig(
+        { configure: { input_validation: { requires: ['context'] } } as never },
+        makeFakeDeps(),
+      ),
+    ).rejects.toThrow(/has no configurable field 'requires'/);
+    await expect(
+      buildStrategyFromConfig(
+        { configure: { input_validation: { provides: ['validated_inputs'] } } as never },
+        makeFakeDeps(),
+      ),
+    ).rejects.toThrow(/has no configurable field 'provides'/);
+  });
+
+  // The rejection above is only worth anything because the contract it
+  // protects is enforced. This is the other half: the built-in contract is
+  // still what the step carries after `configure` has run, and
+  // `_validateDependencies` still throws on it.
+  it('the built-in capability contract survives configure and is enforced', async () => {
     const strategy = await buildStrategyFromConfig(
-      {
-        configure: {
-          input_validation: { requires: ['context'], provides: ['validated_inputs'] },
-        } as never,
-      },
+      { configure: { input_validation: { ignore_errors: true } } as never },
       makeFakeDeps(),
     );
-    const step = strategy.steps.find((s) => s.name === 'input_validation')!;
-    expect(step.requires).toEqual(['context']);
-    expect(step.provides).toEqual(['validated_inputs']);
+    const contextCreation = strategy.steps.find((s) => s.name === 'context_creation')!;
+    const inputValidation = strategy.steps.find((s) => s.name === 'input_validation')!;
+    expect(inputValidation.requires).toEqual(['module']);
+    expect(inputValidation.provides).toEqual(['validated_inputs']);
+    // `module` is provided by module_lookup; drop it and construction MUST
+    // fail. Rewriting requires to ['context'] through YAML made this pass.
+    expect(() => new ExecutionStrategy('probe', [contextCreation, inputValidation])).toThrow(
+      PipelineDependencyError,
+    );
   });
 
   it('rejects an unknown field and names the canonical spellings', async () => {
@@ -371,8 +535,29 @@ describe('buildStrategyFromConfig — pipeline.configure field validation', () =
         makeFakeDeps(),
       ),
     ).rejects.toThrow(
-      /has no configurable field 'no_such_field'.*match_modules, ignore_errors, pure, timeout_ms, requires, provides/s,
+      /has no configurable field 'no_such_field'.*match_modules, ignore_errors, pure, timeout_ms/s,
     );
+  });
+
+  // The valid-field list in the message must be exactly four. A regex that
+  // only checks the four are present still passes if a fifth creeps back in.
+  it('the error message advertises exactly four canonical fields', async () => {
+    let message = '';
+    try {
+      await buildStrategyFromConfig(
+        { configure: { input_validation: { no_such_field: 1 } } as never },
+        makeFakeDeps(),
+      );
+    } catch (err) {
+      message = (err as Error).message;
+    }
+    const listed = /Valid fields are: ([^(]+)\(/.exec(message)![1];
+    expect(listed.trim().split(', ')).toEqual([
+      'match_modules',
+      'ignore_errors',
+      'pure',
+      'timeout_ms',
+    ]);
   });
 
   // Narrower than the old `key in step` on purpose: these are the step's
