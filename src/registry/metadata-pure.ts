@@ -45,6 +45,7 @@ export function mergeModuleMetadata(
     (moduleObj['examples'] as ModuleExample[] | null | undefined) ?? null;
   const codeMetadata = (moduleObj['metadata'] as Record<string, unknown>) ?? {};
   const codeDocs = (moduleObj['documentation'] as string) ?? null;
+  const codeDeps = moduleObj['dependencies'];
 
   const yamlMetadata = (meta['metadata'] as Record<string, unknown>) ?? {};
   const mergedMetadata = { ...codeMetadata, ...yamlMetadata };
@@ -75,5 +76,23 @@ export function mergeModuleMetadata(
     examples: mergedExamples,
     metadata: mergedMetadata,
     documentation: (meta['documentation'] as string) || codeDocs,
+    // `dependencies` was absent from this dict, so it survived discovery
+    // (`Registry._resolveLoadOrder` reads it off the raw YAML metadata before
+    // merging) and was then lost before storage — leaving the post-registration
+    // metadata accessor unable to see it. LOAD-order topological sorting
+    // therefore worked while RELOAD-order sorting had nothing to sort by.
+    // Same defect, same fix as apcore-python `ad2998d`; see
+    // aiperceivable/apcore-typescript#35.
+    //
+    // Same precedence rule as the scalar fields above, but spelled with an
+    // explicit `!= null` check rather than `||` so a deliberately empty YAML
+    // list (`dependencies: []`) overrides code-declared dependencies instead
+    // of falling through to them — matching `tags`.
+    dependencies:
+      meta['dependencies'] != null
+        ? meta['dependencies']
+        : Array.isArray(codeDeps)
+          ? codeDeps
+          : [],
   };
 }

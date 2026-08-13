@@ -188,6 +188,44 @@ describe('mergeModuleMetadata', () => {
     expect(result['examples']).toEqual([]);
     expect(result['metadata']).toEqual({});
     expect(result['documentation']).toBeNull();
+    expect(result['dependencies']).toEqual([]);
+  });
+
+  // --- `dependencies` (issue #35) --------------------------------------------
+  // The merge used to build the stored metadata from a fixed eight-key list
+  // that omitted `dependencies`. Discovery reads dependencies off the raw YAML
+  // *before* merging, so load ordering was unaffected and the gap only showed
+  // up post-registration — where `ReloadModule` reads it to order a bulk
+  // reload. Same three cases as every other scalar field.
+
+  it('code-declared dependencies survive the merge when YAML declares none', () => {
+    const moduleObj = { dependencies: [{ module_id: 'common.db' }] };
+    const result = mergeModuleMetadata(moduleObj, {});
+    expect(result['dependencies']).toEqual([{ module_id: 'common.db' }]);
+  });
+
+  it('YAML dependencies win over code dependencies', () => {
+    const moduleObj = { dependencies: [{ module_id: 'common.db' }] };
+    const meta = { dependencies: [{ module_id: 'common.cache', optional: true }] };
+    const result = mergeModuleMetadata(moduleObj, meta);
+    expect(result['dependencies']).toEqual([{ module_id: 'common.cache', optional: true }]);
+  });
+
+  it('YAML empty array for dependencies overrides code dependencies', () => {
+    // Mirrors the `tags` rule: an explicit empty YAML list is a deliberate
+    // "this module depends on nothing", not an absent value.
+    const moduleObj = { dependencies: [{ module_id: 'common.db' }] };
+    const result = mergeModuleMetadata(moduleObj, { dependencies: [] });
+    expect(result['dependencies']).toEqual([]);
+  });
+
+  it('dependencies default to an empty array when neither side declares them', () => {
+    expect(mergeModuleMetadata({ description: 'x' }, {})['dependencies']).toEqual([]);
+  });
+
+  it('a non-array code dependencies value degrades to an empty array', () => {
+    const result = mergeModuleMetadata({ dependencies: 'common.db' }, {});
+    expect(result['dependencies']).toEqual([]);
   });
 
   it('YAML empty array for tags overrides code tags', () => {

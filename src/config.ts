@@ -31,6 +31,19 @@ export { DEFAULTS, getDefault } from './config-defaults.js';
 const ENV_PREFIX = 'APCORE_';
 
 /**
+ * Environment variable naming the configuration file to load (§9.14 discovery).
+ *
+ * apcore#88: this variable is an *argument to* `Config.load()` — it selects
+ * which document is read — and only happens to share the `APCORE_` prefix that
+ * §9.2 turns into configuration overrides. Left in the override map its suffix
+ * becomes the dot-path `config.file`, a key no schema declares (checked
+ * against `conformance/fixtures/config_key_governance.json`), which then sits
+ * inside the **declared** document the §9.1 required-field check runs against.
+ * `discoverConfigFile()` consumes it; `applyEnvOverrides` drops it.
+ */
+const ENV_CONFIG_FILE = 'APCORE_CONFIG_FILE';
+
+/**
  * Configuration keys that MUST be declared explicitly, in legacy mode (dot-paths).
  *
  * PROTOCOL_SPEC §9.1: a key is required **only when it has no canonical
@@ -257,6 +270,10 @@ export function applyEnvOverrides(data: Record<string, unknown>): Record<string,
   }
   for (const [envKey, envValue] of Object.entries(env)) {
     if (!envKey.startsWith(ENV_PREFIX) || envValue === undefined) continue;
+    // apcore#88: the file selector is consumed by discoverConfigFile(); it is
+    // an argument to load(), not a value the document declares. Kept here it
+    // would inject the phantom key `config.file`.
+    if (envKey === ENV_CONFIG_FILE) continue;
     const suffix = envKey.slice(ENV_PREFIX.length);
     if (!suffix) continue;
     // Convert: single _ -> . (separator), double __ -> literal _
@@ -482,11 +499,14 @@ function resolveNamespacePath(key: string): { namespace: string; subPath: string
 /**
  * Search for a config file in the standard discovery order (§9.14).
  * Returns the path of the first found file, or null if none found.
+ *
+ * `$APCORE_CONFIG_FILE` is *consumed* here: `applyEnvOverrides` skips it so it
+ * never becomes the `config.file` override (apcore#88).
  */
 export function discoverConfigFile(): string | null {
   const env = process.env;
 
-  const envPath = env['APCORE_CONFIG_FILE'];
+  const envPath = env[ENV_CONFIG_FILE];
   if (envPath) return envPath;
 
   const cwdCandidates = ['project.yaml', 'project.yml', 'apcore.yaml', 'apcore.yml'];

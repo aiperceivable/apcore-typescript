@@ -304,6 +304,10 @@ describe('apcore Conformance Suite (TypeScript)', () => {
       _globalEnvMap.clear();
       _envMapClaimed.clear();
       _envPrefixUsed.clear();
+      // Pins the file selector to a fixed value so a developer's own
+      // APCORE_CONFIG_FILE cannot vary what these cases see. Inert since
+      // apcore#88: the variable is no longer an override at all, so it can
+      // neither reach `data` nor inject the phantom `config.file` it used to.
       vi.stubEnv('APCORE_CONFIG_FILE', '/dev/null');
     });
 
@@ -2783,13 +2787,21 @@ describe('apcore Conformance Suite (TypeScript)', () => {
         // path filter must still be there afterwards.
         expect(registry.has(notReloadedId)).toBe(true);
       }
-      // NOT asserted: the fixture's ordering expectation (see the report note on
-      // this case). `_reloadWithPathFilter` sorts the matched ids
-      // lexicographically and never consults the dependency graph, unlike
-      // apcore-python's `_topo_order`, so there is no dependency ordering to
-      // observe here — and the fixture's three modules declare no dependencies
-      // on each other, so every permutation is a valid linearization anyway.
-      // Asserting anything about the order would pass whatever the SDK did.
+      // `reload_order: "topological"` (issue #35). Corrected: this used to say
+      // the SDK had no topological path at all, which was true —
+      // `_reloadWithPathFilter` called `.sort()` and never consulted the
+      // dependency graph. It now runs Kahn's sort over the declared
+      // dependencies, so the contract is implemented.
+      //
+      // What this fixture case can still pin is only the dependency-free half
+      // of it: its three modules declare no dependencies on each other, so
+      // every permutation is a valid linearization and the sole observable
+      // constraint is determinism — Kahn's sort seeds from a sorted
+      // zero-in-degree queue, so it emits alphabetical order here. The
+      // discriminating case (a dependency whose direction disagrees with the
+      // alphabet) lives in tests/sys-modules/test-reload-path-filter.test.ts
+      // until it is promoted into the canonical fixture.
+      expect(reloadedModules).toEqual([...(expected['reloaded_modules'] as string[])].sort());
     });
 
     // --- 7. reload_module_id_and_filter_conflict ---

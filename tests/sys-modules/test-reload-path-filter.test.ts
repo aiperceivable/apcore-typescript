@@ -78,4 +78,154 @@ describe('ReloadModule path_filter (Issue #45.4)', () => {
       InvalidInputError,
     );
   });
+
+  // -------------------------------------------------------------------------
+  // Issue #35 — reload order is topological, not lexicographic.
+  //
+  // The canonical fixture (`system_modules_hardening.json`,
+  // `reload_with_path_filter`) declares `reload_order: "topological"` but its
+  // three modules declare no dependencies on each other, so every permutation
+  // is a valid linearization and an assertion against it passes whatever the
+  // SDK does. These cases use module ids whose lexicographic order is the
+  // WRONG one — `executor.alpha` depends on `executor.zulu` — so `.sort()`
+  // and a real topological sort cannot both pass. Promoting a case of this
+  // shape into the canonical fixture is a spec-repo decision and is still
+  // outstanding; apcore-python pins the same contract locally in
+  // `test_declared_dependency_reloads_before_its_dependent`.
+  // -------------------------------------------------------------------------
+
+  /** Re-discovery of an unchanged source tree re-registers what was unregistered. */
+  function stubRediscovery(
+    modules: Record<string, Record<string, unknown>>,
+    metadata: Record<string, Record<string, unknown>> = {},
+  ): void {
+    vi.spyOn(registry, 'discover').mockImplementation(async () => {
+      let n = 0;
+      for (const [id, module] of Object.entries(modules)) {
+        if (!registry.has(id)) {
+          const meta = metadata[id];
+          if (meta !== undefined) {
+            await registry.register(id, module, null, meta);
+          } else {
+            registry.registerInternal(id, module);
+          }
+          n += 1;
+        }
+      }
+      return n;
+    });
+  }
+
+  it('reloads a code-declared dependency before the module that declares it', async () => {
+    const modules: Record<string, Record<string, unknown>> = {
+      'executor.alpha': {
+        ...createDummyModule(),
+        dependencies: [{ module_id: 'executor.zulu' }],
+      },
+      'executor.zulu': createDummyModule(),
+    };
+    for (const [id, module] of Object.entries(modules)) {
+      registry.registerInternal(id, module);
+    }
+    const safeUnregisterSpy = vi.spyOn(registry, 'safeUnregister');
+    stubRediscovery(modules);
+
+    const result = await mod.execute({ path_filter: 'executor.*', reason: 'topo test' }, null);
+    const order = result.reloaded_modules as string[];
+
+    // Every matched module reloaded exactly once...
+    expect([...order].sort()).toEqual(['executor.alpha', 'executor.zulu']);
+    // ...and the dependency strictly before its dependent. Lexicographic
+    // ordering puts 'executor.alpha' first and fails right here.
+    expect(order.indexOf('executor.zulu')).toBeLessThan(order.indexOf('executor.alpha'));
+    // The reported order is the order the work happened in, not a relabelling
+    // of it: unregistration walks the same sequence.
+    expect(safeUnregisterSpy.mock.calls.map((c) => c[0])).toEqual([
+      'executor.zulu',
+      'executor.alpha',
+    ]);
+  });
+
+  it('honours a dependency declared through registration metadata', async () => {
+    // The YAML side of the merge rule — `register(..., { dependencies })` —
+    // must reach the reload path exactly as a code-declared list does.
+    const modules: Record<string, Record<string, unknown>> = {
+      'executor.alpha': createDummyModule(),
+      'executor.zulu': createDummyModule(),
+    };
+    const metadata = { 'executor.alpha': { dependencies: [{ module_id: 'executor.zulu' }] } };
+    await registry.register('executor.alpha', modules['executor.alpha'], null, metadata['executor.alpha']);
+    registry.registerInternal('executor.zulu', modules['executor.zulu']);
+    stubRediscovery(modules, metadata);
+
+    const result = await mod.execute({ path_filter: 'executor.*', reason: 'topo test' }, null);
+
+    expect(result.reloaded_modules).toEqual(['executor.zulu', 'executor.alpha']);
+  });
+
+  it('falls back to alphabetical order when no dependencies are declared', async () => {
+    // Kahn's sort seeds from a sorted zero-in-degree queue, so a
+    // dependency-free set has exactly one valid output — the old behaviour
+    // survives as the degenerate case.
+    const modules: Record<string, Record<string, unknown>> = {
+      'executor.zulu': createDummyModule(),
+      'executor.alpha': createDummyModule(),
+      'executor.mike': createDummyModule(),
+    };
+    for (const [id, module] of Object.entries(modules)) {
+      registry.registerInternal(id, module);
+    }
+    stubRediscovery(modules);
+
+    const result = await mod.execute({ path_filter: 'executor.*', reason: 'topo test' }, null);
+
+    expect(result.reloaded_modules).toEqual([
+      'executor.alpha',
+      'executor.mike',
+      'executor.zulu',
+    ]);
+  });
+
+  it('ignores a non-list dependencies value rather than failing the reload', async () => {
+    // No schema describes `dependencies`, so a scalar can reach the merge from
+    // YAML and land in the stored metadata unaltered.
+    const modules: Record<string, Record<string, unknown>> = {
+      'executor.alpha': createDummyModule(),
+      'executor.zulu': createDummyModule(),
+    };
+    const metadata = { 'executor.alpha': { dependencies: 'executor.zulu' } };
+    await registry.register('executor.alpha', modules['executor.alpha'], null, metadata['executor.alpha']);
+    registry.registerInternal('executor.zulu', modules['executor.zulu']);
+    stubRediscovery(modules, metadata);
+
+    const result = await mod.execute({ path_filter: 'executor.*', reason: 'topo test' }, null);
+
+    expect(result.reloaded_modules).toEqual(['executor.alpha', 'executor.zulu']);
+  });
+
+  it('falls back to alphabetical order when the declared dependencies form a cycle', async () => {
+    const modules: Record<string, Record<string, unknown>> = {
+      'executor.alpha': {
+        ...createDummyModule(),
+        dependencies: [{ module_id: 'executor.zulu' }],
+      },
+      'executor.zulu': {
+        ...createDummyModule(),
+        dependencies: [{ module_id: 'executor.alpha' }],
+      },
+    };
+    for (const [id, module] of Object.entries(modules)) {
+      registry.registerInternal(id, module);
+    }
+    stubRediscovery(modules);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const result = await mod.execute({ path_filter: 'executor.*', reason: 'topo test' }, null);
+
+    // A cycle is not a reason to refuse the reload; it degrades to the
+    // deterministic order and warns.
+    expect(result.reloaded_modules).toEqual(['executor.alpha', 'executor.zulu']);
+    expect(warnSpy.mock.calls.some((c) => String(c[0]).includes('Topo sort failed'))).toBe(true);
+    warnSpy.mockRestore();
+  });
 });

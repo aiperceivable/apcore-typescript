@@ -1206,6 +1206,19 @@ export class Registry {
     return undefined;
   }
 
+  /**
+   * Return the merged metadata stored for a module, or `{}` when the module is
+   * unknown. Mirrors apcore-python `Registry.get_module_metadata`.
+   *
+   * This is the post-registration view of `mergeModuleMetadata` — the only
+   * public surface carrying fields `ModuleDescriptor` does not model, notably
+   * `dependencies`, which `ReloadModule` reads to order a bulk reload.
+   * A shallow copy is returned so callers cannot mutate registry state.
+   */
+  getModuleMetadata(moduleId: string): Record<string, unknown> {
+    return { ...(this._moduleMeta.get(moduleId) ?? {}) };
+  }
+
   getDefinition(moduleId: string, _versionHint?: string | null): ModuleDescriptor | null {
     // `_versionHint` accepted for cross-language API parity with apcore-python
     // (sync finding A-002 / §5.4). Ignored under the single-version registry;

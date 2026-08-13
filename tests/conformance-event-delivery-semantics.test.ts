@@ -16,14 +16,18 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { EventEmitter, createEvent } from '../src/events/emitter.js';
 import type { ApCoreEvent, EventSubscriber } from '../src/events/emitter.js';
-import type { RetryConfig } from '../src/events/retry.js';
+import type { RetryConfig, ResolvedRetryConfig } from '../src/events/retry.js';
+import { DEFAULT_RETRY, resolveRetry } from '../src/events/retry.js';
 import { StdoutSubscriber } from '../src/events/subscribers.js';
+import { createSubscriberFromConfig } from '../src/sys-modules/registration.js';
 import { findFixturesRoot } from './spec-repo.js';
 
 const DLQ_EVENT_TYPE = 'apcore.event.delivery_failed';
 
+const FIXTURE_NAME = 'event_delivery_semantics.json';
+
 const FIXTURE = JSON.parse(
-  fs.readFileSync(path.join(findFixturesRoot(), 'event_delivery_semantics.json'), 'utf-8'),
+  fs.readFileSync(path.join(findFixturesRoot(), FIXTURE_NAME), 'utf-8'),
 ) as { test_cases: Array<Record<string, any>> };
 
 function caseById(id: string): Record<string, any> {
@@ -90,6 +94,61 @@ class DlqRecorder implements EventSubscriber {
     this.received.push(event);
   }
 }
+
+// ---------------------------------------------------------------------------
+// apcore#85 helpers — resolving the policy the DELIVERY PATH would apply
+// ---------------------------------------------------------------------------
+
+/** Fixture field name for each resolved-policy field, for default comparison. */
+const SNAKE_BY_CAMEL: Record<keyof ResolvedRetryConfig, string> = {
+  maxAttempts: 'max_attempts',
+  initialBackoffMs: 'initial_backoff_ms',
+  maxBackoffMs: 'max_backoff_ms',
+  backoffMultiplier: 'backoff_multiplier',
+};
+
+
+/** Normalise a fixture policy block to the SDK's resolved shape. */
+function toResolved(policy: Record<string, number>): ResolvedRetryConfig {
+  return {
+    maxAttempts: policy['max_attempts'],
+    initialBackoffMs: policy['initial_backoff_ms'],
+    maxBackoffMs: policy['max_backoff_ms'],
+    backoffMultiplier: policy['backoff_multiplier'],
+  };
+}
+
+/**
+ * Build a subscriber from its declared config and return the policy the
+ * emitter's delivery loop would apply.
+ *
+ * Deliberately not the config object and not the raw `subscriber.retry`:
+ * `_deliverWithRetry` reads the policy through `resolveRetry`, so that is what
+ * has to be asserted. A field a factory writes but delivery never consults
+ * would otherwise read as green — exactly how apcore-rust's `retry_count`
+ * survived.
+ */
+function resolvedDeliveryPolicy(entry: Record<string, any>): ResolvedRetryConfig {
+  // The fixture carries every field a type requires to construct, so the entry
+  // goes to the factory verbatim — see its `a_case_must_carry_its_own_inputs`
+  // contract. This driver used to hold its own table of url / path /
+  // delegate_type values; three drivers each inventing one is not a
+  // cross-language contract, it is three private guesses.
+  //
+  // Through the public config factory, not a constructor: the path under test
+  // is the one a `sys_modules.events.subscribers` block actually takes.
+  return resolveRetry(createSubscriberFromConfig({ ...entry }).retry);
+}
+
+/** Every case id this file drives; compared against the fixture below. */
+const DRIVEN_CASE_IDS = [
+  'retry_succeeds_before_exhaustion',
+  'permanent_failure_emits_dlq_event',
+  'dlq_event_subscriber_failure_is_not_retried',
+  'subscriber_id_sdk_generated_when_omitted',
+  'declared_retry_policy_is_read_for_every_subscriber_type',
+  'nested_retry_block_wins_over_legacy_retry_count',
+];
 
 describe('Conformance: event_delivery_semantics.json', () => {
   it('retry_succeeds_before_exhaustion', async () => {
@@ -288,5 +347,94 @@ describe('Conformance: event_delivery_semantics.json', () => {
     for (const id of reportedIds) expect(id).toMatch(pattern);
     // Same id the subscriber carries — the DLQ event does not mint a new one.
     expect(reportedIds.sort()).toEqual(subs.map((s) => s.subscriberId).sort());
+  });
+
+  // -------------------------------------------------------------------------
+  // apcore#85 — the declared `retry:` block must reach the delivery policy
+  // -------------------------------------------------------------------------
+
+  it('declared_retry_policy_is_read_for_every_subscriber_type', () => {
+    const tc = caseById('declared_retry_policy_is_read_for_every_subscriber_type');
+    const expected = tc['expected'];
+    const perType = expected['resolved_policy_per_type'] as Record<string, Record<string, number>>;
+
+    // The fixture's own precondition, asserted rather than trusted. A declared
+    // value equal to the shipped default passes whether or not the config was
+    // ever read — which is how this defect survived in three SDKs at once. If a
+    // later fixture edit softens a field back to a default, it fails here
+    // instead of quietly going vacuous.
+    expect(expected['every_field_differs_from_the_default']).toBe(true);
+    for (const [typeName, policy] of Object.entries(perType)) {
+      for (const [field, defaultValue] of Object.entries(DEFAULT_RETRY)) {
+        expect(
+          policy[SNAKE_BY_CAMEL[field as keyof ResolvedRetryConfig]],
+          `${typeName}.${field} equals the shipped default — that assertion cannot fail on an unread config`,
+        ).not.toBe(defaultValue);
+      }
+    }
+
+    // Every built-in type, or the case is half done: `webhook` parsed a
+    // different (flat) spelling while file/stdout/filter had no field at all,
+    // so a webhook-only assertion read green in every SDK.
+    const declared = (tc['subscribers'] as Array<Record<string, any>>).map((e) => String(e['type']));
+    expect(declared.slice().sort()).toEqual(Object.keys(perType).sort());
+
+    for (const entry of tc['subscribers'] as Array<Record<string, any>>) {
+      const typeName = String(entry['type']);
+      const resolved = resolvedDeliveryPolicy(entry);
+      expect(
+        resolved,
+        `${typeName}: the emitter would deliver with ${JSON.stringify(resolved)}, but the ` +
+          `subscriber declared ${JSON.stringify(entry['retry'])} — the config never reached ` +
+          `the delivery policy`,
+      ).toEqual(toResolved(perType[typeName]));
+    }
+  });
+
+  it('nested_retry_block_wins_over_legacy_retry_count', () => {
+    const tc = caseById('nested_retry_block_wins_over_legacy_retry_count');
+    const expected = tc['expected'];
+    const subscribers = tc['subscribers'] as Array<Record<string, any>>;
+
+    // Picked structurally, not by index: which entry is which is the point of
+    // the case, so reading it off list order would assert nothing.
+    const both = subscribers.find((e) => e['retry'] !== undefined && e['retry_count'] !== undefined);
+    const legacyOnly = subscribers.find(
+      (e) => e['retry'] === undefined && e['retry_count'] !== undefined,
+    );
+    expect(both, 'fixture must declare an entry carrying both spellings').toBeDefined();
+    expect(legacyOnly, 'fixture must declare an entry carrying only retry_count').toBeDefined();
+
+    const nested = resolvedDeliveryPolicy(both!);
+    expect(
+      nested.maxAttempts,
+      `both spellings present: delivery resolved maxAttempts=${nested.maxAttempts}, but the ` +
+        `nested block declared ${both!['retry']['max_attempts']} and MUST win`,
+    ).toBe(expected['nested_wins']['max_attempts']);
+    // The nested block wins whole, not only on the one field the flat spelling
+    // can express — otherwise `retry_count` would silently reset the backoff.
+    expect(nested).toEqual(toResolved(both!['retry']));
+
+    const legacy = resolvedDeliveryPolicy(legacyOnly!);
+    expect(
+      legacy.maxAttempts,
+      `retry_count=${legacyOnly!['retry_count']} MUST translate to maxAttempts=` +
+        `${legacyOnly!['retry_count'] + 1}`,
+    ).toBe(expected['legacy_alone_still_translates']['max_attempts']);
+  });
+
+  // -------------------------------------------------------------------------
+  // Case-inventory guard
+  // -------------------------------------------------------------------------
+
+  it('drives every case the canonical fixture defines', () => {
+    const canonical = FIXTURE.test_cases.map((c) => String(c['id'])).sort();
+    expect(
+      DRIVEN_CASE_IDS.slice().sort(),
+      `${FIXTURE_NAME} and this driver disagree on the case inventory`,
+    ).toEqual(canonical);
+    // Each claimed id must actually resolve — a typo would otherwise satisfy
+    // the set comparison against itself.
+    for (const id of DRIVEN_CASE_IDS) expect(caseById(id)['id']).toBe(id);
   });
 });

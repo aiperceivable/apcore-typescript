@@ -143,3 +143,100 @@ describe('Config.load discovery integration', () => {
     expect(config.get('project.name')).toBe('discovery-test');
   });
 });
+
+/**
+ * apcore#88: `$APCORE_CONFIG_FILE` selects the document, it is not in it.
+ *
+ * §9.2 turns every `APCORE_*` variable into a configuration override, so the
+ * file selector used to lower to the dot-path `config.file` and land in the
+ * **declared** document — the view §9.1's required-field check runs against.
+ * `config.file` is declared by no schema
+ * (`conformance/fixtures/config_key_governance.json`).
+ *
+ * These tests assert the **exact** declared key set, not merely that
+ * `config.file` is gone: absence alone would also hold for an implementation
+ * that dropped a key the file really does declare.
+ */
+describe('APCORE_CONFIG_FILE is not a configuration override', () => {
+  const MINIMAL_YAML = 'version: "1.0.0"\nproject:\n  name: demo\n';
+  const NAMESPACE_YAML = 'apcore:\n  version: "1.0.0"\n  project:\n    name: demo\n';
+
+  let tmpDir: string;
+  let savedApcoreEnv: Record<string, string | undefined>;
+
+  function flatten(data: Record<string, unknown>, prefix = ''): string[] {
+    const paths: string[] = [];
+    for (const [key, value] of Object.entries(data)) {
+      const dotPath = `${prefix}${key}`;
+      if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
+        const nested = value as Record<string, unknown>;
+        if (Object.keys(nested).length > 0) {
+          paths.push(...flatten(nested, `${dotPath}.`));
+          continue;
+        }
+      }
+      paths.push(dotPath);
+    }
+    return paths.sort();
+  }
+
+  function declaredOf(config: Config): string[] {
+    return flatten((config as unknown as { _declared: Record<string, unknown> })._declared);
+  }
+
+  beforeEach(() => {
+    tmpDir = makeTempDir();
+    // Remove, not blank: an empty string is still a value the override pass
+    // would write, so stubbing to '' would inject the very phantom under test.
+    savedApcoreEnv = {};
+    for (const name of Object.keys(process.env)) {
+      if (name.startsWith('APCORE_')) {
+        savedApcoreEnv[name] = process.env[name];
+        delete process.env[name];
+      }
+    }
+  });
+
+  afterEach(() => {
+    for (const name of Object.keys(process.env)) {
+      if (name.startsWith('APCORE_')) delete process.env[name];
+    }
+    for (const [name, value] of Object.entries(savedApcoreEnv)) {
+      if (value !== undefined) process.env[name] = value;
+    }
+    cleanDir(tmpDir);
+  });
+
+  it('legacy mode declares exactly the keys the file declares', () => {
+    const configPath = path.join(tmpDir, 'custom.yaml');
+    fs.writeFileSync(configPath, MINIMAL_YAML);
+    process.env['APCORE_CONFIG_FILE'] = configPath;
+
+    const config = Config.load(configPath);
+
+    expect(declaredOf(config)).toEqual(['project.name', 'version']);
+  });
+
+  it('namespace mode declares exactly the keys the file declares', () => {
+    const configPath = path.join(tmpDir, 'ns.yaml');
+    fs.writeFileSync(configPath, NAMESPACE_YAML);
+    process.env['APCORE_CONFIG_FILE'] = configPath;
+
+    const config = Config.load(configPath);
+
+    expect(declaredOf(config)).toEqual(['apcore.project.name', 'apcore.version']);
+  });
+
+  it('real overrides still reach the declared document', () => {
+    // The exemption is one variable wide: `bindings.dir` IS a declared key, so
+    // `APCORE_BINDINGS_DIR` is §9.2 working as designed.
+    const configPath = path.join(tmpDir, 'custom.yaml');
+    fs.writeFileSync(configPath, MINIMAL_YAML);
+    process.env['APCORE_CONFIG_FILE'] = configPath;
+    process.env['APCORE_BINDINGS_DIR'] = './generated';
+
+    const config = Config.load(configPath);
+
+    expect(declaredOf(config)).toEqual(['bindings.dir', 'project.name', 'version']);
+  });
+});

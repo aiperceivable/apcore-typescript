@@ -2193,3 +2193,75 @@ describe('Registry discover() validates module IDs (A-D-101, A-D-102)', () => {
     warnSpy.mockRestore();
   });
 });
+
+describe('Registry.getModuleMetadata — dependencies reach the accessor (issue #35)', () => {
+  // `mergeModuleMetadata` used to drop `dependencies` on its way into
+  // `_moduleMeta`. Unit-testing the merge function alone would not have caught
+  // that: discovery reads dependencies off the raw YAML metadata *before* the
+  // merge, so load ordering looked healthy while every post-registration
+  // reader — `ReloadModule._topoSortModules` above all — saw an empty graph.
+  // These assertions go through real registration calls for that reason.
+
+  it('registerInternal carries code-declared dependencies to the accessor', () => {
+    const registry = new Registry();
+    registry.registerInternal('executor.alpha', {
+      description: 'depends on zulu',
+      version: '1.0.0',
+      dependencies: [{ module_id: 'executor.zulu' }],
+      execute: () => ({}),
+    });
+
+    expect(registry.getModuleMetadata('executor.alpha')['dependencies']).toEqual([
+      { module_id: 'executor.zulu' },
+    ]);
+  });
+
+  it('register() metadata overrides win over code-declared dependencies', async () => {
+    const registry = new Registry();
+    await registry.register(
+      'executor.alpha',
+      {
+        description: 'declares one dependency in code',
+        version: '1.0.0',
+        dependencies: [{ module_id: 'executor.ignored' }],
+        execute: () => ({}),
+        inputSchema: { type: 'object' },
+        outputSchema: { type: 'object' },
+      },
+      null,
+      { dependencies: [{ module_id: 'executor.zulu', optional: true }] },
+    );
+
+    expect(registry.getModuleMetadata('executor.alpha')['dependencies']).toEqual([
+      { module_id: 'executor.zulu', optional: true },
+    ]);
+  });
+
+  it('returns an empty dependencies list when neither code nor metadata declares any', () => {
+    const registry = new Registry();
+    registry.registerInternal('executor.zulu', {
+      description: 'no dependencies',
+      version: '1.0.0',
+      execute: () => ({}),
+    });
+
+    expect(registry.getModuleMetadata('executor.zulu')['dependencies']).toEqual([]);
+  });
+
+  it('returns an empty object for an unknown module', () => {
+    expect(new Registry().getModuleMetadata('nope.not.here')).toEqual({});
+  });
+
+  it('returns a copy — mutating the result does not corrupt registry state', () => {
+    const registry = new Registry();
+    registry.registerInternal('executor.zulu', {
+      description: 'no dependencies',
+      version: '1.0.0',
+      execute: () => ({}),
+    });
+
+    const meta = registry.getModuleMetadata('executor.zulu');
+    meta['description'] = 'mutated';
+    expect(registry.getModuleMetadata('executor.zulu')['description']).toBe('no dependencies');
+  });
+});

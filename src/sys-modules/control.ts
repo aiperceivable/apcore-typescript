@@ -14,6 +14,9 @@ import {
   ModuleReloadConflictError,
 } from '../errors.js';
 import type { Registry } from '../registry/registry.js';
+import { resolveDependencies } from '../registry/dependencies.js';
+import { parseDependencies } from '../registry/metadata-pure.js';
+import type { DependencyInfo } from '../registry/types.js';
 import type { EventEmitter } from '../events/emitter.js';
 import { createEvent } from '../events/emitter.js';
 import type { Config } from '../config.js';
@@ -342,9 +345,51 @@ export class ReloadModule {
     };
   }
 
+  /**
+   * Order `moduleIds` so a declared dependency is reloaded before the module
+   * that needs it (leaves first), matching apcore-python
+   * `ReloadModule._topo_sort_modules`.
+   *
+   * Only edges *within* the matched set are considered — a dependency outside
+   * the path_filter is not being reloaded, so it constrains nothing. Kahn's
+   * sort seeds its queue from a sorted zero-in-degree list, so a set that
+   * declares no dependencies at all comes back in alphabetical order: the
+   * previous behaviour is the degenerate case of this one, not a separate
+   * branch. A cycle or unresolvable edge falls back to alphabetical rather
+   * than failing the reload.
+   */
+  private _topoSortModules(moduleIds: string[]): string[] {
+    const matchedSet = new Set(moduleIds);
+    const entries: Array<[string, DependencyInfo[]]> = [];
+    for (const id of moduleIds) {
+      const meta = this._registry.getModuleMetadata(id);
+      // YAML-declared `dependencies` reaches the merge unvalidated (no schema
+      // describes it), so a scalar can arrive here. Anything that is not a
+      // list means "no declared dependencies", never a crashed reload.
+      const rawValue = meta['dependencies'];
+      const depsRaw = Array.isArray(rawValue) ? (rawValue as Array<Record<string, unknown>>) : [];
+      const deps = depsRaw.length > 0 ? parseDependencies(depsRaw) : [];
+      entries.push([id, deps.filter((d) => matchedSet.has(d.moduleId))]);
+    }
+
+    try {
+      return resolveDependencies(entries, matchedSet);
+    } catch (err) {
+      console.warn(
+        `[apcore:control] Topo sort failed for path_filter reload; falling back to alphabetical: ${String(err)}`,
+      );
+      return [...moduleIds].sort();
+    }
+  }
+
   private async _reloadWithPathFilter(pathFilter: string, reason: string, ctx: Context | null): Promise<Record<string, unknown>> {
     const allIds = this._registry.list();
-    const matchingIds = allIds.filter((id) => matchPattern(pathFilter, id)).sort();
+    // Alphabetical first so the topo sort has a deterministic input, then
+    // dependency order on top (fixture `system_modules_hardening.json`
+    // reload_with_path_filter: `reload_order: "topological"`).
+    const matchingIds = this._topoSortModules(
+      allIds.filter((id) => matchPattern(pathFilter, id)).sort(),
+    );
 
     // Capture existing modules and versions before unregistering
     const existingModules = new Map<string, unknown>();
