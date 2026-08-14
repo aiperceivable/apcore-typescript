@@ -38,8 +38,11 @@ import { ErrorCodeRegistry } from '../src/error-code-registry.js';
 import { ErrorCodes } from '../src/errors.js';
 import { guardCallChain } from '../src/utils/call-chain.js';
 import {
+  // CallDepthExceededError / CallFrequencyExceededError stay: the call_chain
+  // positive cases probe the limit boundary with them. CircularCallError is
+  // gone with CALL_CHAIN_ERROR_MAP — `CIRCULAR_CALL` is now asserted as a wire
+  // code through the SDK's own registry, not as a class (apcore#93).
   CallDepthExceededError,
-  CircularCallError,
   CallFrequencyExceededError,
   ApprovalDeniedError,
   ApprovalPendingError,
@@ -140,19 +143,6 @@ function loadSchema(name: string): Record<string, unknown> {
 }
 
 // ---------------------------------------------------------------------------
-// Error type mapping for call chain tests
-// ---------------------------------------------------------------------------
-
-const CALL_CHAIN_ERROR_MAP: Record<string, new (...args: any[]) => Error> = {
-  CALL_DEPTH_EXCEEDED: CallDepthExceededError,
-  CIRCULAR_CALL: CircularCallError,
-  CALL_FREQUENCY_EXCEEDED: CallFrequencyExceededError,
-  // Non-positive limit floor (T-B-005): each SDK rejects with its idiomatic
-  // invalid-argument signal — Python ValueError, TS Error, Rust ModuleError.
-  INVALID_LIMIT: Error,
-};
-
-// ---------------------------------------------------------------------------
 // Wire-code assertions (apcore#92)
 // ---------------------------------------------------------------------------
 //
@@ -178,8 +168,14 @@ const SDK_WIRE_CODES: ReadonlySet<string> = new Set<string>(Object.values(ErrorC
  * Rust". apcore has no `PARSE_ERROR` code, so the discriminating assertion is
  * the inverse of a wire-code check — a native Error that is *not* a ModuleError.
  * Anything else unrecognised is a hard failure, never a skipped branch.
+ *
+ * `call_chain`'s `INVALID_LIMIT` is the same shape and says so in the case's own
+ * `note`: "Python ValueError / TS Error / Rust ModuleError
+ * GENERAL_INVALID_INPUT" (divergence T-B-005). There is no `INVALID_LIMIT` wire
+ * code; in this SDK the limit floor is a plain `Error`, so `not a ModuleError`
+ * is exactly the discriminating check.
  */
-const NON_WIRE_EXPECTATIONS: ReadonlySet<string> = new Set(['PARSE_ERROR']);
+const NON_WIRE_EXPECTATIONS: ReadonlySet<string> = new Set(['PARSE_ERROR', 'INVALID_LIMIT']);
 
 /** Run `fn`, returning what it threw, or `null` when it completed. */
 function captureThrow(fn: () => unknown): unknown {
@@ -337,21 +333,65 @@ describe('apcore Conformance Suite (TypeScript)', () => {
   // --- 6. Call Chain Safety (A20) ---
   const callChainFixture = loadFixture('call_chain');
   describe('Call Chain Safety (Algorithm A20)', () => {
+    /** Invoke the guard with this case's limits, overriding any of them. */
+    const callGuard = (
+      tc: any,
+      chain: readonly string[],
+      overrides: { maxCallDepth?: number; maxModuleRepeat?: number } = {},
+    ): void =>
+      guardCallChain(
+        tc.module_id,
+        chain,
+        overrides.maxCallDepth ?? tc.max_call_depth,
+        overrides.maxModuleRepeat ?? tc.max_module_repeat,
+      );
+
     callChainFixture.test_cases.forEach((tc: any) => {
       it(tc.id, () => {
-        const args: [string, readonly string[], ...any[]] = [
-          tc.module_id,
-          tc.call_chain,
-        ];
-        if (tc.max_call_depth !== undefined) args.push(tc.max_call_depth);
-        else args.push(undefined);
-        if (tc.max_module_repeat !== undefined) args.push(tc.max_module_repeat);
+        // apcore#93: the negative half dispatched through a driver-local
+        // `CALL_CHAIN_ERROR_MAP` and asserted the CLASS, so a fixture value the
+        // map did not know became `toThrow(undefined)` — "something threw",
+        // satisfied by every wrong code. The declared value now reaches
+        // `error.code` through the SDK's own registry (apcore-typescript#34
+        // item 2: a private translation table in this file is what let four
+        // unreadable config fields look covered).
+        if (tc.expected_error !== undefined) {
+          assertWireCode(tc.id, tc.expected_error, captureThrow(() => callGuard(tc, tc.call_chain)));
+          return;
+        }
+        if (tc.expected !== 'ok') {
+          throw new Error(
+            `conformance driver: case '${tc.id}' states an expectation the driver does ` +
+              `not recognise (${JSON.stringify(expectationKeys(tc))} => ` +
+              `${JSON.stringify(tc.expected)}). Teach the driver, do not skip it.`,
+          );
+        }
 
-        if (tc.expected_error) {
-          const ErrorClass = CALL_CHAIN_ERROR_MAP[tc.expected_error];
-          expect(() => guardCallChain(...args)).toThrow(ErrorClass);
-        } else {
-          expect(() => guardCallChain(...args)).not.toThrow();
+        // Positive case. apcore#93: the whole assertion was `.not.toThrow()`,
+        // which a `guardCallChain` that returned immediately also satisfies —
+        // the fixture's own `driver_contract.positive_cases_need_a_post_condition`
+        // names this shape. Assert what is observably true after a guard that
+        // ACCEPTED the chain.
+        const chain = [...tc.call_chain];
+        expect(callGuard(tc, chain)).toBeUndefined();
+        expect(chain).toEqual(tc.call_chain); // MUST NOT mutate the caller's chain
+
+        // Boundary probe: the guard accepted this chain because it is WITHIN the
+        // limits, not because it inspects nothing. Re-run with the one limit the
+        // chain sits under tightened by one and require the matching rejection.
+        // Skipped where the chain cannot be pushed over a LEGAL limit
+        // (empty_chain, single_element — max_* < 1 is itself invalid input).
+        const depth = chain.length;
+        if (depth >= 2) {
+          expect(() => callGuard(tc, chain, { maxCallDepth: depth - 1 })).toThrow(
+            CallDepthExceededError,
+          );
+        }
+        const repeats = chain.filter((id: string) => id === tc.module_id).length;
+        if (repeats >= 2) {
+          expect(() => callGuard(tc, chain, { maxModuleRepeat: repeats - 1 })).toThrow(
+            CallFrequencyExceededError,
+          );
         }
       });
     });
@@ -435,9 +475,11 @@ describe('apcore Conformance Suite (TypeScript)', () => {
 
   // --- 8. Config Env Mapping (A12-NS) ---
   const configEnvFixture = loadFixture('config_env');
-  // Pre-existing SDK bug: auto mode with max_depth=2 cannot resolve
-  // ROUTER_MAX_TIMEOUT to router.max_timeout under mcp namespace.
-  const CONFIG_ENV_XFAIL = new Set(['nested_path_match']);
+  // apcore#93: `nested_path_match` was quarantined here as a "pre-existing SDK
+  // bug: auto mode with max_depth=2 cannot resolve ROUTER_MAX_TIMEOUT". The
+  // quarantine is STALE — `envSuffixToDotPathWithDepth('ROUTER_MAX_TIMEOUT', 2)`
+  // returns `router.max_timeout` and `config.get()` reads 30000 back, matching
+  // apcore-python's identical algorithm. It is driven with the rest.
 
   describe('Config Env Mapping (Algorithm A12-NS)', () => {
     beforeEach(() => {
@@ -454,7 +496,6 @@ describe('apcore Conformance Suite (TypeScript)', () => {
 
     configEnvFixture.test_cases.forEach((tc: any) => {
       it(tc.id, () => {
-        if (CONFIG_ENV_XFAIL.has(tc.id)) return;
         const envStyle = tc.env_style || 'auto';
         configEnvFixture.namespaces.forEach((ns: any) => {
           if (ns.name === 'global' && ns.env_map) {
@@ -594,53 +635,86 @@ describe('apcore Conformance Suite (TypeScript)', () => {
   // --- 10. Schema Validation (S4.15) ---
   const schemaValFixture = loadFixture('schema_validation');
   describe('Schema Validation', () => {
-    const XFAIL_IDS = new Set([
-      // TypeBox with empty schema {} rejects non-object values
-      'empty_schema_accepts_string',
-      // TypeBox Value.Decode does not coerce "123" string to integer
-      'wrong_type_string_for_integer',
-    ]);
-
+    // apcore#93: this block used to lose 11 of its 16 cases at once.
+    //
+    //   * `try { expect(result.valid).toBe(expectedValid) } catch { if
+    //     (expectedValid) throw }` — a catch-all that SWALLOWS the assertion
+    //     itself. Every `expected_valid: true` case became unfalsifiable the
+    //     moment the expectation was flipped, because the flipped value routed
+    //     the failure into the silent arm. Only the five negative cases could
+    //     ever go red.
+    //   * `if (typeof input !== 'object') return` quietly dropped
+    //     `empty_schema_accepts_string`, whose whole point is a non-object input.
+    //   * two ids were quarantined in an XFAIL set. Both quarantines are gone:
+    //     `empty_schema_accepts_string` was stale (an empty schema converts to
+    //     `{}` and accepts a string today), and `wrong_type_string_for_integer`
+    //     was a real gap in `SchemaValidator(true)`, now closed by the
+    //     pydantic-lax `coerceValue` pre-pass that apcore-python and apcore-rust
+    //     already shipped.
+    //
+    // A conversion failure is now a test failure, never a silent "treat as
+    // invalid".
     schemaValFixture.test_cases.forEach((tc: any) => {
       it(tc.id, () => {
-        if (XFAIL_IDS.has(tc.id)) {
-          // Known gap - skip
-          return;
-        }
-
-        const schema = tc.schema;
+        const typeboxSchema = jsonSchemaToTypeBox(tc.schema);
         const input = tc.input;
 
-        // Determine expected validity
-        let expectedValid: boolean;
-        if ('expected_valid' in tc) {
-          expectedValid = tc.expected_valid;
-        } else if ('expected_valid_strict' in tc) {
-          // The validator below is built with coerceTypes=true — assert that
-          // half. This is the opt-in LIBRARY-level mode, not what the
-          // module-invocation boundary does: that path never coerces
-          // (TYPE_MAPPING §17.3) and is covered by schema_keyword_parity.json.
-          expectedValid = tc.expected_valid_coerce;
-        } else {
-          expectedValid = true;
-        }
+        /** Validate in one mode and assert the fixture's declared verdict. */
+        const assertVerdict = (coerce: boolean, expectedValid: boolean, key: string): void => {
+          const result = new SchemaValidator(coerce).validate(input, typeboxSchema);
+          expect(
+            result.valid,
+            `[schema_validation :: ${tc.id}] validate(coerceTypes=${coerce}).valid = ` +
+              `${result.valid}, fixture ${key} = ${expectedValid}; ` +
+              `errors=${JSON.stringify(result.errors)}`,
+          ).toBe(expectedValid);
 
-        // Skip non-object inputs (TypeBox models expect objects)
-        if (typeof input !== 'object' || input === null) {
+          // A declared failure path must be the path actually reported,
+          // otherwise "invalid" is proven by any unrelated rejection.
+          if (!expectedValid && tc.expected_error_path !== undefined) {
+            const wanted = '/' + String(tc.expected_error_path).replace(/[.[]/g, '/').replace(/]/g, '');
+            const paths = result.errors.map((e: any) => e.path);
+            expect(
+              paths.some((p: string) => p.includes(wanted)),
+              `[schema_validation :: ${tc.id}] expected an error at ${wanted}, got ${JSON.stringify(paths)}`,
+            ).toBe(true);
+          }
+        };
+
+        if ('expected_valid' in tc) {
+          // Coercion must not change the verdict for a case that declares a
+          // single one: `coerceValue` only rewrites strings toward a declared
+          // numeric/boolean target, so both modes agree here by construction.
+          assertVerdict(false, tc.expected_valid, 'expected_valid');
+          assertVerdict(true, tc.expected_valid, 'expected_valid');
           return;
         }
 
-        try {
-          const typeboxSchema = jsonSchemaToTypeBox(schema);
-          const validator = new SchemaValidator(true);
-          const result = validator.validate(input, typeboxSchema);
-          expect(result.valid).toBe(expectedValid);
-        } catch (e: any) {
-          // If conversion fails for edge cases, treat as non-valid
-          if (expectedValid) {
-            throw e;
+        if ('expected_valid_strict' in tc) {
+          // Both halves reach an assertion, each against a validator built in
+          // the matching mode. Selecting on one key and asserting the other is
+          // how the strict expectation became decoration (the apcore#92 shape).
+          // The coercing mode is the opt-in LIBRARY-level knob; the
+          // module-invocation boundary never coerces (TYPE_MAPPING §17.3) and is
+          // covered by schema_keyword_parity.json.
+          assertVerdict(false, tc.expected_valid_strict, 'expected_valid_strict');
+          assertVerdict(true, tc.expected_valid_coerce, 'expected_valid_coerce');
+
+          if (tc.expected_coerced_value !== undefined) {
+            // The coerced VALUE, not just the verdict: a validator that accepted
+            // the input without converting it would pass the check above.
+            const coerced = new SchemaValidator(true).validateInput(input, typeboxSchema);
+            const field = Object.keys(tc.input)[0];
+            expect(coerced[field]).toBe(tc.expected_coerced_value);
           }
+          return;
         }
+
+        throw new Error(
+          `conformance driver: case '${tc.id}' states an expectation the driver does ` +
+            `not recognise (${JSON.stringify(expectationKeys(tc))}). ` +
+            `Teach the driver, do not skip it.`,
+        );
       });
     });
   });
@@ -1579,15 +1653,29 @@ describe('apcore Conformance Suite (TypeScript)', () => {
       );
       expect(tc).toBeDefined();
 
-      class SlackSubscriber implements EventSubscriber {
+      // apcore#93: this registered the literal `'slack'` and asserted `instanceof
+      // SlackSubscriber` — the driver's own class, against the driver's own
+      // literal. Neither `expected.subscriber_created` nor
+      // `expected.subscriber_type` was ever read, so the case could not go red
+      // whatever the fixture declared. Both the registration and the assertions
+      // are now driven off the fixture.
+      class RegisteredSubscriber implements EventSubscriber {
+        constructor(readonly typeName: string) {}
         async onEvent(_event: ApCoreEvent): Promise<void> {}
       }
 
-      registerSubscriberType('slack', (_config) => new SlackSubscriber());
+      for (const typeName of tc.input.registered_types as string[]) {
+        registerSubscriberType(typeName, () => new RegisteredSubscriber(typeName));
+      }
 
       const subscriber = createSubscriberFromConfig(tc.input.subscriber_config);
-      expect(subscriber).not.toBeNull();
-      expect(subscriber).toBeInstanceOf(SlackSubscriber);
+      expect(subscriber !== null && subscriber !== undefined).toBe(
+        tc.expected.subscriber_created,
+      );
+      // The factory selected must be the one registered under the declared type
+      // name, not merely *a* subscriber.
+      expect(subscriber).toBeInstanceOf(RegisteredSubscriber);
+      expect((subscriber as RegisteredSubscriber).typeName).toBe(tc.expected.subscriber_type);
     });
 
     it('builtin_stdout_type', () => {

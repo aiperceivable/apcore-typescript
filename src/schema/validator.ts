@@ -38,6 +38,108 @@ function findMarkedUnion(schema: Record<string, unknown>): TSchema | null {
   return null;
 }
 
+/** The declared JSON Schema types of a node — `type` may be a string or array. */
+function declaredTypes(schema: Record<string, unknown>): string[] {
+  const t = schema['type'];
+  if (typeof t === 'string') return [t];
+  if (Array.isArray(t)) return t.filter((x): x is string => typeof x === 'string');
+  return [];
+}
+
+/**
+ * Coerce a string to an integer iff it represents an exactly integral value.
+ *
+ * Mirrors pydantic (and `apcore-rust::coerce_str_to_integer`): `"42"` → 42,
+ * `"42.0"` → 42, `" 42 "` → 42; rejects `"3.14"`, `"abc"`, `""`. A lossy
+ * conversion is refused rather than truncated, so no SDK silently changes a
+ * value's meaning.
+ */
+function coerceStrToInteger(s: string): number | null {
+  const trimmed = s.trim();
+  if (trimmed === '') return null;
+  const f = Number(trimmed);
+  if (!Number.isFinite(f) || !Number.isInteger(f)) return null;
+  // Outside the exactly-representable range a parsed double no longer stands
+  // for the digits it was written with, so the conversion is not lossless.
+  if (!Number.isSafeInteger(f)) return null;
+  return f;
+}
+
+/** Coerce a string to a float, rejecting empty and non-finite input. */
+function coerceStrToNumber(s: string): number | null {
+  const trimmed = s.trim();
+  if (trimmed === '') return null;
+  const f = Number(trimmed);
+  return Number.isFinite(f) ? f : null;
+}
+
+/**
+ * Coerce a string to a boolean, mirroring pydantic's accepted set
+ * (case-insensitive): true/false, yes/no, on/off, y/n, t/f, 1/0.
+ */
+const _TRUE_STRINGS: ReadonlySet<string> = new Set(['true', 'yes', 'on', 'y', 't', '1']);
+const _FALSE_STRINGS: ReadonlySet<string> = new Set(['false', 'no', 'off', 'n', 'f', '0']);
+function coerceStrToBool(s: string): boolean | null {
+  const lower = s.toLowerCase();
+  if (_TRUE_STRINGS.has(lower)) return true;
+  if (_FALSE_STRINGS.has(lower)) return false;
+  return null;
+}
+
+/**
+ * Return `value` with strings converted to the scalar types `schema` declares.
+ *
+ * Pure — the input is never mutated, so a caller's object is safe to pass. Only
+ * reachable under `coerceTypes: true`; see {@link SchemaValidator}.
+ *
+ * A union node (`anyOf`/`oneOf`, which is also how the converter renders
+ * `type: ["string", "boolean"]`) declares no single scalar target, so it is left
+ * untouched: guessing a branch is what makes coercion unpredictable.
+ */
+export function coerceValue(value: unknown, schema: unknown): unknown {
+  if (typeof schema !== 'object' || schema === null || Array.isArray(schema)) return value;
+  const s = schema as Record<string, unknown>;
+  const types = declaredTypes(s);
+
+  if (types.includes('object')) {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) return value;
+    const props = s['properties'];
+    const propMap =
+      typeof props === 'object' && props !== null && !Array.isArray(props)
+        ? (props as Record<string, unknown>)
+        : null;
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      const propSchema = propMap === null ? undefined : propMap[k];
+      out[k] = propSchema === undefined ? v : coerceValue(v, propSchema);
+    }
+    return out;
+  }
+
+  if (types.includes('array')) {
+    const items = s['items'];
+    if (!Array.isArray(value) || items === undefined) return value;
+    return value.map((item) => coerceValue(item, items));
+  }
+
+  if (typeof value !== 'string') return value;
+  // Order matters only in that a value satisfying several declared targets takes
+  // the first — the same precedence apcore-rust applies.
+  if (types.includes('boolean')) {
+    const b = coerceStrToBool(value);
+    if (b !== null) return b;
+  }
+  if (types.includes('integer')) {
+    const i = coerceStrToInteger(value);
+    if (i !== null) return i;
+  }
+  if (types.includes('number')) {
+    const n = coerceStrToNumber(value);
+    if (n !== null) return n;
+  }
+  return value;
+}
+
 /**
  * Validates runtime data against a TypeBox schema.
  *
@@ -52,15 +154,17 @@ function findMarkedUnion(schema: Record<string, unknown>): TSchema | null {
  * is opt-in: a validator that silently rewrites its input is the wrong default
  * for the common case of checking data you already believe is well-formed.
  *
- * **Known limitation:** passing `true` does not currently coerce. It switches the
- * check from `Value.Check` to `Value.Decode`, which applies TypeBox transforms
- * but not type conversion — `"42"` is still rejected for `{type: "integer"}`,
- * where apcore-python and apcore-rust accept it in their coercing mode. Closing
- * the gap means picking a conversion semantics all three can agree on:
- * `Value.Convert` mutates its argument in place and truncates (`"4.5"` becomes
- * `4`), while pydantic refuses a lossy conversion. Until that is settled, treat
- * `coerceTypes: true` as unimplemented rather than as a different dialect. The
- * module-invocation boundary is unaffected — it never coerces on any SDK
+ * Passing `true` runs {@link coerceValue} as a pre-pass, then validates the
+ * coerced value. The semantics are **pydantic-lax**, the dialect apcore-python
+ * (`model_validate(strict=False)`) and apcore-rust (`coerce_value`) already
+ * agree on: coerce only FROM a string, only toward a declared
+ * `boolean`/`integer`/`number`, and only when the conversion is exact. `"42"`
+ * and `"42.0"` become `42`; `"3.14"` for `{type: "integer"}` does not, because
+ * pydantic refuses a lossy conversion. That is deliberately NOT
+ * `Value.Convert`, which mutates its argument in place and truncates `"4.5"` to
+ * `4` — a silent data change no other SDK makes.
+ *
+ * The module-invocation boundary is unaffected: it never coerces on any SDK
  * (TYPE_MAPPING §17.3).
  */
 export class SchemaValidator {
@@ -78,7 +182,20 @@ export class SchemaValidator {
    * formats are enforced at SHOULD level by `_checkFormats`, never here.
    */
   validate(data: Record<string, unknown>, schema: TSchema): SchemaValidationResult {
-    return withFormatsAsAnnotations(schema, () => this._validate(data, schema));
+    return withFormatsAsAnnotations(schema, () => this._validate(this._coerce(data, schema), schema));
+  }
+
+  /**
+   * The coercion pre-pass, or the value unchanged when coercion is off.
+   *
+   * Applied once at each public entry point so the structural check, the error
+   * collection and the returned value all see the SAME value — collecting errors
+   * against the raw input would report paths for a value that was never
+   * validated.
+   */
+  private _coerce(data: Record<string, unknown>, schema: TSchema): Record<string, unknown> {
+    if (!this._coerceTypes) return data;
+    return coerceValue(data, schema) as Record<string, unknown>;
   }
 
   private _validate(data: Record<string, unknown>, schema: TSchema): SchemaValidationResult {
@@ -240,15 +357,16 @@ export class SchemaValidator {
       // Route through _validate() so union schemas surface their specific error
       // code (SCHEMA_UNION_NO_MATCH / SCHEMA_UNION_AMBIGUOUS) and plain failures
       // surface SCHEMA_VALIDATION_ERROR — all preserved through the thrown error.
-      const result = this._validate(data, schema);
+      const value = this._coerce(data, schema);
+      const result = this._validate(value, schema);
       if (!result.valid) {
         throw validationResultToError(result);
       }
 
       if (this._coerceTypes) {
-        return Value.Decode(schema, data) as Record<string, unknown>;
+        return Value.Decode(schema, value) as Record<string, unknown>;
       }
-      return data;
+      return value;
     });
   }
 
