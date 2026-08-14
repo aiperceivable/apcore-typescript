@@ -35,6 +35,7 @@ import {
 } from '../src/config.js';
 import { negotiateVersion } from '../src/version.js';
 import { ErrorCodeRegistry } from '../src/error-code-registry.js';
+import { ErrorCodes } from '../src/errors.js';
 import { guardCallChain } from '../src/utils/call-chain.js';
 import {
   CallDepthExceededError,
@@ -42,7 +43,6 @@ import {
   CallFrequencyExceededError,
   ApprovalDeniedError,
   ApprovalPendingError,
-  DependencyVersionMismatchError,
   ContextBindingError,
 } from '../src/errors.js';
 import { CancelToken } from '../src/cancel.js';
@@ -152,6 +152,100 @@ const CALL_CHAIN_ERROR_MAP: Record<string, new (...args: any[]) => Error> = {
   INVALID_LIMIT: Error,
 };
 
+// ---------------------------------------------------------------------------
+// Wire-code assertions (apcore#92)
+// ---------------------------------------------------------------------------
+//
+// A fixture's `expected_error` / `error_code` is a WIRE CODE, not a class name.
+// Asserting the class (`toThrow(ErrorCodeCollisionError)`) is green whatever the
+// fixture says — mutating the declared code left every suite green on all three
+// SDKs — and it is unwritable in apcore-rust, which has no error classes at all,
+// only `ErrorCode` variants. So the declared value must reach `error.code`.
+//
+// The membership set below is the SDK's OWN canonical registry, deliberately not
+// a driver-local translation table: apcore-typescript#34 item 2 is the record of
+// what a private map in this file costs — it papered over four config fields the
+// SDK could not actually read.
+
+/** Wire codes this SDK recognises, read off the SDK's own registry. */
+const SDK_WIRE_CODES: ReadonlySet<string> = new Set<string>(Object.values(ErrorCodes));
+
+/**
+ * Fixture expectations that are deliberately NOT wire codes.
+ *
+ * `version_negotiation`'s `invalid_version_error` documents its own value
+ * inline: "language-specific: ValueError in Python, Error in TS, ParseError in
+ * Rust". apcore has no `PARSE_ERROR` code, so the discriminating assertion is
+ * the inverse of a wire-code check — a native Error that is *not* a ModuleError.
+ * Anything else unrecognised is a hard failure, never a skipped branch.
+ */
+const NON_WIRE_EXPECTATIONS: ReadonlySet<string> = new Set(['PARSE_ERROR']);
+
+/** Run `fn`, returning what it threw, or `null` when it completed. */
+function captureThrow(fn: () => unknown): unknown {
+  try {
+    fn();
+    return null;
+  } catch (e) {
+    return e;
+  }
+}
+
+/**
+ * Assert that `thrown` is the failure the fixture declared, by wire code.
+ *
+ * An expectation this driver does not recognise is a hard failure naming the
+ * case and the unknown value — the `pipeline_failfast_config` "teach the driver,
+ * do not skip it" pattern. A skipped branch turns a wrong fixture value into a
+ * passing test and makes the driver's literal, not the fixture, the contract.
+ */
+function assertWireCode(caseId: string, expectedError: unknown, thrown: unknown): void {
+  if (typeof expectedError !== 'string') {
+    throw new Error(
+      `conformance driver: case '${caseId}' declares a non-string error expectation ` +
+        `${JSON.stringify(expectedError)}. Teach the driver, do not skip it.`,
+    );
+  }
+  if (!(thrown instanceof Error)) {
+    throw new Error(
+      `conformance driver: case '${caseId}' expects ${expectedError} to be raised, ` +
+        `but nothing was thrown (got ${JSON.stringify(thrown)}).`,
+    );
+  }
+  if (NON_WIRE_EXPECTATIONS.has(expectedError)) {
+    expect(thrown).not.toBeInstanceOf(ModuleError);
+    return;
+  }
+  if (!SDK_WIRE_CODES.has(expectedError)) {
+    throw new Error(
+      `conformance driver: case '${caseId}' declares error expectation ` +
+        `'${expectedError}', which is neither a member of the SDK's ErrorCodes ` +
+        `registry nor a documented non-wire expectation ` +
+        `(${[...NON_WIRE_EXPECTATIONS].join(', ')}). Teach the driver, do not skip it.`,
+    );
+  }
+  expect(thrown).toBeInstanceOf(ModuleError);
+  expect((thrown as ModuleError).code).toBe(expectedError);
+}
+
+/** Structural equality, for expectations the fixture states as a boolean. */
+function deepEq(a: unknown, b: unknown): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
+/**
+ * Top-level keys of a fixture case that state an expectation, for diagnostics.
+ *
+ * The `expected` prefix is the whole rule. A bare top-level `error_code` is an
+ * INPUT — in `error_codes.json` it is the code being registered — and naming it
+ * as an expectation is what let six cases read as covered when they were not.
+ */
+function expectationKeys(tc: Record<string, unknown>): string[] {
+  return Object.keys(tc)
+    .filter((k) => k === 'expected' || k.startsWith('expected_'))
+    .sort();
+}
+
 describe('apcore Conformance Suite (TypeScript)', () => {
   // --- 1. ID Normalization (A02) ---
   const normalizeFixture = loadFixture('normalize_id');
@@ -227,8 +321,12 @@ describe('apcore Conformance Suite (TypeScript)', () => {
   describe('Version Negotiation (Algorithm A14)', () => {
     versionFixture.test_cases.forEach((tc: any) => {
       it(tc.id, () => {
-        if (tc.expected_error) {
-          expect(() => negotiateVersion(tc.declared, tc.sdk)).toThrow();
+        // apcore#92: this branched on `tc.expected_error` being truthy and then
+        // asserted `.toThrow()` with no argument — "something threw", the
+        // weakest assertion available, satisfied by any error at all and by
+        // every wrong wire code. The declared value now reaches `error.code`.
+        if (tc.expected_error !== undefined) {
+          assertWireCode(tc.id, tc.expected_error, captureThrow(() => negotiateVersion(tc.declared, tc.sdk)));
         } else {
           expect(negotiateVersion(tc.declared, tc.sdk)).toBe(tc.expected);
         }
@@ -265,29 +363,71 @@ describe('apcore Conformance Suite (TypeScript)', () => {
     errorCodeFixture.test_cases.forEach((tc: any) => {
       it(tc.id, () => {
         const registry = new ErrorCodeRegistry();
-        if (tc.action === 'register') {
-          if (tc.expected_error) {
-            expect(() => registry.register(tc.module_id, new Set([tc.error_code]))).toThrow();
+        // Codes this case registers, read off the fixture so the post-condition
+        // below stays fixture-driven rather than a hardcoded literal.
+        const registeredCodes: string[] = [];
+        const owned = new Map<string, string[]>();
+
+        const run = () => {
+          const doRegister = (moduleId: string, code: string) => {
+            registry.register(moduleId, new Set([code]));
+            registeredCodes.push(code);
+            owned.set(moduleId, [...(owned.get(moduleId) ?? []), code]);
+          };
+          if (tc.action === 'register') {
+            doRegister(tc.module_id, tc.error_code);
+          } else if (tc.action === 'register_sequence') {
+            for (const step of tc.steps) doRegister(step.module_id, step.error_code);
+          } else if (tc.action === 'register_unregister_register') {
+            for (const step of tc.steps) {
+              if (step.action === 'register') {
+                doRegister(step.module_id, step.error_code);
+              } else if (step.action === 'unregister') {
+                const released = owned.get(step.module_id) ?? [];
+                registry.unregister(step.module_id);
+                owned.delete(step.module_id);
+                // Observable post-condition on the unregister itself: the
+                // released codes must actually leave the registry, otherwise
+                // "unregister allows reuse" is proven by the reuse alone and an
+                // unregister() that did nothing would still look correct.
+                for (const code of released) {
+                  expect(registry.allCodes.has(code)).toBe(false);
+                }
+              } else {
+                throw new Error(
+                  `conformance driver: case '${tc.id}' has a step action ` +
+                    `${JSON.stringify(step.action)} the driver does not recognise. ` +
+                    `Teach the driver, do not skip it.`,
+                );
+              }
+            }
           } else {
-            registry.register(tc.module_id, new Set([tc.error_code]));
+            throw new Error(
+              `conformance driver: case '${tc.id}' has action ${JSON.stringify(tc.action)} ` +
+                `the driver does not recognise. Teach the driver, do not skip it.`,
+            );
           }
-        } else if (tc.action === 'register_sequence') {
-          tc.steps.forEach((step: any, idx: number) => {
-            const isLast = idx === tc.steps.length - 1;
-            if (isLast && tc.expected_error) {
-              expect(() => registry.register(step.module_id, new Set([step.error_code]))).toThrow();
-            } else {
-              registry.register(step.module_id, new Set([step.error_code]));
-            }
-          });
-        } else if (tc.action === 'register_unregister_register') {
-          tc.steps.forEach((step: any) => {
-            if (step.action === 'register') {
-              registry.register(step.module_id, new Set([step.error_code]));
-            } else if (step.action === 'unregister') {
-              registry.unregister(step.module_id);
-            }
-          });
+        };
+
+        // apcore#92: the old driver branched on `expected_error` being PRESENT
+        // and then asserted the class `ErrorCodeCollisionError` — never the wire
+        // code the fixture declares — while every `expected: "ok"` case asserted
+        // nothing at all and was satisfied by a register() that did nothing.
+        if (tc.expected_error !== undefined) {
+          assertWireCode(tc.id, tc.expected_error, captureThrow(run));
+        } else if (tc.expected === 'ok') {
+          run();
+          // Observable post-condition: an accepted registration is queryable.
+          expect(registeredCodes.length).toBeGreaterThan(0);
+          for (const code of registeredCodes) {
+            expect(registry.allCodes.has(code)).toBe(true);
+          }
+        } else {
+          throw new Error(
+            `conformance driver: case '${tc.id}' states an expectation the driver does ` +
+              `not recognise (${JSON.stringify(expectationKeys(tc))} => ` +
+              `${JSON.stringify(tc.expected)}). Teach the driver, do not skip it.`,
+          );
         }
       });
     });
@@ -601,12 +741,38 @@ describe('apcore Conformance Suite (TypeScript)', () => {
           tc.input_roles ?? [],
           tc.input_attrs ?? {},
         );
-        if (tc.expected_type !== undefined) expect(identity.type).toBe(tc.expected_type);
-        if (tc.expected_roles !== undefined) expect(identity.roles).toEqual(tc.expected_roles);
-        if (tc.expected_attrs !== undefined) expect(identity.attrs).toEqual(tc.expected_attrs);
-        if (tc.id === 'identity_propagates_to_child_context') {
-          const ctx = new Context('trace', null, [], null, identity);
-          expect(ctx.identity?.id).toBe(tc.input_id);
+        let asserted = 0;
+        if (tc.expected_type !== undefined) {
+          expect(identity.type).toBe(tc.expected_type);
+          asserted += 1;
+        }
+        if (tc.expected_roles !== undefined) {
+          expect(identity.roles).toEqual(tc.expected_roles);
+          asserted += 1;
+        }
+        if (tc.expected_attrs !== undefined) {
+          expect(identity.attrs).toEqual(tc.expected_attrs);
+          asserted += 1;
+        }
+        if (tc.expected !== undefined) {
+          // apcore#92: `expected` used to be the prose string
+          // "child.identity === parent.identity" — a sentence in a value slot,
+          // which no driver can assert, so this branch was keyed on the case id
+          // and compared the child's identity against the case INPUT. The
+          // fixture value was decoration. It is now four fields; assert each.
+          const parent = new Context('trace', null, [], null, identity);
+          const child = parent.child(tc.child_module_id);
+          expect(child.identity?.id).toBe(tc.expected.child_identity_id);
+          expect(child.identity?.type).toBe(tc.expected.child_identity_type);
+          expect(child.identity?.roles).toEqual(tc.expected.child_identity_roles);
+          expect(child.identity === parent.identity).toBe(tc.expected.child_identity_equals_parent);
+          asserted += 4;
+        }
+        if (asserted === 0) {
+          throw new Error(
+            `conformance driver: case '${tc.id}' states expectations the driver does not ` +
+              `read (${JSON.stringify(expectationKeys(tc))}). Teach the driver, do not skip it.`,
+          );
         }
       });
     });
@@ -845,9 +1011,34 @@ describe('apcore Conformance Suite (TypeScript)', () => {
           } finally {
             warn.mockRestore();
           }
+        } else if (tc.expected.outcome === 'error') {
+          // apcore#92 §1: this was an unconditional `else` asserting the CLASS
+          // `DependencyVersionMismatchError`, so `error_code`, `module_id`,
+          // `dependency_id`, `required` and `actual` never reached an assertion
+          // and mutating any of them left the suite green. All seven `*_violated`
+          // cases — every negative branch in this fixture — were unpinned, which
+          // is the worst possible split for a constraint checker: an
+          // implementation that always reported "satisfied" passed everything
+          // this fixture actually ran.
+          const thrown = captureThrow(() => resolveDependencies(modulesList, null, moduleVersions));
+          assertWireCode(tc.id, tc.expected['error_code'], thrown);
+          // The remaining `expected` fields are the error's details. Asserted
+          // against the WIRE form (`toJSON().details`, snake_cased per A-D-008)
+          // so the fixture's own spelling reaches the assertion directly —
+          // no driver-local key map (apcore-typescript#34 item 2).
+          const details = ((thrown as ModuleError).toJSON()['details'] ?? {}) as Record<
+            string,
+            unknown
+          >;
+          for (const [key, want] of Object.entries(tc.expected)) {
+            if (key === 'outcome' || key === 'error_code') continue;
+            expect(details[key]).toBe(want);
+          }
         } else {
-          expect(() => resolveDependencies(modulesList, null, moduleVersions)).toThrow(
-            DependencyVersionMismatchError,
+          throw new Error(
+            `conformance driver: case '${tc.id}' declares outcome ` +
+              `${JSON.stringify(tc.expected.outcome)}, which the driver does not ` +
+              `recognise. Teach the driver, do not skip it.`,
           );
         }
       });
@@ -3483,9 +3674,12 @@ describe('apcore Conformance Suite (TypeScript)', () => {
           case 'create_rejects_executor_input': {
             const params = createParamNames();
             expect(params).toEqual(NORMATIVE_CREATE_PARAMS);
-            if (expected['executor_is_not_a_parameter']) {
-              expect(params.filter((p) => /executor/i.test(p))).toEqual([]);
-            }
+            // apcore#92: this was `if (expected[...]) { assert }` — a gate on the
+            // expectation's truthiness, so a fixture saying the opposite simply
+            // skipped the assertion and the case passed. The value is asserted.
+            expect(params.filter((p) => /executor/i.test(p)).length === 0).toBe(
+              expected['executor_is_not_a_parameter'],
+            );
             // Belt and braces: an Executor-shaped object pushed into the only
             // object-typed leading slot lands on `identity`, never on
             // `executor`, so "pass executor at construction" stays impossible
@@ -3498,9 +3692,10 @@ describe('apcore Conformance Suite (TypeScript)', () => {
           case 'create_rejects_caller_id_input': {
             const params = createParamNames();
             expect(params).toEqual(NORMATIVE_CREATE_PARAMS);
-            if (expected['caller_id_is_not_a_parameter']) {
-              expect(params.filter((p) => /caller/i.test(p))).toEqual([]);
-            }
+            // apcore#92: same truthiness gate as above; the value now asserts.
+            expect(params.filter((p) => /caller/i.test(p)).length === 0).toBe(
+              expected['caller_id_is_not_a_parameter'],
+            );
             const ctx = Context.create();
             expect(ctx.callerId).toBe(expected['caller_id_after_create']);
             break;
@@ -3545,28 +3740,39 @@ describe('apcore Conformance Suite (TypeScript)', () => {
               }
             }
             const seen = executorsSeen();
-            if (expected['rebind_noop']) {
-              // Reusing one Context across N calls on the same Executor is a
-              // no-op from the 2nd call on: every call runs and none raises.
-              // Asserted before `raised_error` so a rebind that starts throwing
-              // is attributed to this expectation rather than to that one.
-              expect(seen).toHaveLength(calls.length);
-              expect(raised).toBeNull();
-            }
+            // Reusing one Context across N calls on the same Executor is a
+            // no-op from the 2nd call on: every call runs and none raises.
+            // apcore#92: each expectation is asserted against its own observable
+            // rather than gating a block on its truthiness, so a fixture that
+            // said the opposite would go red instead of skipping the checks.
+            // Still three separate assertions, so a rebind that starts throwing
+            // is attributed to `rebind_noop` and not to `raised_error`.
+            expect(seen.length === calls.length && raised === null).toBe(expected['rebind_noop']);
             expect(raised !== null).toBe(expected['raised_error']);
-            if (expected['executor_identity_stable'] && tc.input.same_executor) {
-              expect(new Set(seen).size).toBe(1);
-              expect(seen[0]).toBe(executor);
+            if (tc.input.same_executor) {
+              expect(new Set(seen).size === 1 && seen[0] === executor).toBe(
+                expected['executor_identity_stable'],
+              );
             }
             break;
           }
           case 'executor_rejects_cross_executor_rebind': {
             const { executor: a } = makeEchoExecutor();
             const { executor: b } = makeEchoExecutor();
-            // Bind to A using the internal helper, then try B — TS chooses
-            // the "raise ContextBindingError" branch of expected_one_of.
+            // Bind to A using the internal helper, then try B.
+            //
+            // apcore#92 / spec v1.11.0: this case used to carry
+            // `expected_one_of: [raise, silent_accept]`. A driver cannot assert
+            // an alternation, so this branch hardcoded "raise" and named the
+            // alternation only in a comment — the fixture value never reached an
+            // assertion. The SHOULD is now a MUST and the fixture states one
+            // behaviour, `{raises: true, error_code: CONTEXT_BINDING_ERROR}`,
+            // which is what is read here. The wire code, not the class:
+            // `ContextBindingError` is a name apcore-rust does not have.
             const ctx = Context.create()._withExecutor(a);
-            expect(() => ctx._withExecutor(b)).toThrow(ContextBindingError);
+            const thrown = captureThrow(() => ctx._withExecutor(b));
+            expect(thrown !== null).toBe(expected['raises']);
+            assertWireCode(tc.id, expected['error_code'], thrown);
             break;
           }
           case 'child_propagates_executor': {
@@ -3583,16 +3789,15 @@ describe('apcore Conformance Suite (TypeScript)', () => {
             expect(child.executor === parent.executor).toBe(
               expected['child_executor_matches_parent'],
             );
-            if (expected['child_caller_id_from_parent_chain_tip']) {
-              expect(child.callerId).toBe(parent.callChain[parent.callChain.length - 1]);
-              expect(child.callerId).not.toBe(parent.callerId);
-            }
-            if (expected['child_call_chain_appends_target']) {
-              expect(child.callChain).toEqual([
-                ...parent.callChain,
-                tc.input.create_child_module_id,
-              ]);
-            }
+            // apcore#92: both of these gated their assertions on the
+            // expectation's truthiness; the values now reach an assertion.
+            expect(
+              child.callerId === parent.callChain[parent.callChain.length - 1] &&
+                child.callerId !== parent.callerId,
+            ).toBe(expected['child_caller_id_from_parent_chain_tip']);
+            expect(
+              deepEq(child.callChain, [...parent.callChain, tc.input.create_child_module_id]),
+            ).toBe(expected['child_call_chain_appends_target']);
             break;
           }
           case 'child_propagates_cancel_token': {
@@ -3616,11 +3821,13 @@ describe('apcore Conformance Suite (TypeScript)', () => {
 
             const { executor, executorsSeen } = makeEchoExecutor();
             await executor.call(tc.input.call_module, {}, restored);
-            if (expected['executor_bound_on_first_call']) {
-              // The receiving node's Executor bound itself to the arriving
-              // Context under the same rule as a locally created one.
-              expect(executorsSeen()).toEqual([executor]);
-            }
+            // The receiving node's Executor bound itself to the arriving
+            // Context under the same rule as a locally created one. apcore#92:
+            // asserted against the value, not gated on its truthiness.
+            const boundSeen = executorsSeen();
+            expect(boundSeen.length === 1 && boundSeen[0] === executor).toBe(
+              expected['executor_bound_on_first_call'],
+            );
             break;
           }
           case 'distributed_cancel_token_post_deserialize_null': {
@@ -3630,10 +3837,11 @@ describe('apcore Conformance Suite (TypeScript)', () => {
             // hand-written payload with no token in it asserts nothing.
             const withToken = Context.create(undefined, undefined, new CancelToken());
             const wire = withToken.toJSON();
-            if (expected['no_in_context_token_rides_across_processes']) {
-              expect(Object.keys(wire).filter((k) => /cancel|token/i.test(k))).toEqual([]);
-              expect(JSON.stringify(wire)).not.toContain('CancelToken');
-            }
+            // apcore#92: asserted against the value, not gated on its truthiness.
+            expect(
+              Object.keys(wire).filter((k) => /cancel|token/i.test(k)).length === 0 &&
+                !JSON.stringify(wire).includes('CancelToken'),
+            ).toBe(expected['no_in_context_token_rides_across_processes']);
             const restored = Context.fromJSON(wire);
             expect(restored.cancelToken).toBe(expected['cancel_token_after_deserialize']);
             break;
@@ -3646,10 +3854,11 @@ describe('apcore Conformance Suite (TypeScript)', () => {
               undefined, undefined, undefined, undefined, undefined, 1234567890.5,
             );
             const wire = withDeadline.toJSON();
-            if (expected['no_remote_deadline_rides_via_global_deadline_field']) {
-              expect(Object.keys(wire).filter((k) => /deadline/i.test(k))).toEqual([]);
-              expect(JSON.stringify(wire)).not.toContain('1234567890.5');
-            }
+            // apcore#92: asserted against the value, not gated on its truthiness.
+            expect(
+              Object.keys(wire).filter((k) => /deadline/i.test(k)).length === 0 &&
+                !JSON.stringify(wire).includes('1234567890.5'),
+            ).toBe(expected['no_remote_deadline_rides_via_global_deadline_field']);
             const restored = Context.fromJSON(wire);
             expect(restored.globalDeadline).toBe(expected['global_deadline_after_deserialize']);
             break;
@@ -3664,16 +3873,17 @@ describe('apcore Conformance Suite (TypeScript)', () => {
             };
             const ctx = Context.create(null, tp as any);
             expect(ctx.traceId).toBe(expected['trace_id']);
-            if (expected['tracestate_preserved']) {
-              // Tracestate is preserved via the two scalar keys (cross-language
-              // parity: `_apcore.trace.flags` + `_apcore.trace.state`).
-              expect(ctx.data['_apcore.trace.state']).toEqual(tp.tracestate);
-            }
-            if (expected['no_separate_tracestate_parameter']) {
-              const params = createParamNames();
-              expect(params).toEqual(NORMATIVE_CREATE_PARAMS);
-              expect(params.filter((p) => /trace_?state/i.test(p))).toEqual([]);
-            }
+            // Tracestate is preserved via the two scalar keys (cross-language
+            // parity: `_apcore.trace.flags` + `_apcore.trace.state`).
+            // apcore#92: asserted against the value, not gated on its truthiness.
+            expect(deepEq(ctx.data['_apcore.trace.state'], tp.tracestate)).toBe(
+              expected['tracestate_preserved'],
+            );
+            const params = createParamNames();
+            expect(params).toEqual(NORMATIVE_CREATE_PARAMS);
+            expect(params.filter((p) => /trace_?state/i.test(p)).length === 0).toBe(
+              expected['no_separate_tracestate_parameter'],
+            );
             break;
           }
           default:
