@@ -946,3 +946,147 @@ describe('SchemaValidator uniqueItems over non-scalar items', () => {
     ).toBe(false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// The library-level coercion knob — TYPE_MAPPING §11 (apcore#95)
+// ---------------------------------------------------------------------------
+//
+// Offering the knob stays a MAY; what it coerces became a MUST at spec v1.12.0.
+// Before that this SDK carried a twelve-spelling case-insensitive boolean
+// dialect ported from apcore-rust during apcore#93 (`yes`/`no`, `on`/`off`,
+// `y`/`n`, `t`/`f`, `1`/`0`) that no document described. §11 caps the set at
+// JSON's own two literals — it does not delete the feature, it bounds it.
+//
+// Everything below goes through the same path the conformance driver uses:
+// `jsonSchemaToTypeBox` then `new SchemaValidator(true)`. Asserting against a
+// hand-built `Type.Boolean()` would test a schema shape the driver never sees.
+describe('SchemaValidator coercion knob — accepted set (TYPE_MAPPING §11)', () => {
+  const boolSchema = jsonSchemaToTypeBox({
+    type: 'object',
+    properties: { flag: { type: 'boolean' } },
+    required: ['flag'],
+  });
+  const intSchema = jsonSchemaToTypeBox({
+    type: 'object',
+    properties: { count: { type: 'integer' } },
+    required: ['count'],
+  });
+  const numSchema = jsonSchemaToTypeBox({
+    type: 'object',
+    properties: { amount: { type: 'number' } },
+    required: ['amount'],
+  });
+
+  const coercing = new SchemaValidator(true);
+  const strict = new SchemaValidator(false);
+
+  describe('string → boolean accepts exactly the two JSON literals', () => {
+    for (const [input, expected] of [
+      ['true', true],
+      ['false', false],
+    ] as const) {
+      it(`coerces ${JSON.stringify(input)} to ${expected}`, () => {
+        expect(coercing.validate({ flag: input }, boolSchema).valid).toBe(true);
+        // The VALUE, not just the verdict: a validator that accepted the string
+        // without converting it would pass the check above.
+        expect(coercing.validateInput({ flag: input }, boolSchema)['flag']).toBe(expected);
+      });
+
+      it(`still rejects ${JSON.stringify(input)} with the knob off`, () => {
+        // R5: the strict path — the one the module-invocation boundary uses —
+        // rejects every one of these. The knob is a separate path, and the two
+        // must not silently disagree about which one they are on.
+        expect(strict.validate({ flag: input }, boolSchema).valid).toBe(false);
+      });
+    }
+  });
+
+  describe('string → boolean rejects every other spelling', () => {
+    // The twelve-spelling dialect this SDK shipped through 0.27.0, plus the
+    // casings its `toLowerCase()` used to fold away. `'0'` is the sharpest:
+    // R5 makes the NUMBER 0 a MUST-reject for boolean, so accepting the string
+    // put two paths of this SDK on opposite sides of one value.
+    const removed = [
+      'yes', 'no', 'on', 'off', 'y', 'n', 't', 'f', '1', '0',
+      'True', 'TRUE', 'False', 'FALSE', 'tRuE',
+      '', ' true ', 'true\n',
+    ];
+    for (const input of removed) {
+      it(`rejects ${JSON.stringify(input)}`, () => {
+        const result = coercing.validate({ flag: input }, boolSchema);
+        expect(
+          result.valid,
+          `${JSON.stringify(input)} coerced to a boolean; §11 caps the set at "true"/"false"`,
+        ).toBe(false);
+        expect(result.errorCode).toBe('SCHEMA_VALIDATION_ERROR');
+      });
+    }
+  });
+
+  describe('non-strings are never coerced toward boolean', () => {
+    for (const input of [1, 0, 1.0, null, [], {}]) {
+      it(`rejects ${JSON.stringify(input)} for a declared boolean`, () => {
+        expect(coercing.validate({ flag: input }, boolSchema).valid).toBe(false);
+      });
+    }
+  });
+
+  describe('string → integer', () => {
+    for (const [input, expected] of [
+      ['42', 42],
+      ['-7', -7],
+      ['0', 0],
+      ['42.0', 42],
+    ] as const) {
+      it(`coerces ${JSON.stringify(input)} to ${expected}`, () => {
+        expect(coercing.validate({ count: input }, intSchema).valid).toBe(true);
+        expect(coercing.validateInput({ count: input }, intSchema)['count']).toBe(expected);
+      });
+    }
+
+    for (const input of ['3.14', '-0.5', 'abc', '', 'true', '1e400', 'NaN']) {
+      it(`rejects ${JSON.stringify(input)}`, () => {
+        // A lossy conversion is refused, not truncated: `Value.Convert` would
+        // turn "3.14" into 3 and silently change what the caller meant.
+        expect(coercing.validate({ count: input }, intSchema).valid).toBe(false);
+      });
+    }
+  });
+
+  describe('string → number', () => {
+    for (const [input, expected] of [
+      ['1.5', 1.5],
+      ['42', 42],
+      ['-0.5', -0.5],
+    ] as const) {
+      it(`coerces ${JSON.stringify(input)} to ${expected}`, () => {
+        expect(coercing.validate({ amount: input }, numSchema).valid).toBe(true);
+        expect(coercing.validateInput({ amount: input }, numSchema)['amount']).toBe(expected);
+      });
+    }
+
+    for (const input of ['abc', '', 'true', 'Infinity']) {
+      it(`rejects ${JSON.stringify(input)}`, () => {
+        expect(coercing.validate({ amount: input }, numSchema).valid).toBe(false);
+      });
+    }
+  });
+
+  it('never coerces toward string', () => {
+    const strSchema = jsonSchemaToTypeBox({
+      type: 'object',
+      properties: { name: { type: 'string' } },
+      required: ['name'],
+    });
+    expect(coercing.validate({ name: 42 }, strSchema).valid).toBe(false);
+    expect(coercing.validate({ name: true }, strSchema).valid).toBe(false);
+  });
+
+  it('defaults to no coercion, matching the module-invocation boundary', () => {
+    // TYPE_MAPPING §17.3. `new SchemaValidator()` with no argument must be the
+    // strict validator; a coercing default is how apcore-rust ended up with a
+    // validator that disagreed with its own executor.
+    expect(new SchemaValidator().validate({ flag: 'true' }, boolSchema).valid).toBe(false);
+    expect(new SchemaValidator().validate({ count: '42' }, intSchema).valid).toBe(false);
+  });
+});

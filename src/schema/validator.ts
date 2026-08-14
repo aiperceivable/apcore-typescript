@@ -49,10 +49,13 @@ function declaredTypes(schema: Record<string, unknown>): string[] {
 /**
  * Coerce a string to an integer iff it represents an exactly integral value.
  *
- * Mirrors pydantic (and `apcore-rust::coerce_str_to_integer`): `"42"` → 42,
- * `"42.0"` → 42, `" 42 "` → 42; rejects `"3.14"`, `"abc"`, `""`. A lossy
- * conversion is refused rather than truncated, so no SDK silently changes a
- * value's meaning.
+ * TYPE_MAPPING §11's integer row: a string whose entire content parses as an
+ * integer. `"42"` → 42, `"-7"` → -7; the integral-float and surrounding-
+ * whitespace tolerances (`"42.0"` → 42, `" 42 "` → 42) are shared with
+ * apcore-python (pydantic lax) and `apcore-rust::coerce_str_to_integer`.
+ * `"3.14"` is a MUST-reject — the declared type bounds the coercion, not the
+ * string's parseability — as are `"abc"` and `""`. A lossy conversion is
+ * refused rather than truncated, so no SDK silently changes a value's meaning.
  */
 function coerceStrToInteger(s: string): number | null {
   const trimmed = s.trim();
@@ -74,15 +77,26 @@ function coerceStrToNumber(s: string): number | null {
 }
 
 /**
- * Coerce a string to a boolean, mirroring pydantic's accepted set
- * (case-insensitive): true/false, yes/no, on/off, y/n, t/f, 1/0.
+ * Coerce a string to a boolean: exactly `"true"` and `"false"`, case-sensitive.
+ *
+ * TYPE_MAPPING §11 "What the knob coerces, when it exists" (normative as of
+ * spec v1.12.0) caps the accepted set at JSON's own two boolean literals, so
+ * accepting them is reading the same value written as text.
+ *
+ * This helper used to carry a twelve-spelling case-insensitive dialect ported
+ * from `apcore-rust::coerce_str_to_bool` during apcore#93 — `yes`/`no`,
+ * `on`/`off`, `y`/`n`, `t`/`f`, `1`/`0`, in any casing. Those are shell and INI
+ * conventions and belong to whatever parses `argv`. `"0"` → `false` was the
+ * sharpest of them: R5 makes the *number* `0` a MUST-reject for `boolean`, so
+ * accepting the string `"0"` here put two paths of this SDK on opposite sides
+ * of one value (apcore#95).
+ *
+ * Nothing is trimmed and nothing is lowercased: `" true "` and `"True"` are not
+ * `"true"`.
  */
-const _TRUE_STRINGS: ReadonlySet<string> = new Set(['true', 'yes', 'on', 'y', 't', '1']);
-const _FALSE_STRINGS: ReadonlySet<string> = new Set(['false', 'no', 'off', 'n', 'f', '0']);
 function coerceStrToBool(s: string): boolean | null {
-  const lower = s.toLowerCase();
-  if (_TRUE_STRINGS.has(lower)) return true;
-  if (_FALSE_STRINGS.has(lower)) return false;
+  if (s === 'true') return true;
+  if (s === 'false') return false;
   return null;
 }
 
@@ -155,14 +169,23 @@ export function coerceValue(value: unknown, schema: unknown): unknown {
  * for the common case of checking data you already believe is well-formed.
  *
  * Passing `true` runs {@link coerceValue} as a pre-pass, then validates the
- * coerced value. The semantics are **pydantic-lax**, the dialect apcore-python
- * (`model_validate(strict=False)`) and apcore-rust (`coerce_value`) already
- * agree on: coerce only FROM a string, only toward a declared
- * `boolean`/`integer`/`number`, and only when the conversion is exact. `"42"`
- * and `"42.0"` become `42`; `"3.14"` for `{type: "integer"}` does not, because
- * pydantic refuses a lossy conversion. That is deliberately NOT
- * `Value.Convert`, which mutates its argument in place and truncates `"4.5"` to
- * `4` — a silent data change no other SDK makes.
+ * coerced value. What it coerces is fixed by TYPE_MAPPING §11 — offering the
+ * knob stays a **MAY**, but an SDK that offers one **MUST** coerce exactly this
+ * set and nothing else:
+ *
+ * | from | to | accepted |
+ * |---|---|---|
+ * | string | `integer` | entire content parses as an integer — `"42"`, `"-7"` |
+ * | string | `number`  | entire content parses as a number — `"1.5"`, `"-0.5"` |
+ * | string | `boolean` | exactly `"true"` and `"false"`, case-sensitive |
+ *
+ * Coercion is FROM a string only, and only toward a type the schema declares:
+ * a number is never coerced to a boolean, a boolean never to a number, and
+ * nothing is coerced toward `string`. `"3.14"` for `{type: "integer"}` stays a
+ * string and therefore fails, because a lossy conversion is refused rather than
+ * truncated. That is deliberately NOT `Value.Convert`, which mutates its
+ * argument in place and truncates `"4.5"` to `4` — a silent data change no
+ * other SDK makes.
  *
  * The module-invocation boundary is unaffected: it never coerces on any SDK
  * (TYPE_MAPPING §17.3).
