@@ -924,7 +924,7 @@ export class Executor {
 
         let checkName: string;
         if (code === 'MODULE_NOT_FOUND') checkName = 'module_lookup';
-        else if (code === 'ACL_DENIED') checkName = 'acl';
+        else if (code === 'ACL_DENIED') checkName = Executor.ACL_CHECK;
         else if (code === 'SCHEMA_VALIDATION_ERROR' || code === 'INVALID_INPUT')
           checkName = 'schema';
         else if (
@@ -957,23 +957,45 @@ export class Executor {
       }
     }
 
+    // Module-level introspection is gated on TWO conditions, not one.
+    //
+    // 1. Module lookup succeeded (`pipeCtx.module` is not null).
+    // 2. The ACL did not deny the call — PROTOCOL_SPEC §12.8.5.1.
+    //
+    // Condition 2 is the security half. `preflight()` and `preview()` are
+    // module-authored code, and what they return names what the call would do:
+    // the resolved binary and argv of a command-wrapping module, the target of
+    // a write. Module lookup is Step 3 and the ACL check is Step 4, so gating
+    // on lookup alone runs module code for a caller the ACL just denied and
+    // hands back what it said.
+    //
+    // Scoped to authorization deliberately: a failed `schema` check does NOT
+    // suppress introspection, because a caller the ACL permits is entitled to
+    // the module's account of what would happen even when its inputs are
+    // malformed.
+    const aclDenied = checks.some((c) => c.check === Executor.ACL_CHECK && !c.passed);
+
     // Module-level preflight (optional)
-    if (pipeCtx.module != null) {
+    if (!aclDenied && pipeCtx.module != null) {
       const mod = pipeCtx.module as Record<string, unknown>;
       const modWithPreflight = mod as { preflight?: Module['preflight'] };
       if (typeof modWithPreflight.preflight === 'function') {
         try {
           const preflightWarnings = modWithPreflight.preflight(effectiveInputs, pipeCtx.context);
           if (Array.isArray(preflightWarnings) && preflightWarnings.length > 0) {
-            checks.push({ check: 'module_preflight', passed: true, warnings: preflightWarnings });
+            checks.push({
+              check: Executor.MODULE_PREFLIGHT_CHECK,
+              passed: true,
+              warnings: preflightWarnings,
+            });
           } else {
-            checks.push({ check: 'module_preflight', passed: true });
+            checks.push({ check: Executor.MODULE_PREFLIGHT_CHECK, passed: true });
           }
         } catch (exc: unknown) {
           const excName = exc instanceof Error ? exc.constructor.name : 'Error';
           const excMsg = exc instanceof Error ? exc.message : String(exc);
           checks.push({
-            check: 'module_preflight',
+            check: Executor.MODULE_PREFLIGHT_CHECK,
             passed: true,
             warnings: [`preflight() raised ${excName}: ${excMsg}`],
           });
@@ -987,7 +1009,7 @@ export class Executor {
     // throws or async rejections) are treated as advisory warnings and do NOT
     // fail validation, mirroring `preflight()` semantics (RFC Open Question 1).
     let predictedChanges: Change[] | undefined;
-    if (pipeCtx.module != null) {
+    if (!aclDenied && pipeCtx.module != null) {
       const mod = pipeCtx.module as Record<string, unknown>;
       const modWithPreview = mod as { preview?: Module['preview'] };
       if (typeof modWithPreview.preview === 'function') {
@@ -1000,18 +1022,18 @@ export class Executor {
               : (raw as PreviewResult | null);
           if (result != null && Array.isArray(result.changes) && result.changes.length > 0) {
             predictedChanges = result.changes;
-            checks.push({ check: 'module_preview', passed: true });
+            checks.push({ check: Executor.MODULE_PREVIEW_CHECK, passed: true });
           } else {
             // Method present but returned null / empty — record the no-op
             // check so consumers can distinguish "module has preview()" from
             // "module does not implement preview()" if desired.
-            checks.push({ check: 'module_preview', passed: true });
+            checks.push({ check: Executor.MODULE_PREVIEW_CHECK, passed: true });
           }
         } catch (exc: unknown) {
           const excName = exc instanceof Error ? exc.constructor.name : 'Error';
           const excMsg = exc instanceof Error ? exc.message : String(exc);
           checks.push({
-            check: 'module_preview',
+            check: Executor.MODULE_PREVIEW_CHECK,
             passed: true,
             warnings: [`preview() raised ${excName}: ${excMsg}`],
           });
@@ -1022,12 +1044,23 @@ export class Executor {
     return createPreflightResult(checks, requiresApproval, predictedChanges);
   }
 
+  /**
+   * Canonical PreflightResult check names (PROTOCOL_SPEC §12.8.4 enum). Named
+   * rather than spelled inline because §12.8.5.1 makes `acl` the switch that
+   * withholds the other two — a rename that silently stopped matching would
+   * turn the disclosure gate off. apcore-rust exports the same three as public
+   * constants (`apcore::ACL_CHECK_NAME` and friends).
+   */
+  private static readonly ACL_CHECK = 'acl';
+  private static readonly MODULE_PREFLIGHT_CHECK = 'module_preflight';
+  private static readonly MODULE_PREVIEW_CHECK = 'module_preview';
+
   /** Map pipeline step names to PreflightResult check names. */
   private static readonly _STEP_TO_CHECK: Record<string, string> = {
     context_creation: 'context',
     call_chain_guard: 'call_chain',
     module_lookup: 'module_lookup',
-    acl_check: 'acl',
+    acl_check: Executor.ACL_CHECK,
     approval_gate: 'approval',
     middleware_before: 'middleware',
     input_validation: 'schema',

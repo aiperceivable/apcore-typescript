@@ -71,6 +71,6 @@ describe('Conformance: JSON Schema keyword parity at the validation boundary', (
   });
 
   it('drives every fixture case', () => {
-    expect(fixture.test_cases.length).toBe(119);
+    expect(fixture.test_cases.length).toBe(122);
   });
 });
