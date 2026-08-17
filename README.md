@@ -11,8 +11,9 @@
 **AI-Perceivable Core**
 
 > **Build once, invoke by Code or AI.**
+> Every call validated, authorized, and evidenced.
 
-A schema-enforced module standard for the AI-Perceivable era.
+A governed runtime for agent-callable capabilities — schema, ACL, approval, and audit enforced at every call.
 
 apcore is an AI-Perceivable module standard that makes every interface naturally perceivable and understandable by AI through enforced Schema definitions and behavioral annotations. It provides schema validation, access control, middleware pipelines, and observability built in.
 
