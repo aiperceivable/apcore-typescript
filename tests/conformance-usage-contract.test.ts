@@ -17,6 +17,8 @@ import * as path from 'node:path';
 import { Registry } from '../src/index.js';
 import { UsageCollector, UsageMiddleware } from '../src/observability/usage.js';
 import { UsageModule, UsageSummaryModule } from '../src/sys-modules/usage.js';
+import { jsonSchemaToTypeBox } from '../src/schema/loader-pure.js';
+import { SchemaValidator } from '../src/schema/validator.js';
 import { findFixturesRoot } from './spec-repo.js';
 
 interface RecordSpec {
@@ -42,6 +44,27 @@ const fixture: { test_cases: Case[] } = JSON.parse(
 );
 
 const OFFSET = /^-(\d+)([hd])$/;
+
+// driver_contract.output_validates_against_the_canonical_schema: the same files
+// the spec repo ships, not a copy. `additionalProperties: false` is the point —
+// a field one SDK emits and the others do not fails here.
+const SCHEMAS_DIR = path.resolve(findFixturesRoot(), '..', '..', 'schemas');
+const SCHEMA_FOR: Record<string, string> = {
+  'system.usage.summary': 'sys-usage-summary.schema.json',
+  'system.usage.module': 'sys-usage-module.schema.json',
+};
+
+function validateAgainstCanonicalSchema(module: string, output: Record<string, unknown>): void {
+  const schema = JSON.parse(
+    fs.readFileSync(path.join(SCHEMAS_DIR, SCHEMA_FOR[module]), 'utf-8'),
+  );
+  // Through the SDK's own conversion, which is the path a real module call
+  // takes (`resolveSchema` in builtin-steps): SchemaValidator is TypeBox-based
+  // and does not accept raw JSON Schema, so validating any other way would
+  // exercise machinery the module path never uses.
+  const result = new SchemaValidator(false).validate(output, jsonSchemaToTypeBox(schema));
+  expect(result.valid, `${module} output does not satisfy the canonical schema: ${JSON.stringify(result.errors)}`).toBe(true);
+}
 
 function at(offset: string): string {
   const match = OFFSET.exec(offset);
@@ -128,6 +151,7 @@ describe('conformance: usage_contract.json', () => {
       }
 
       const result = run(testCase);
+      validateAgainstCanonicalSchema(testCase.module, result);
 
       if ('caller_ids' in expected) {
         const ids = (result['callers'] as Array<{ caller_id: string }>).map((c) => c.caller_id);
