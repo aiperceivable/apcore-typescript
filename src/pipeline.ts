@@ -243,6 +243,53 @@ export interface StrategyInfo {
   description: string;
 }
 
+/**
+ * What is actually gating an executor's registry (PROTOCOL_SPEC 6.6.5).
+ *
+ * Eight plain observations plus one derived flag. `acl != null` is not the
+ * answer to "what is gating this registry": the ACL and approval gates are
+ * pipeline *steps*, and the `internal`, `testing` and `minimal` strategies all
+ * remove them — so an executor can hold an ACL that no step ever consults.
+ *
+ * Returned by {@link Executor.governanceState}. Pure data: reading it enforces
+ * nothing and changes nothing.
+ */
+export interface GovernanceState {
+  /** At least one `system.control.*` module is in the registry. */
+  controlModulesRegistered: boolean;
+  /** At least one read-only `system.*` module is in the registry. */
+  readModulesRegistered: boolean;
+  /** An ACL object is attached to the executor. */
+  aclConfigured: boolean;
+  /** The running strategy contains the built-in ACL gate, matched by TYPE. */
+  builtinAclGateWired: boolean;
+  /** An ApprovalHandler is attached. */
+  approvalHandlerConfigured: boolean;
+  /** The running strategy contains the built-in approval gate, matched by TYPE. */
+  builtinApprovalGateWired: boolean;
+  /** An ExecutionPolicy with `strict = true` is attached. */
+  policyStrict: boolean;
+  /**
+   * Every registered `system.control.*` module declares `requiresApproval`.
+   *
+   * Required by the derived flag because the two gates are not symmetric
+   * (PROTOCOL_SPEC 6.6.5.1.1): `acl_check` evaluates every call, but
+   * `approval_gate` resolves per module and returns before consulting the
+   * handler when the module does not need approval. `false` when no control
+   * module is registered.
+   */
+  allControlModulesRequireApproval: boolean;
+  /**
+   * Control modules are registered and no recognised built-in gate engages.
+   *
+   * Reports the **absence of a gate**, never the presence of protection: a
+   * wired ACL that permits every call still yields `false`. And `true` does not
+   * mean the call will succeed — a custom step, custom middleware or an
+   * upstream gateway is invisible here by construction.
+   */
+  unprotectedControlSurface: boolean;
+}
+
 // ---------------------------------------------------------------------------
 // ExecutionStrategy
 // ---------------------------------------------------------------------------

@@ -68,7 +68,15 @@ function validateSchema(schema: TSchema, data: Record<string, unknown>, directio
   throw new SchemaValidationError(`${direction} validation failed`, result.errors as unknown as Array<Record<string, unknown>>);
 }
 
-function needsApproval(mod: Record<string, unknown> | null): boolean {
+/**
+ * Read `requiresApproval` from a module's annotations.
+ *
+ * Exported so `Executor.governanceState()` reads the annotation through the
+ * SAME predicate the approval gate uses (PROTOCOL_SPEC 6.6.5.1.1). A second
+ * reading here would be a second way for the accessor to disagree with the
+ * pipeline it describes.
+ */
+export function needsApproval(mod: Record<string, unknown> | null): boolean {
   const annotations = mod?.['annotations'];
   if (annotations == null) return false;
   if (typeof annotations !== 'object') return false;

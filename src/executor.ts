@@ -11,6 +11,7 @@ import type { ExecutionPolicy } from './policy.js';
 import {
   BuiltinACLCheck,
   BuiltinApprovalGate,
+  needsApproval,
   buildInternalStrategy,
   buildMinimalStrategy,
   buildPerformanceStrategy,
@@ -48,7 +49,12 @@ import type {
   PreviewResult,
 } from './module.js';
 import { createPreflightResult } from './module.js';
-import type { PipelineContext, PipelineTrace, StrategyInfo } from './pipeline.js';
+import type {
+  GovernanceState,
+  PipelineContext,
+  PipelineTrace,
+  StrategyInfo,
+} from './pipeline.js';
 import {
   ExecutionStrategy,
   PipelineAbortError,
@@ -341,6 +347,77 @@ export class Executor {
   /** Get the current execution strategy. */
   get currentStrategy(): ExecutionStrategy {
     return this._strategy;
+  }
+
+  /**
+   * Return what is actually gating this executor (PROTOCOL_SPEC 6.6.5).
+   *
+   * A **pure read**: it never enforces, warns, throws or mutates. What to do
+   * about an unprotected control surface belongs to the caller — a serve-time
+   * adapter may warn or refuse, a test may assert, a health endpoint may
+   * report. Putting the reaction here would make it unavoidable and
+   * untestable.
+   *
+   * Computed fresh on every call, so attaching an ACL or swapping the strategy
+   * is visible in the next one.
+   */
+  governanceState(): GovernanceState {
+    // Gate detection is by TYPE, never by step name (PROTOCOL_SPEC 6.6.5.2).
+    // `StrategyInfo` carries names only, and a custom step named `acl_check`
+    // that never consults an ACL would satisfy a name test — producing
+    // `builtinAclGateWired: true` for a gate that is not there. That is the one
+    // direction this accessor must never fail in.
+    const steps = this._strategy.steps;
+    const builtinAclGateWired = steps.some((step) => step instanceof BuiltinACLCheck);
+    const builtinApprovalGateWired = steps.some((step) => step instanceof BuiltinApprovalGate);
+
+    // `visibility` must include hidden: the accessor reports what is
+    // REGISTERED, and `list()` defaults to public-only. A control module
+    // registered with `discoverable: false` is still callable by ID, so
+    // omitting it would under-report the write surface.
+    const allIds = this._registry.list({ visibility: ['public', 'hidden'] });
+    const controlIds = allIds.filter((id) => id.startsWith('system.control.'));
+    const readModulesRegistered = allIds.some(
+      (id) =>
+        id.startsWith('system.health.') ||
+        id.startsWith('system.usage.') ||
+        id.startsWith('system.manifest.'),
+    );
+
+    // Read the annotation through the SAME predicate the approval gate uses.
+    const allControlModulesRequireApproval =
+      controlIds.length > 0 &&
+      controlIds.every((id) =>
+        needsApproval(this._registry.get(id) as Record<string, unknown> | null),
+      );
+
+    const aclConfigured = this._acl !== null;
+    const approvalHandlerConfigured = this._approvalHandler !== null;
+    const policyStrict = this._policy !== null && this._policy.strict === true;
+
+    // PROTOCOL_SPEC 6.6.5.1. The approval conjunct carries
+    // `allControlModulesRequireApproval` because `approval_gate` is per-module
+    // conditional while `acl_check` is not (6.6.5.1.1).
+    const unprotectedControlSurface =
+      controlIds.length > 0 &&
+      !(aclConfigured && builtinAclGateWired) &&
+      !(
+        builtinApprovalGateWired &&
+        allControlModulesRequireApproval &&
+        (approvalHandlerConfigured || policyStrict)
+      );
+
+    return {
+      controlModulesRegistered: controlIds.length > 0,
+      readModulesRegistered,
+      aclConfigured,
+      builtinAclGateWired,
+      approvalHandlerConfigured,
+      builtinApprovalGateWired,
+      policyStrict,
+      allControlModulesRequireApproval,
+      unprotectedControlSurface,
+    };
   }
 
   static fromRegistry(

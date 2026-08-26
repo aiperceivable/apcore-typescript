@@ -8,7 +8,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-(nothing yet)
+### Added
+
+- **`Executor.governanceState()` (spec v1.16.0 §6.6.5, apcore#97).** A read-only accessor returning a `GovernanceState` of eight observations plus one derived flag: what is *configured* on this executor versus what is actually *wired* into the running pipeline. `acl != null` was never the answer to "what is gating this registry" — the ACL and approval gates are pipeline steps, and the `internal`, `testing` and `minimal` presets all remove them, so an executor can hold an ACL that no step consults. `setAcl()` already warned about exactly this case; the warning is a one-shot log line, and this is the observable.
+
+  Gate detection is by **type** (`step instanceof BuiltinACLCheck`), never by step name — the same test `setAcl()` performs when it wires a gate. A custom step named `acl_check` that never reads an ACL must not set `builtinAclGateWired`, because a false `true` there reports a gate that is not present, which is the one direction the flag must never fail in.
+
+  `allControlModulesRequireApproval` is a required conjunct of the derived flag, because the two gates are not symmetric (§6.6.5.1.1): `acl_check` evaluates every call, while `approval_gate` returns before consulting the handler when the module does not declare `requiresApproval`. It reads the annotation through the same `needsApproval` predicate the gate itself uses (now exported), so the accessor cannot disagree with the pipeline it describes.
+
+  The accessor is a pure read — it never enforces, warns, throws or mutates — computes live rather than caching, and returns booleans only: no ACL object, handler or policy leaks out. `GovernanceState` is exported from the package root.
+
+### Changed
+
+- **`period` on `system.usage.summary` / `system.usage.module` is constrained by the schema (spec v1.14.0 §6.7.1.1, apcore#96).** `inputSchema` now declares `pattern: '^[1-9][0-9]*[hd]$'`, so a malformed value is rejected at input validation with `SCHEMA_VALIDATION_ERROR` rather than by `parsePeriod` throwing a plain `Error` from inside `execute()`. The accepted set does not change — `parsePeriod` already rejected `0h`, `-5d` and `+3h` — but the rejection now happens at the same boundary, with the same wire code, as in the other two SDKs. apcore-python accepted all three and silently produced an empty or negative window.
 
 ---
 

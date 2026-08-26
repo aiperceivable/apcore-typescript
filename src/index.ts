@@ -399,6 +399,7 @@ export type {
   PipelineState,
   StepTrace,
   PipelineTrace,
+  GovernanceState,
   StrategyInfo,
   StepMiddleware,
 } from './pipeline.js';

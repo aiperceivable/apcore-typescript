@@ -46,7 +46,18 @@ export class UsageSummaryModule {
   readonly inputSchema = {
     type: 'object' as const,
     properties: {
-      period: { type: 'string' as const, description: 'Time period for usage data', default: '24h' },
+      period: {
+        type: 'string' as const,
+        description:
+          "Time window: a positive integer followed by 'h' (hours) or 'd' (days), " +
+          'e.g. 1h, 24h, 7d. Every statistic in the output is computed over ' +
+          '[now - period, now].',
+        default: '24h',
+        // PROTOCOL_SPEC 6.7.1.1: declared here so a malformed value is rejected
+        // by input validation with SCHEMA_VALIDATION_ERROR, uniformly across
+        // SDKs, rather than by parsePeriod throwing a plain Error.
+        pattern: '^[1-9][0-9]*[hd]$',
+      },
     },
   };
   readonly outputSchema = {
@@ -98,7 +109,18 @@ export class UsageModule {
     type: 'object' as const,
     properties: {
       module_id: { type: 'string' as const, description: 'ID of the module to inspect' },
-      period: { type: 'string' as const, description: 'Time period for usage data', default: '24h' },
+      period: {
+        type: 'string' as const,
+        description:
+          "Time window: a positive integer followed by 'h' (hours) or 'd' (days), " +
+          'e.g. 1h, 24h, 7d. Every statistic in the output is computed over ' +
+          '[now - period, now].',
+        default: '24h',
+        // PROTOCOL_SPEC 6.7.1.1: declared here so a malformed value is rejected
+        // by input validation with SCHEMA_VALIDATION_ERROR, uniformly across
+        // SDKs, rather than by parsePeriod throwing a plain Error.
+        pattern: '^[1-9][0-9]*[hd]$',
+      },
     },
     required: ['module_id'],
   };
