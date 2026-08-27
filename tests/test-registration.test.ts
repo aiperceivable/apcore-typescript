@@ -278,3 +278,43 @@ describe('sys_modules activation is opt-in in namespace mode (sync finding B-012
     expect(registry.moduleIds.filter((id) => id.startsWith('system.control.'))).toHaveLength(3);
   });
 });
+
+describe('overrides_path is read from Config, not options alone (sync finding A-D-015)', () => {
+  // apcore-python resolves `sys_modules.control.overrides_path` from Config
+  // when no store/path is passed explicitly. This SDK read only
+  // `options.overridesPath` — and `APCore` never passes it (client.ts installs
+  // sys modules with `{ toggleState }` only), so the config key was the only
+  // route a real deployment had, and it was not wired.
+  const tmp2 = mkdtempSync(join(tmpdir(), 'apcore-ovr-'));
+  afterAll(() => rmSync(tmp2, { recursive: true, force: true }));
+
+  it('loads overrides named by the config key', () => {
+    const overridesFile = join(tmp2, 'overrides.yaml');
+    writeFileSync(overridesFile, 'executor.default_timeout: 4321\n');
+
+    const config = new Config({
+      sys_modules: { enabled: true, control: { overrides_path: overridesFile } },
+    });
+    const registry = new Registry();
+    registerSysModules(registry, new Executor({ registry }), config);
+
+    expect(config.get('executor.default_timeout')).toBe(4321);
+  });
+
+  it('an explicit option still wins over the config key', () => {
+    const fromOption = join(tmp2, 'from-option.yaml');
+    writeFileSync(fromOption, 'executor.default_timeout: 1111\n');
+    const fromConfig = join(tmp2, 'from-config.yaml');
+    writeFileSync(fromConfig, 'executor.default_timeout: 2222\n');
+
+    const config = new Config({
+      sys_modules: { enabled: true, control: { overrides_path: fromConfig } },
+    });
+    const registry = new Registry();
+    registerSysModules(registry, new Executor({ registry }), config, undefined, {
+      overridesPath: fromOption,
+    });
+
+    expect(config.get('executor.default_timeout')).toBe(1111);
+  });
+});

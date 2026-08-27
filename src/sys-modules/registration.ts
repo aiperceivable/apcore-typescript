@@ -361,7 +361,6 @@ export function registerSysModules(
 ): SysModulesContext {
   const result: SysModulesContext = {};
   const failOnError = options?.failOnError ?? false;
-  const overridesPath = options?.overridesPath ?? null;
   const overridesStore = options?.overridesStore ?? null;
   const auditStore = options?.auditStore ?? null;
   // Per-instance ToggleState (Issue #71): undefined here lets
@@ -374,6 +373,16 @@ export function registerSysModules(
   if (!_cfgGet(sysCfg, config, 'enabled', false)) {
     return result;
   }
+
+  // Explicit option wins; otherwise fall back to the `sys_modules.control.
+  // overrides_path` CONFIG key, as apcore-python does (registration.py:382).
+  // Reading options alone meant a project that declared the key in apcore.yaml
+  // got neither persistence nor restore — and APCore never passes the option
+  // (client.ts installs sys modules with `{ toggleState }` only), so the config
+  // key was the ONLY way a real deployment could reach it (finding A-D-015).
+  const overridesPath =
+    options?.overridesPath ??
+    (_cfgGet(sysCfg, config, 'control.overrides_path', null) as string | null);
 
   // Load overrides file and apply after base config. The actual file
   // reader is installed by the Node-only side-effect module
