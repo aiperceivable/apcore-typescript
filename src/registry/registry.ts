@@ -230,6 +230,15 @@ export interface ModuleValidator {
 
 type EventCallback = (moduleId: string, module: unknown) => void;
 
+/** First non-empty `dependencies` list among the merged views. */
+function _pickDependencies(meta: Record<string, unknown>): Array<Record<string, unknown>> {
+  const top = meta['dependencies'];
+  if (Array.isArray(top) && top.length > 0) return top as Array<Record<string, unknown>>;
+  const nested = (meta['metadata'] as Record<string, unknown> | undefined)?.['dependencies'];
+  if (Array.isArray(nested) && nested.length > 0) return nested as Array<Record<string, unknown>>;
+  return [];
+}
+
 export class Registry {
   private _extensionRoots: Array<Record<string, unknown>>;
   private _modules: Map<string, unknown> = new Map();
@@ -1255,6 +1264,17 @@ export class Registry {
       examples: (meta['examples'] as ModuleExample[]) ?? [],
       metadata: (meta['metadata'] as Record<string, unknown>) ?? {},
       sunsetDate: (meta['sunsetDate'] as string | null) ?? null,
+      // Parsed once here so consumers get typed DependencyInfo rather than
+      // re-deriving `{module_id, version?, optional?}` from raw JSON at every
+      // call site (PROTOCOL_SPEC §12.2; sync finding A-D-004).
+      // `meta` is checked first because `mergeModuleMetadata` lifts a declared
+      // `dependencies` to the top level; the nested `metadata.dependencies`
+      // form is what the manual register path supplies.
+      // `mergeModuleMetadata` lifts a declared `dependencies` to the top level,
+      // but a module carrying them as CODE metadata (`module.metadata`) leaves
+      // the top-level entry an empty array while the nested block holds them —
+      // so fall through on empty, not merely on null.
+      dependencies: parseDependencies(_pickDependencies(meta)),
     };
   }
 

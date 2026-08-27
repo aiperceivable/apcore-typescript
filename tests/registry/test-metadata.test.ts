@@ -414,3 +414,45 @@ describe('caller extension metadata survives registration (sync finding A-D-003)
     expect(d?.metadata).toEqual({ foo: 1 });
   });
 });
+
+describe('descriptor carries typed dependencies (sync finding A-D-004)', () => {
+  // PROTOCOL_SPEC §12.2 requires a `dependencies` entry in `metadata` to reach
+  // the registered module's descriptor. apcore-rust carried a typed
+  // Vec<DependencyInfo>; this SDK surfaced it on NEITHER `getDefinition()` nor
+  // `descriptor.metadata` — only through `getModuleMetadata()`. The visible
+  // consequence: `system.manifest.*` reported `dependencies: []` for every
+  // module that declared them, because it read `descriptor.metadata`.
+  const mod = {
+    description: 'd',
+    inputSchema: { type: 'object' },
+    outputSchema: { type: 'object' },
+    execute: async () => ({}),
+  };
+
+  it('parses dependencies into typed objects', async () => {
+    const registry = new Registry();
+    await registry.register('a.b', mod, null, {
+      dependencies: [{ module_id: 'a.dep', version: '^1.0', optional: true }],
+    });
+    expect(registry.getDefinition('a.b')?.dependencies).toEqual([
+      { moduleId: 'a.dep', version: '^1.0', optional: true },
+    ]);
+  });
+
+  it('is an empty array when none are declared', async () => {
+    const registry = new Registry();
+    await registry.register('a.c', mod);
+    expect(registry.getDefinition('a.c')?.dependencies).toEqual([]);
+  });
+
+  it('agrees with the accessor reload ordering reads', async () => {
+    const registry = new Registry();
+    await registry.register('a.d', mod, null, { dependencies: [{ module_id: 'a.dep' }] });
+    const fromDescriptor = registry.getDefinition('a.d')?.dependencies.map((d) => d.moduleId);
+    const raw = (registry.getModuleMetadata('a.d')?.['dependencies'] ?? []) as Array<
+      Record<string, unknown>
+    >;
+    expect(fromDescriptor).toEqual(raw.map((d) => d['module_id']));
+    expect(fromDescriptor).toEqual(['a.dep']);
+  });
+});

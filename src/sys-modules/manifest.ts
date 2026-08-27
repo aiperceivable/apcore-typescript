@@ -5,6 +5,7 @@
 import type { Registry } from '../registry/registry.js';
 import type { Config } from '../config.js';
 import { InvalidInputError, ModuleNotFoundError } from '../errors.js';
+import type { ModuleDescriptor } from '../registry/types.js';
 
 /** @internal */
 export class ManifestModule {
@@ -66,15 +67,27 @@ export class ManifestModule {
       output_schema: descriptor.outputSchema,
       annotations: descriptor.annotations,
       tags: descriptor.tags,
-      dependencies: this._getDependencies(descriptor.metadata),
+      dependencies: this._dependenciesWire(descriptor),
       metadata: descriptor.metadata ?? {},
     };
   }
 
-  /** Retrieve dependencies from module metadata (Python/Rust parity). */
-  private _getDependencies(metadata: Record<string, unknown> | undefined): unknown[] {
-    const deps = metadata?.['dependencies'];
-    return Array.isArray(deps) ? deps : [];
+  /**
+   * Emit the descriptor's parsed dependencies in the snake_case wire shape.
+   *
+   * This read `descriptor.metadata['dependencies']`, which was empty in this
+   * SDK for every module — `mergeModuleMetadata` extracts `dependencies` as a
+   * canonical field, so it never appeared under `metadata`. `system.manifest.*`
+   * therefore reported `dependencies: []` for a module that declared them,
+   * while apcore-python reported the real list. Now reads the typed
+   * `descriptor.dependencies` field (sync finding A-D-004).
+   */
+  private _dependenciesWire(descriptor: ModuleDescriptor): unknown[] {
+    return (descriptor.dependencies ?? []).map((d) => ({
+      module_id: d.moduleId,
+      ...(d.version != null ? { version: d.version } : {}),
+      ...(d.optional ? { optional: true } : {}),
+    }));
   }
 
   private _computeSourcePath(moduleId: string): string | null {
