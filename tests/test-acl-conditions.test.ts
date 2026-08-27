@@ -1,12 +1,12 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { ACL } from '../src/acl.js';
+import { ACL, _parseAclRule } from '../src/acl.js';
+import type { AuditEntry } from '../src/acl.js';
+import { ACLRuleError } from '../src/errors.js';
 import type { ACLConditionHandler } from '../src/acl-handlers.js';
 import {
   IdentityTypesHandler,
   RolesHandler,
   MaxCallDepthHandler,
-  OrHandler,
-  NotHandler,
   arraysEqual,
   deepEqual,
 } from '../src/acl-handlers.js';
@@ -424,5 +424,68 @@ describe('asyncCheck with async condition handler inside $or/$not', () => {
 
     const ctxBlocked = new Context('blocked-trace', null, [], null, null);
     expect(await acl.asyncCheck('agent.foo', 'my.resource', ctxBlocked)).toBe(false);
+  });
+});
+
+describe('malformed conditions fail closed (sync finding A-D-009)', () => {
+  // Regression: `_parseAclRule` took `conditions` with a bare `as` cast, so a scalar
+  // reached the gate. `Object.entries(5)` is `[]`, the AND-loop was vacuously
+  // satisfied, and an `effect: allow` rule became UNCONDITIONAL — the one direction
+  // a default-deny ACL must never fail in.
+  const ctx = new Context(
+    'trace-malformed',
+    'caller.a',
+    [],
+    null,
+    createIdentity('u1', 'user', ['admin']),
+  );
+
+  // Values with no own enumerable properties: these are the fail-open vector.
+  for (const bad of [5, 0, 1.5, true, false] as unknown[]) {
+    it(`denies an allow-rule whose conditions is ${JSON.stringify(bad)}`, () => {
+      const acl = new ACL(
+        [{ callers: ['caller.a'], targets: ['target.b'], effect: 'allow', description: '', conditions: bad as never }],
+        'deny',
+      );
+      expect(acl.check('caller.a', 'target.b', ctx)).toBe(false);
+    });
+  }
+
+  // Strings and arrays already denied (their Object.entries yields index keys →
+  // unknown condition), but pin them so the guard cannot regress into allowing them.
+  for (const bad of ['abc', [{ roles: ['admin'] }]] as unknown[]) {
+    it(`denies an allow-rule whose conditions is ${JSON.stringify(bad)}`, () => {
+      const acl = new ACL(
+        [{ callers: ['caller.a'], targets: ['target.b'], effect: 'allow', description: '', conditions: bad as never }],
+        'deny',
+      );
+      expect(acl.check('caller.a', 'target.b', ctx)).toBe(false);
+    });
+  }
+
+  it('still treats an empty mapping as vacuously satisfied', () => {
+    const acl = new ACL(
+      [{ callers: ['caller.a'], targets: ['target.b'], effect: 'allow', description: '', conditions: {} }],
+      'deny',
+    );
+    expect(acl.check('caller.a', 'target.b', ctx)).toBe(true);
+  });
+
+  it('records the malformed shape as a handler_error on the audit entry', () => {
+    const entries: AuditEntry[] = [];
+    const acl = new ACL(
+      [{ callers: ['caller.a'], targets: ['target.b'], effect: 'allow', description: '', conditions: 5 as never }],
+      'deny',
+      (e) => entries.push(e),
+    );
+    acl.check('caller.a', 'target.b', ctx);
+    expect(entries).toHaveLength(1);
+    expect(entries[0].handlerError).toMatch(/must be a mapping, got number/);
+  });
+
+  it('rejects a malformed conditions at YAML parse time', () => {
+    expect(() =>
+      _parseAclRule({ callers: ['a'], targets: ['b'], effect: 'allow', conditions: 5 }, 0),
+    ).toThrow(ACLRuleError);
   });
 });

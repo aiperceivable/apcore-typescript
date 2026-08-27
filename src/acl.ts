@@ -131,13 +131,36 @@ export function _parseAclRule(rawRule: unknown, index: number): ACLRule {
     throw new ACLRuleError(`Rule ${index} 'targets' must be a list, got ${typeof targets}`);
   }
 
+  // `conditions` was previously taken with a bare `as` cast, which asserts a shape
+  // TypeScript cannot check at runtime. A scalar therefore reached the gate, where
+  // `Object.entries(5)` is `[]` and the AND-loop is vacuously satisfied — an
+  // `effect: allow` rule became unconditional. Validate it here like every sibling key.
+  const rawConditions = ruleObj['conditions'];
+  if (rawConditions !== undefined && rawConditions !== null && !isConditionsObject(rawConditions)) {
+    throw new ACLRuleError(
+      `Rule ${index} 'conditions' must be a mapping, got ${aclTypeName(rawConditions)}`,
+    );
+  }
+
   return {
     callers: callers as string[],
     targets: targets as string[],
     effect,
     description: (ruleObj['description'] as string) ?? '',
-    conditions: (ruleObj['conditions'] as Record<string, unknown>) ?? null,
+    conditions: (rawConditions as Record<string, unknown>) ?? null,
   };
+}
+
+/** True only for a plain object — excludes null, arrays and every primitive. */
+function isConditionsObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** JSON-ish type name for diagnostics, mirroring executor.ts's `jsonTypeName`. */
+function aclTypeName(value: unknown): string {
+  if (value === null) return 'null';
+  if (Array.isArray(value)) return 'array';
+  return typeof value;
 }
 
 export class ACL {
@@ -196,6 +219,16 @@ export class ACL {
     const record = (msg: string): void => {
       if (frame !== null) frame.error = msg;
     };
+    // Fail closed on a malformed `conditions`. `_parseAclRule` rejects these at load
+    // time, but rules built programmatically (`new ACL([...])`, `addRule()`) skip the
+    // parser entirely, and a scalar here would make `Object.entries()` return `[]` —
+    // satisfying the AND-loop vacuously and turning an `allow` rule unconditional.
+    if (!isConditionsObject(conditions)) {
+      const msg = `ACL conditions must be a mapping, got ${aclTypeName(conditions)}`;
+      record(msg);
+      console.warn(`[apcore:acl] ${msg} — treated as unsatisfied`);
+      return false;
+    }
     for (const [key, value] of Object.entries(conditions)) {
       const handler = ACL.conditionHandlers.get(key);
       if (handler === undefined) {
@@ -231,6 +264,13 @@ export class ACL {
     const record = (msg: string): void => {
       if (frame !== null) frame.error = msg;
     };
+    // Same fail-closed guard as the sync path — see _evaluateConditions.
+    if (!isConditionsObject(conditions)) {
+      const msg = `ACL conditions must be a mapping, got ${aclTypeName(conditions)}`;
+      record(msg);
+      console.warn(`[apcore:acl] ${msg} — treated as unsatisfied`);
+      return false;
+    }
     for (const [key, value] of Object.entries(conditions)) {
       const handler = ACL.asyncConditionHandlers.get(key) ?? ACL.conditionHandlers.get(key);
       if (handler === undefined) {
