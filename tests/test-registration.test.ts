@@ -1,4 +1,7 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, afterAll } from 'vitest';
+import { writeFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { Type } from '@sinclair/typebox';
 import { Config } from '../src/config.js';
 import { Registry } from '../src/registry/registry.js';
@@ -226,5 +229,52 @@ describe('toggle.* overrides are restored to ToggleState (sync finding A-D-013)'
 
     expect(toggleState.isDisabled('executor.email.send')).toBe(false);
     expect(config.get('toggle.executor.email.send')).toBeUndefined();
+  });
+});
+
+describe('sys_modules activation is opt-in in namespace mode (sync finding B-012)', () => {
+  // §6.6.3: "`sys_modules.enabled = false (default)` -> 0 modules registered.
+  // Nothing to call, nothing to list." The registration defaults in §9.15.3
+  // declared `enabled: True`, so in namespace mode a project that configured
+  // nothing had the six read modules stood up for it. Asserted end-to-end here
+  // rather than only on the config value, because the config value is one
+  // refactor away from the behaviour it is supposed to guard.
+  const tmp = mkdtempSync(join(tmpdir(), 'apcore-sysmod-'));
+  afterAll(() => rmSync(tmp, { recursive: true, force: true }));
+
+  function loadNamespaceConfig(body: string): Config {
+    const p = join(tmp, `cfg-${Math.abs(hashCode(body))}.yaml`);
+    writeFileSync(p, body);
+    return Config.load(p, { validate: false });
+  }
+  function hashCode(s: string): number {
+    let h = 0;
+    for (let i = 0; i < s.length; i++) h = (Math.imul(31, h) + s.charCodeAt(i)) | 0;
+    return h;
+  }
+
+  it('registers nothing when sys_modules is not configured', () => {
+    const cfg = loadNamespaceConfig('apcore:\n  version: "1.0.0"\n');
+    const registry = new Registry();
+    registerSysModules(registry, new Executor({ registry }), cfg);
+    expect(registry.moduleIds).toEqual([]);
+  });
+
+  it('registers the six read modules when explicitly enabled', () => {
+    const cfg = loadNamespaceConfig('apcore:\n  version: "1.0.0"\nsys_modules:\n  enabled: true\n');
+    const registry = new Registry();
+    registerSysModules(registry, new Executor({ registry }), cfg);
+    expect(registry.moduleIds).toHaveLength(6);
+    expect(registry.moduleIds.some((id) => id.startsWith('system.control.'))).toBe(false);
+  });
+
+  it('adds the three control modules only when events are also enabled', () => {
+    const cfg = loadNamespaceConfig(
+      'apcore:\n  version: "1.0.0"\nsys_modules:\n  enabled: true\n  events:\n    enabled: true\n',
+    );
+    const registry = new Registry();
+    registerSysModules(registry, new Executor({ registry }), cfg);
+    expect(registry.moduleIds).toHaveLength(9);
+    expect(registry.moduleIds.filter((id) => id.startsWith('system.control.'))).toHaveLength(3);
   });
 });

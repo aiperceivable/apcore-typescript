@@ -351,9 +351,21 @@ describe('Config namespace defaults', () => {
     fs.writeFileSync(yamlPath, 'apcore:\n  version: "1.0.0"\n');
     const cfg = Config.load(yamlPath, { validate: false });
     const sys = cfg.namespace('sys_modules');
-    // Built-in default: sys_modules.enabled = true (parity with apcore-python and apcore-rust;
-    // sync finding A-D-014 corrected the prior false default).
-    expect(sys['enabled']).toBe(true);
+    // Built-in default: sys_modules.enabled = false.
+    //
+    // An earlier sync cycle changed this from false to true for parity with
+    // apcore-python and apcore-rust. The parity argument was sound; the target
+    // value was not. All three SDKs had copied `enabled: True` from
+    // PROTOCOL_SPEC §9.15.3, which contradicted the schema it cites on the line
+    // above (`schemas/sys-modules.schema.json`, `default: false`), §6.6.3 in the
+    // same document ("`sys_modules.enabled = false (default)` -> 0 modules
+    // registered"), and conformance/fixtures/config_defaults.json.
+    //
+    // The observable cost: in namespace mode a project that never configured
+    // sys_modules had all six read modules registered for it — the
+    // information-disclosure surface §6.6.3 names explicitly. §9.15.3 is
+    // corrected in spec v1.17.0 and all three SDKs now register false.
+    expect(sys['enabled']).toBe(false);
     // Built-in default: sys_modules.events.enabled = false (sync finding A-D-015;
     // events emission opts in, parity with apcore-python and apcore-rust).
     expect((sys['events'] as Record<string, unknown>)['enabled']).toBe(false);
