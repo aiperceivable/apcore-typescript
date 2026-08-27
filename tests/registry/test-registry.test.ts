@@ -2265,3 +2265,89 @@ describe('Registry.getModuleMetadata — dependencies reach the accessor (issue 
     expect(registry.getModuleMetadata('executor.zulu')['description']).toBe('no dependencies');
   });
 });
+
+describe('registerInternal reserves the ID during onLoad (sync finding A-D-001)', () => {
+  // The reservation rule is stated at registry.ts:684 — "The ID is reserved in
+  // `_inFlight` for the whole of onLoad. `register()` computes its duplicate
+  // set as `_modules ∪ _inFlight`" — and registerInternal did neither: its
+  // conflict set read `_modules` alone and it never populated `_inFlight`. A
+  // re-entrant same-ID registration during onLoad was therefore accepted; the
+  // inner call published its module and fired a `register` event, then the
+  // outer publish overwrote it last-writer-wins, orphaning the first instance
+  // and leaving its onUnload unreachable.
+  //
+  // registry-system.md's "Applies to every registration path" forbids
+  // per-path exceptions. apcore-python (registry.py:2283) and apcore-rust
+  // (registry.rs:1151) both reserve.
+  const leaf = () => ({
+    description: 'm',
+    inputSchema: {},
+    outputSchema: {},
+    execute: async () => ({}),
+  });
+
+  it('rejects a re-entrant registration of the same ID with DUPLICATE_MODULE_ID', () => {
+    const registry = new Registry();
+    const inner = leaf();
+    let innerError: unknown = null;
+    const outer = {
+      ...leaf(),
+      onLoad() {
+        try {
+          registry.registerInternal('system.x', inner);
+        } catch (e) {
+          innerError = e;
+        }
+      },
+    };
+
+    registry.registerInternal('system.x', outer);
+
+    expect(innerError).toBeInstanceOf(DuplicateModuleIdError);
+    expect((innerError as DuplicateModuleIdError).code).toBe('DUPLICATE_MODULE_ID');
+    expect(registry.get('system.x')).toBe(outer);
+  });
+
+  it('fires exactly one register event for the ID', () => {
+    const registry = new Registry();
+    const seen: string[] = [];
+    registry.on('register', (id: string) => seen.push(id));
+
+    const inner = leaf();
+    const outer = {
+      ...leaf(),
+      onLoad() {
+        try {
+          registry.registerInternal('system.y', inner);
+        } catch {
+          /* expected */
+        }
+      },
+    };
+    registry.registerInternal('system.y', outer);
+
+    expect(seen.filter((id) => id === 'system.y')).toHaveLength(1);
+  });
+
+  it('releases the reservation so a later registration of a fresh ID works', () => {
+    const registry = new Registry();
+    registry.registerInternal('system.a', leaf());
+    registry.registerInternal('system.b', leaf());
+    expect(registry.get('system.a')).not.toBeNull();
+    expect(registry.get('system.b')).not.toBeNull();
+  });
+
+  it('releases the reservation when onLoad throws', () => {
+    const registry = new Registry();
+    const failing = {
+      ...leaf(),
+      onLoad() {
+        throw new Error('boom');
+      },
+    };
+    expect(() => registry.registerInternal('system.c', failing)).toThrow('boom');
+    // The failed ID must be free again, not stuck reserved.
+    expect(() => registry.registerInternal('system.c', leaf())).not.toThrow();
+    expect(registry.get('system.c')).not.toBeNull();
+  });
+});

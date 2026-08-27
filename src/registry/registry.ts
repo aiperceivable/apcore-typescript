@@ -948,6 +948,15 @@ export class Registry {
     );
     if (conflict !== null) {
       if (conflict.severity === 'error') {
+        // Same discrimination as `register()` (registry.ts:796). The register
+        // Contract's Errors list names `DUPLICATE_MODULE_ID` for "module_id is
+        // already registered, or a concurrent registration is currently
+        // loading the same ID" — reporting the generic GENERAL_INVALID_INPUT
+        // from this path alone meant the same condition surfaced under two
+        // different codes depending on which entry point the caller used.
+        if (conflict.type === 'duplicate_id') {
+          throw new DuplicateModuleIdError(moduleId);
+        }
         throw new InvalidInputError(conflict.message);
       }
       console.warn(`[apcore:registry] ID conflict: ${conflict.message}`);
@@ -1536,14 +1545,33 @@ export class Registry {
     // apcore-python (registry.py:1674) and apcore-rust (registry.rs:727).
     // The lowercase-only EBNF in validateModuleId makes case collisions
     // unreachable today, but the contract surface stays aligned across SDKs.
+    // The duplicate set is `_modules ∪ _inFlight`, matching `register()`
+    // (registry.ts:790) and the reservation rule stated at registry.ts:684.
+    // Reading `_modules` alone left the ID looking free while an onLoad was
+    // in progress, so a re-entrant or concurrent registerInternal of the same
+    // ID was accepted: the inner call published its module and fired a
+    // `register` event, then the outer publish overwrote it last-writer-wins,
+    // orphaning the first instance and leaving its onUnload unreachable.
+    // apcore-python (registry.py:2283) and apcore-rust (registry.rs:1151)
+    // both reserve. registry-system.md's "Applies to every registration path"
+    // forbids per-path exceptions (sync finding A-D-001).
     const conflict = detectIdConflicts(
       moduleId,
-      new Set(this._modules.keys()),
+      new Set([...this._modules.keys(), ...this._inFlight.keys()]),
       new Set<string>(),
       this._lowercaseMap,
     );
     if (conflict !== null) {
       if (conflict.severity === 'error') {
+        // Same discrimination the other registration paths make. The register
+        // Contract's Errors list names DUPLICATE_MODULE_ID for "module_id is
+        // already registered, or a concurrent registration is currently
+        // loading the same ID"; reporting the generic GENERAL_INVALID_INPUT
+        // here meant one condition surfaced under two codes depending on
+        // which entry point the caller used.
+        if (conflict.type === 'duplicate_id') {
+          throw new DuplicateModuleIdError(moduleId);
+        }
         throw new InvalidInputError(conflict.message);
       }
       console.warn(`[apcore:registry] ID conflict: ${conflict.message}`);
@@ -1563,10 +1591,15 @@ export class Registry {
     // with _modules preserves the invariant for downstream conflict detection.
     this._lowercaseMap.set(moduleId.toLowerCase(), moduleId);
 
+    // Reserve the ID for the whole of onLoad so a re-entrant registration
+    // sees it as taken. Released on both the success and failure paths below.
+    this._inFlight.set(moduleId, Promise.resolve());
+
     if (typeof modObj['onLoad'] === 'function') {
       try {
         (modObj['onLoad'] as () => void)();
       } catch (e) {
+        this._inFlight.delete(moduleId);
         this._moduleMeta.delete(moduleId);
         this._lowercaseMap.delete(moduleId.toLowerCase());
         this._emitModuleLoadFailed(moduleId, e);
@@ -1574,6 +1607,7 @@ export class Registry {
       }
     }
 
+    this._inFlight.delete(moduleId);
     this._modules.set(moduleId, module);
     this._triggerEvent(REGISTRY_EVENTS.REGISTER, moduleId, module);
   }
