@@ -13,6 +13,7 @@ import {
   arraysEqual,
   deepEqual,
 } from '../src/acl-handlers.js';
+import type { ConditionOutcome } from '../src/acl-handlers.js';
 import { Context, createIdentity } from '../src/context.js';
 
 // ---------------------------------------------------------------------------
@@ -176,9 +177,9 @@ describe('MaxCallDepthHandler', () => {
 describe('OrHandler', () => {
   it('returns true when at least one sub-condition passes', () => {
     let evalCallCount = 0;
-    const evalFn = (conds: Record<string, unknown>): boolean => {
+    const evalFn = (conds: Record<string, unknown>): ConditionOutcome => {
       evalCallCount++;
-      return conds['match'] === true;
+      return conds['match'] === true ? 'satisfied' : 'unsatisfied';
     };
     const handler = new OrHandler(evalFn);
     const ctx = makeContext();
@@ -187,14 +188,14 @@ describe('OrHandler', () => {
   });
 
   it('returns false when all sub-conditions fail', () => {
-    const evalFn = (): boolean => false;
+    const evalFn = (): ConditionOutcome => 'unsatisfied';
     const handler = new OrHandler(evalFn);
     const ctx = makeContext();
     expect(handler.evaluate([{ a: 1 }, { b: 2 }], ctx)).toBe(false);
   });
 
   it('returns false when value is not an array', () => {
-    const evalFn = (): boolean => true;
+    const evalFn = (): ConditionOutcome => 'satisfied';
     const handler = new OrHandler(evalFn);
     const ctx = makeContext();
     expect(handler.evaluate({ sub: true }, ctx)).toBe(false);
@@ -202,14 +203,14 @@ describe('OrHandler', () => {
   });
 
   it('returns false for empty array', () => {
-    const evalFn = (): boolean => true;
+    const evalFn = (): ConditionOutcome => 'satisfied';
     const handler = new OrHandler(evalFn);
     const ctx = makeContext();
     expect(handler.evaluate([], ctx)).toBe(false);
   });
 
   it('skips non-object, null, and array sub-conditions', () => {
-    const evalFn = (): boolean => true;
+    const evalFn = (): ConditionOutcome => 'satisfied';
     const handler = new OrHandler(evalFn);
     const ctx = makeContext();
     // Items that are primitives, null, or arrays should be skipped
@@ -218,9 +219,9 @@ describe('OrHandler', () => {
 
   it('passes context to inner evaluate function', () => {
     let receivedContext: Context | null = null;
-    const evalFn = (_conds: Record<string, unknown>, context: Context): boolean => {
+    const evalFn = (_conds: Record<string, unknown>, context: Context): ConditionOutcome => {
       receivedContext = context;
-      return true;
+      return 'satisfied';
     };
     const handler = new OrHandler(evalFn);
     const ctx = makeContext({ identityType: 'user' });
@@ -235,21 +236,21 @@ describe('OrHandler', () => {
 
 describe('NotHandler', () => {
   it('returns true when inner condition fails', () => {
-    const evalFn = (): boolean => false;
+    const evalFn = (): ConditionOutcome => 'unsatisfied';
     const handler = new NotHandler(evalFn);
     const ctx = makeContext();
     expect(handler.evaluate({ something: true }, ctx)).toBe(true);
   });
 
   it('returns false when inner condition passes', () => {
-    const evalFn = (): boolean => true;
+    const evalFn = (): ConditionOutcome => 'satisfied';
     const handler = new NotHandler(evalFn);
     const ctx = makeContext();
     expect(handler.evaluate({ something: true }, ctx)).toBe(false);
   });
 
   it('returns false when value is not a plain object', () => {
-    const evalFn = (): boolean => true;
+    const evalFn = (): ConditionOutcome => 'satisfied';
     const handler = new NotHandler(evalFn);
     const ctx = makeContext();
     expect(handler.evaluate('string', ctx)).toBe(false);
@@ -259,9 +260,9 @@ describe('NotHandler', () => {
 
   it('passes context to inner evaluate function', () => {
     let receivedContext: Context | null = null;
-    const evalFn = (_conds: Record<string, unknown>, context: Context): boolean => {
+    const evalFn = (_conds: Record<string, unknown>, context: Context): ConditionOutcome => {
       receivedContext = context;
-      return false;
+      return 'unsatisfied';
     };
     const handler = new NotHandler(evalFn);
     const ctx = makeContext({ identityType: 'admin' });

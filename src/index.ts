@@ -101,7 +101,7 @@ export type { ApprovalRequest, ApprovalResult, ApprovalHandler } from './approva
 
 // Execution-time governance policy (apcore#76 RFC pilot)
 export { ExecutionPolicy, PolicyRule } from './policy.js';
-export type { PolicyDecision, PolicyRuleOverrides } from './policy.js';
+export type { PolicyCallSite, PolicyDecision, PolicyRuleOverrides } from './policy.js';
 
 // Errors
 export {
@@ -173,7 +173,13 @@ export type { StreamingModule } from './streaming.js';
 
 // ACL
 export { ACL } from './acl.js';
-export type { ACLRule, AuditEntry, AuditLogger } from './acl.js';
+export type {
+  ACLRule,
+  AuditEntry,
+  AuditLogger,
+  ConditionOutcome,
+  ConditionValidationFinding,
+} from './acl.js';
 
 // Middleware
 export {

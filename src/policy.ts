@@ -21,6 +21,7 @@
  * required but no ApprovalHandler is configured.
  */
 
+import type { Context } from './context.js';
 import type { ModuleAnnotations } from './module.js';
 import { calculateSpecificity, matchPattern } from './utils/pattern.js';
 
@@ -51,6 +52,40 @@ function _requireBoolean(value: unknown, key: string): boolean {
     );
   }
   return value;
+}
+
+/**
+ * The call site a policy decision is being made for (PROTOCOL_SPEC §7.9.6,
+ * spec v1.24.0, apcore#102).
+ *
+ * Through spec v1.23.0 a policy could see only *which* module was being
+ * called, never *what it was being called with*, so an operator who needed to
+ * gate some calls to a module had to gate all of them. The pipeline already
+ * holds this data at the point of the decision — the approval gate is Step 5
+ * and the invocation's arguments and `Context` are in scope there — so
+ * {@link ExecutionPolicy.resolve} now receives it.
+ *
+ * Two constraints are normative:
+ *
+ * 1. The built-in pattern rules of §7.9.1 **MUST NOT** consult it. A rule
+ *    set's verdict stays a function of the module ID and the annotations
+ *    alone, so it remains statically auditable and reproducible from the
+ *    policy document. It exists for host-supplied policies (subclass
+ *    `ExecutionPolicy` and override `resolve`) and for carrying the call site
+ *    into the audit trail.
+ * 2. `arguments` has **NOT** been schema-validated. The approval gate is
+ *    Step 5 and input validation is Step 7 (§12.8), so a host-supplied policy
+ *    MUST NOT assume its inputs are well-formed, present, or of the declared
+ *    type.
+ */
+export interface PolicyCallSite {
+  /**
+   * The raw invocation arguments, exactly as handed to the approval gate.
+   * NOT schema-validated — see the note on {@link PolicyCallSite}.
+   */
+  readonly arguments: Record<string, unknown> | null;
+  /** The execution {@link Context} the call is running under, when present. */
+  readonly context: Context | null;
 }
 
 /** Overrides accepted by the {@link PolicyRule} constructor. */
@@ -200,8 +235,24 @@ export class ExecutionPolicy {
    * @param annotations - The module's annotations (ModuleAnnotations, dict, or
    *   null). Only `requiresApproval`/`requires_approval` and `destructive` are
    *   consulted.
+   * @param callSite - The invocation's arguments and `Context`
+   *   (PROTOCOL_SPEC §7.9.6). Optional, so every existing caller keeps
+   *   compiling and behaving identically. The built-in pattern rules below
+   *   deliberately ignore it — §7.9.6(2) requires the verdict to be a function
+   *   of the module ID and annotations alone — and it is accepted here so a
+   *   host-supplied policy can override this method and decide on arguments,
+   *   and so an implementation can carry the call site into the audit trail.
    */
-  resolve(moduleId: string, annotations: unknown = null): PolicyDecision {
+  resolve(
+    moduleId: string,
+    annotations: unknown = null,
+    callSite: PolicyCallSite | null = null,
+  ): PolicyDecision {
+    // §7.9.6(2) and (5): the built-in rules MUST NOT consult the call site,
+    // and adding it MUST NOT change the verdict any existing policy produces.
+    // Referenced explicitly so the parameter reads as deliberate rather than
+    // forgotten.
+    void callSite;
     const baseRequiresApproval = readAnnotationBool(
       annotations,
       'requiresApproval',

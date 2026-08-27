@@ -395,7 +395,14 @@ export class BuiltinApprovalGate implements Step {
     let needs: boolean;
     let effectiveDestructive: boolean;
     if (this._policy !== null) {
-      decision = this._policy.resolve(ctx.moduleId, mod?.['annotations'] ?? null);
+      // §7.9.6: policy resolution receives the call site — the invocation
+      // arguments and the Context — alongside the module ID and annotations.
+      // These arguments have NOT been schema-validated: this gate is Step 5
+      // and input validation is Step 7 (§12.8).
+      decision = this._policy.resolve(ctx.moduleId, mod?.['annotations'] ?? null, {
+        arguments: ctx.inputs ?? null,
+        context: ctx.context ?? null,
+      });
       needs = decision.needsApproval;
       effectiveDestructive = decision.destructive;
       if (decision.overridden) {

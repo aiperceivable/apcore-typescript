@@ -12,17 +12,54 @@ export interface ACLConditionHandler {
   evaluate(value: unknown, context: Context): boolean | Promise<boolean>;
 }
 
+/**
+ * Three-valued outcome of evaluating an ACL condition (PROTOCOL_SPEC §6.1.1).
+ *
+ * `'unsatisfied'` means a registered handler ran to completion and answered
+ * "no" — an ordinary non-match. `'unevaluable'` means no answer was obtainable
+ * at all, which is a different outcome and resolves the enclosing rule toward
+ * refusing access: a `deny` rule takes effect, an `allow` rule does not grant.
+ * Collapsing the two is the defect §6.1.1 exists to prevent.
+ */
+export type ConditionOutcome = 'satisfied' | 'unsatisfied' | 'unevaluable';
+
 /** Type alias for the recursive evaluation function used by compound handlers. */
 export type EvalFn = (
   conditions: Record<string, unknown>,
   context: Context,
-) => boolean;
+) => ConditionOutcome;
 
 /** Async variant of EvalFn for use under asyncCheck(). */
 export type AsyncEvalFn = (
   conditions: Record<string, unknown>,
   context: Context,
-) => Promise<boolean>;
+) => Promise<ConditionOutcome>;
+
+/**
+ * A condition handler able to report UNEVALUABLE separately from UNSATISFIED.
+ *
+ * The public {@link ACLConditionHandler} contract returns a boolean, which
+ * cannot carry PROTOCOL_SPEC §6.1.1's third outcome — so the built-in
+ * compound operators (`$or`, `$not`), whose children can themselves be
+ * unevaluable, implement this richer interface as well. A handler that only
+ * implements `evaluate()` keeps the two-outcome contract: `true` is SATISFIED,
+ * `false` is UNSATISFIED, a throw is UNEVALUABLE.
+ */
+export interface ACLOutcomeConditionHandler extends ACLConditionHandler {
+  evaluateOutcome(value: unknown, context: Context): ConditionOutcome | Promise<ConditionOutcome>;
+}
+
+/** True when a handler can report the three-valued outcome directly. */
+export function isOutcomeHandler(
+  handler: ACLConditionHandler,
+): handler is ACLOutcomeConditionHandler {
+  return typeof (handler as Partial<ACLOutcomeConditionHandler>).evaluateOutcome === 'function';
+}
+
+/** True only for a plain object — excludes null, arrays and every primitive. */
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
 
 // ---------------------------------------------------------------------------
 // Basic handlers
@@ -76,67 +113,106 @@ export class MaxCallDepthHandler implements ACLConditionHandler {
 // Compound handlers
 // ---------------------------------------------------------------------------
 
-/** $or: list of condition dicts. Returns true if ANY sub-set passes. */
-export class OrHandler implements ACLConditionHandler {
+/**
+ * `$or`: list of condition dicts. SATISFIED if ANY sub-set passes.
+ *
+ * Three-valued per PROTOCOL_SPEC §6.1.1: an outright "yes" wins even when a
+ * sibling was unevaluable, so a SATISFIED child short-circuits. An UNEVALUABLE
+ * child does NOT short-circuit — a later sibling may still be the decisive
+ * SATISFIED — and makes the whole `$or` unevaluable only if no child said yes.
+ */
+export class OrHandler implements ACLOutcomeConditionHandler {
   private readonly _evaluate: EvalFn;
 
   constructor(evaluateFn: EvalFn) {
     this._evaluate = evaluateFn;
   }
 
-  evaluate(value: unknown, context: Context): boolean {
-    if (!Array.isArray(value)) return false;
+  evaluateOutcome(value: unknown, context: Context): ConditionOutcome {
+    if (!Array.isArray(value)) return 'unsatisfied';
+    let sawUnevaluable = false;
     for (const sub of value) {
-      if (typeof sub !== 'object' || sub === null || Array.isArray(sub)) continue;
-      if (this._evaluate(sub as Record<string, unknown>, context)) return true;
+      if (!isPlainObject(sub)) continue;
+      const outcome = this._evaluate(sub, context);
+      if (outcome === 'satisfied') return 'satisfied';
+      if (outcome === 'unevaluable') sawUnevaluable = true;
     }
-    return false;
+    return sawUnevaluable ? 'unevaluable' : 'unsatisfied';
+  }
+
+  evaluate(value: unknown, context: Context): boolean {
+    return this.evaluateOutcome(value, context) === 'satisfied';
   }
 }
 
-/** $not: single condition dict. Returns true if the sub-set FAILS. */
-export class NotHandler implements ACLConditionHandler {
+/**
+ * `$not`: single condition dict. SATISFIED if the sub-set is UNSATISFIED.
+ *
+ * §6.1.1: `$not` of an UNEVALUABLE child is UNEVALUABLE, never SATISFIED.
+ * Negating "no answer" into "yes" would let a misspelled key inside a `$not`
+ * satisfy the very rule it was meant to gate.
+ */
+export class NotHandler implements ACLOutcomeConditionHandler {
   private readonly _evaluate: EvalFn;
 
   constructor(evaluateFn: EvalFn) {
     this._evaluate = evaluateFn;
   }
 
+  evaluateOutcome(value: unknown, context: Context): ConditionOutcome {
+    if (!isPlainObject(value)) return 'unsatisfied';
+    const outcome = this._evaluate(value, context);
+    if (outcome === 'unevaluable') return 'unevaluable';
+    return outcome === 'satisfied' ? 'unsatisfied' : 'satisfied';
+  }
+
   evaluate(value: unknown, context: Context): boolean {
-    if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
-    return !this._evaluate(value as Record<string, unknown>, context);
+    return this.evaluateOutcome(value, context) === 'satisfied';
   }
 }
 
-/** $or async: list of condition dicts evaluated via the async evaluator. */
-export class OrHandlerAsync implements ACLConditionHandler {
+/** `$or` async: list of condition dicts evaluated via the async evaluator. */
+export class OrHandlerAsync implements ACLOutcomeConditionHandler {
   private readonly _evaluate: AsyncEvalFn;
 
   constructor(evaluateFn: AsyncEvalFn) {
     this._evaluate = evaluateFn;
   }
 
-  async evaluate(value: unknown, context: Context): Promise<boolean> {
-    if (!Array.isArray(value)) return false;
+  async evaluateOutcome(value: unknown, context: Context): Promise<ConditionOutcome> {
+    if (!Array.isArray(value)) return 'unsatisfied';
+    let sawUnevaluable = false;
     for (const sub of value) {
-      if (typeof sub !== 'object' || sub === null || Array.isArray(sub)) continue;
-      if (await this._evaluate(sub as Record<string, unknown>, context)) return true;
+      if (!isPlainObject(sub)) continue;
+      const outcome = await this._evaluate(sub, context);
+      if (outcome === 'satisfied') return 'satisfied';
+      if (outcome === 'unevaluable') sawUnevaluable = true;
     }
-    return false;
+    return sawUnevaluable ? 'unevaluable' : 'unsatisfied';
+  }
+
+  async evaluate(value: unknown, context: Context): Promise<boolean> {
+    return (await this.evaluateOutcome(value, context)) === 'satisfied';
   }
 }
 
-/** $not async: single condition dict evaluated via the async evaluator. */
-export class NotHandlerAsync implements ACLConditionHandler {
+/** `$not` async: single condition dict evaluated via the async evaluator. */
+export class NotHandlerAsync implements ACLOutcomeConditionHandler {
   private readonly _evaluate: AsyncEvalFn;
 
   constructor(evaluateFn: AsyncEvalFn) {
     this._evaluate = evaluateFn;
   }
 
+  async evaluateOutcome(value: unknown, context: Context): Promise<ConditionOutcome> {
+    if (!isPlainObject(value)) return 'unsatisfied';
+    const outcome = await this._evaluate(value, context);
+    if (outcome === 'unevaluable') return 'unevaluable';
+    return outcome === 'satisfied' ? 'unsatisfied' : 'satisfied';
+  }
+
   async evaluate(value: unknown, context: Context): Promise<boolean> {
-    if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
-    return !(await this._evaluate(value as Record<string, unknown>, context));
+    return (await this.evaluateOutcome(value, context)) === 'satisfied';
   }
 }
 

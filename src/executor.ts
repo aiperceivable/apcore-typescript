@@ -1028,7 +1028,12 @@ export class Executor {
       if (this._policy !== null) {
         // Policy overrides win over declared annotations (apcore#76), so
         // preflight reports the same verdict the gate will enforce.
-        requiresApproval = this._policy.resolve(moduleId, mod['annotations']).needsApproval;
+        requiresApproval = this._policy.resolve(moduleId, mod['annotations'], {
+          // §7.9.6: preflight resolves against the same call site the gate
+          // will see, so the reported verdict matches the enforced one.
+          arguments: effectiveInputs,
+          context: validateCtx,
+        }).needsApproval;
       } else {
         requiresApproval = this._needsApproval(mod);
       }

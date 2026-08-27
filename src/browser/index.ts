@@ -98,7 +98,13 @@ export type { ApprovalRequest, ApprovalResult, ApprovalHandler } from '../approv
 
 // ---- ACL (in-memory; ACL.load is Node-only and throws in browser) --------
 export { ACL } from '../acl.js';
-export type { ACLRule, AuditEntry, AuditLogger } from '../acl.js';
+export type {
+  ACLRule,
+  AuditEntry,
+  AuditLogger,
+  ConditionOutcome,
+  ConditionValidationFinding,
+} from '../acl.js';
 
 // ---- Errors --------------------------------------------------------------
 export {
