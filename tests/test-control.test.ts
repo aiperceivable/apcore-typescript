@@ -550,3 +550,65 @@ describe('ReloadModule', () => {
     });
   });
 });
+
+describe('bulk reload emits and reports like the single path (sync finding A-D-017)', () => {
+  // `_reloadWithPathFilter` wrote to the AuditStore and stopped. With no store
+  // configured a bulk reload therefore left NO trace, while system-modules.md's
+  // Contextual Auditing section makes the event bus the minimum surface —
+  // precisely for the no-store case. apcore-rust emits here; apcore-python
+  // emits here too.
+  //
+  // The response shape also diverged: this SDK returned only
+  // `{success, reloaded_modules}` while both peers also return
+  // `module_id: null` and `reload_duration_ms`.
+  const leafModule = () => ({
+    description: 'd',
+    inputSchema: { type: 'object' },
+    outputSchema: { type: 'object' },
+    version: '1.0.0',
+    execute: async () => ({}),
+  });
+
+  it('emits apcore.module.reloaded for each matched module', async () => {
+    const registry = new Registry();
+    await registry.register('executor.alpha', leafModule());
+    // The bulk path unregisters then re-discovers; stub discovery to put the
+    // module back, as the peers' drivers do.
+    vi.spyOn(registry, 'discover').mockImplementation(async () => {
+      registry.registerInternal('executor.alpha', leafModule());
+      return 1;
+    });
+    const emitter = new EventEmitter();
+    const seen: Array<Record<string, unknown>> = [];
+    emitter.subscribe({
+      subscriberId: 'rec',
+      eventPattern: 'apcore.module.*',
+      onEvent: async (e) => {
+        seen.push(e as unknown as Record<string, unknown>);
+      },
+    });
+
+    const mod = new ReloadModule(registry, emitter);
+    await mod.execute({ path_filter: 'executor.*', reason: 'deploy' }, null);
+    await emitter.flush(2000);
+
+    const reloaded = seen.filter((e) => e['eventType'] === 'apcore.module.reloaded');
+    expect(reloaded.length).toBeGreaterThan(0);
+    expect((reloaded[0]['data'] as Record<string, unknown>)['module_id']).toBe('executor.alpha');
+  });
+
+  it('returns module_id and reload_duration_ms like the peers', async () => {
+    const registry = new Registry();
+    await registry.register('executor.alpha', leafModule());
+    vi.spyOn(registry, 'discover').mockImplementation(async () => {
+      registry.registerInternal('executor.alpha', leafModule());
+      return 1;
+    });
+    const mod = new ReloadModule(registry, new EventEmitter());
+    const out = await mod.execute({ path_filter: 'executor.*', reason: 'deploy' }, null);
+
+    expect(out).toHaveProperty('module_id', null);
+    expect(typeof out['reload_duration_ms']).toBe('number');
+    expect(out).toHaveProperty('reloaded_modules');
+  });
+});

@@ -383,6 +383,7 @@ export class ReloadModule {
   }
 
   private async _reloadWithPathFilter(pathFilter: string, reason: string, ctx: Context | null): Promise<Record<string, unknown>> {
+    const started = Date.now();
     const allIds = this._registry.list();
     // Alphabetical first so the topo sort has a deterministic input, then
     // dependency order on top (fixture `system_modules_hardening.json`
@@ -428,19 +429,43 @@ export class ReloadModule {
         }
       } else {
         reloadedModules.push(id);
+        const newVersion = String((reloaded as Record<string, unknown>)['version'] ?? '1.0.0');
         const entry = buildAuditEntry('reload_module', id, ctx, {
           before: previousVersions.get(id) ?? '1.0.0',
-          after: String((reloaded as Record<string, unknown>)['version'] ?? '1.0.0'),
+          after: newVersion,
         });
         if (this._auditStore !== null) {
           this._auditStore.append(entry);
         }
+        // Emit the same event the single-module path emits. This branch wrote
+        // to the AuditStore and stopped, so with no store configured a bulk
+        // reload left no trace at all — while system-modules.md's Contextual
+        // Auditing section makes the event bus the MINIMUM surface, precisely
+        // for the no-store case. apcore-rust emits here; apcore-python emits
+        // here and now carries the caller identity too (sync finding A-D-017).
+        const { caller_id, identity } = extractAuditIdentity(ctx);
+        const payload: Record<string, unknown> = {
+          module_id: id,
+          previous_version: previousVersions.get(id) ?? '1.0.0',
+          new_version: newVersion,
+          caller_id,
+        };
+        if (identity !== null) payload['identity'] = identity;
+        this._emitter.emit(createEvent('apcore.module.reloaded', id, 'info', payload));
       }
     }
 
     console.warn(`[apcore:control] Bulk reload: path_filter=${pathFilter} reloaded=${reloadedModules.length} reason=${reason}`);
 
-    return { success: true, reloaded_modules: reloadedModules };
+    // `module_id: null` and `reload_duration_ms` match the shape apcore-python
+    // and apcore-rust return for the bulk branch; omitting them made a caller
+    // parsing one response shape fail against this SDK (sync finding A-D-017).
+    return {
+      success: true,
+      module_id: null,
+      reloaded_modules: reloadedModules,
+      reload_duration_ms: Date.now() - started,
+    };
   }
 
   private _validateInputs(inputs: Record<string, unknown>): { moduleId?: string; pathFilter?: string; reason: string } {
