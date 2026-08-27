@@ -34,6 +34,11 @@ apcore is an AI-Perceivable module standard that makes every interface naturally
 - **Caching & pagination annotations** — `cacheable`, `cacheTtl`, `cacheKeyFields` for result caching; `paginated`, `paginationStyle` for paginated modules
 - **Config Bus** — Namespace-based configuration registry with typed access, env prefix dispatch, hot-reload, and external config mounting (`Config.registerNamespace()`, `config.namespace()`, `config.bind<T>()`, `config.mount()`)
 
+## What's New in v0.27.0
+
+- **BREAKING (security): a denied caller no longer sees module-level introspection from `validate()`** (apcore#96, spec v1.13.0 §12.8.5.1) — `validate()` looked the module up and ran `preflight()` / `preview()` on the strength of that lookup alone, so a caller the ACL had just denied still made module-authored code run and still received what it returned: for a command-wrapping module, the resolved binary and its argv. When the `acl` check fails, neither hook runs, no `module_preflight` / `module_preview` check is emitted, and `predictedChanges` stays empty. The failed `acl` check itself is still reported, so a denied caller still learns *why*. A failed `schema` check does **not** suppress introspection — a permitted caller is entitled to the module's account of what would happen even when its inputs are malformed.
+- **`dependencies` is a parsed field on the module descriptor** (apcore#90 follow-up, spec v1.18.0) — `getDefinition(moduleId).dependencies` returns what the caller declared. `system.manifest.*` had been reporting `dependencies: []` for every module that declared them, because it read `descriptor.metadata['dependencies']` and `mergeModuleMetadata` extracts `dependencies` as a canonical field, so it never landed in the metadata bag.
+
 ## What's New in v0.26.0
 
 - **`ExecutionPolicy` / `PolicyRule` execution-time governance** (#76) — An external policy can force or exempt approval on already-registered modules by ID pattern, make a `destructive` annotation imply approval via `gateDestructive`, and fail **closed** with `strict: true` when a gated module has no `ApprovalHandler`. The most specific matching rule wins; on a tie the more restrictive one does. See [Execution policy](#execution-policy) and [`examples/execution-policy.ts`](./examples/execution-policy.ts).
