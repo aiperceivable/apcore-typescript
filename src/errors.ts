@@ -1517,6 +1517,19 @@ export const ErrorCodes = Object.freeze({
   STREAMING_INTERFACE_MISMATCH: 'STREAMING_INTERFACE_MISMATCH',
   CONTEXT_BINDING_ERROR: 'CONTEXT_BINDING_ERROR',
   PIPELINE_STEP_ERROR: 'PIPELINE_STEP_ERROR',
+  // Raised from `src/pipeline.ts`, not from this module, which is why they were
+  // absent here. `ErrorCodes` is the sole input to `collectFrameworkCodes()` —
+  // the exact-code half of the A17 collision guard — so a user module could
+  // register them as its own. apcore-rust derives its set from the exhaustive
+  // `ErrorCode` enum and rejects all eight; this map must be equally complete.
+  PIPELINE_ABORT: 'PIPELINE_ABORT',
+  PIPELINE_CONFIGURATION_ERROR: 'PIPELINE_CONFIGURATION_ERROR',
+  PIPELINE_DEPENDENCY_ERROR: 'PIPELINE_DEPENDENCY_ERROR',
+  STEP_NAME_DUPLICATE: 'STEP_NAME_DUPLICATE',
+  STEP_NOT_FOUND: 'STEP_NOT_FOUND',
+  STEP_NOT_REMOVABLE: 'STEP_NOT_REMOVABLE',
+  STEP_NOT_REPLACEABLE: 'STEP_NOT_REPLACEABLE',
+  STRATEGY_NOT_FOUND: 'STRATEGY_NOT_FOUND',
   PIPELINE_STEP_NOT_FOUND: 'PIPELINE_STEP_NOT_FOUND',
 } as const);
 
