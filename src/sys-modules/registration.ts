@@ -19,7 +19,7 @@ import type { RetryConfig } from '../events/retry.js';
 import { PlatformNotifyMiddleware } from '../middleware/platform-notify.js';
 import { HealthSummaryModule, HealthModule } from './health.js';
 import { ManifestFullModule, ManifestModule } from './manifest.js';
-import { ToggleFeatureModule } from './toggle.js';
+import { ToggleFeatureModule, DEFAULT_TOGGLE_STATE } from './toggle.js';
 import type { ToggleState } from './toggle.js';
 import { UpdateConfigModule, ReloadModule } from './control.js';
 import { UsageSummaryModule, UsageModule } from './usage.js';
@@ -292,6 +292,56 @@ export interface RegisterSysModulesOptions {
  * `node:fs` does not enter the browser dependency graph.
  */
 type OverridesLoader = (path: string) => Record<string, unknown> | null;
+/**
+ * Prefix under which `system.control.toggle_feature` persists its decisions.
+ * Must match `toggle.ts` `_persistToggleOverride`, which writes
+ * `toggle.${moduleId}`.
+ */
+const TOGGLE_OVERRIDE_PREFIX = 'toggle.';
+
+/**
+ * Apply a loaded overrides map.
+ *
+ * `toggle.<module_id>` keys are the persisted form of an approval-gated
+ * `system.control.toggle_feature` call (toggle.ts `_persistToggleOverride`).
+ * They are STATE, not configuration: routing them through `config.set()` — as
+ * every override key used to be — turned the restore into an inert config
+ * entry, so a module disabled before a restart came back enabled. apcore-python
+ * (registration.py:285) and apcore-rust (overrides.rs:282) both strip the
+ * prefix and drive the ToggleState.
+ *
+ * The state written to must be the one `ToggleFeatureModule` will read, which
+ * is `toggleState ?? DEFAULT_TOGGLE_STATE` (toggle.ts:100) — restoring into a
+ * per-instance state the module does not consult would silently do nothing.
+ */
+function _applyOverrides(
+  overrides: Record<string, unknown>,
+  config: Config,
+  toggleState: ToggleState | undefined,
+): void {
+  const effectiveToggleState = toggleState ?? DEFAULT_TOGGLE_STATE;
+  for (const [key, value] of Object.entries(overrides)) {
+    if (key.startsWith(TOGGLE_OVERRIDE_PREFIX)) {
+      const moduleId = key.slice(TOGGLE_OVERRIDE_PREFIX.length);
+      if (moduleId !== '' && typeof value === 'boolean') {
+        if (value) {
+          effectiveToggleState.enable(moduleId);
+        } else {
+          effectiveToggleState.disable(moduleId);
+        }
+        continue;
+      }
+      // A malformed toggle key (empty id, or a non-boolean value) is not a
+      // config key either — drop it rather than writing `toggle.x` into Config.
+      console.warn(
+        `[apcore:sys-modules] Ignoring malformed toggle override '${key}' (value must be a boolean)`,
+      );
+      continue;
+    }
+    config.set(key, value);
+  }
+}
+
 let _overridesLoader: OverridesLoader | null = null;
 
 /** @internal — used by `./overrides-file.ts` to install the Node-side reader. */
@@ -341,9 +391,7 @@ export function registerSysModules(
       console.warn('[apcore:sys-modules] Overrides loader threw:', err);
     }
     if (parsed && typeof parsed === 'object') {
-      for (const [key, value] of Object.entries(parsed)) {
-        config.set(key, value);
-      }
+      _applyOverrides(parsed, config, toggleState);
     }
   }
 
@@ -357,9 +405,7 @@ export function registerSysModules(
           '[apcore:sys-modules] OverridesStore.load() returned a Promise; async stores cannot be applied during synchronous registerSysModules. Pre-load and inject into Config directly.',
         );
       } else {
-        for (const [key, value] of Object.entries(loaded as Record<string, unknown>)) {
-          config.set(key, value);
-        }
+        _applyOverrides(loaded as Record<string, unknown>, config, toggleState);
       }
     } catch (err) {
       console.warn('[apcore:sys-modules] Failed to load overrides from OverridesStore:', err);

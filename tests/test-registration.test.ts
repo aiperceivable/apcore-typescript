@@ -9,6 +9,7 @@ import {
   unregisterSubscriberType,
   resetSubscriberRegistry,
 } from '../src/sys-modules/registration.js';
+import { ToggleState } from '../src/sys-modules/toggle.js';
 
 describe('registerSysModules', () => {
   it('returns empty context when sys_modules.enabled is false', () => {
@@ -133,5 +134,97 @@ describe('subscriber registry', () => {
     // Should not throw — they are pre-registered
     unregisterSubscriberType('webhook');
     unregisterSubscriberType('a2a');
+  });
+});
+
+describe('toggle.* overrides are restored to ToggleState (sync finding A-D-013)', () => {
+  // `system.control.toggle_feature` persists its decision as
+  // `toggle.<module_id>: boolean` (toggle.ts `_persistToggleOverride`).
+  // registerSysModules used to feed EVERY override key through `config.set()`,
+  // so the restore became an inert config entry named `toggle.x` and a module
+  // disabled before a restart came back ENABLED — on the approval-gated kill
+  // switch. apcore-python and apcore-rust both strip the prefix and drive the
+  // ToggleState.
+
+  function makeStore(overrides: Record<string, unknown>) {
+    return {
+      load: () => overrides,
+      save: () => {
+        /* not exercised here */
+      },
+    };
+  }
+
+  it('restores a disabled module into the injected ToggleState', () => {
+    const registry = new Registry();
+    const executor = new Executor({ registry });
+    const config = new Config({ sys_modules: { enabled: true } });
+    const toggleState = new ToggleState();
+
+    expect(toggleState.isDisabled('executor.email.send')).toBe(false);
+
+    registerSysModules(registry, executor, config, undefined, {
+      toggleState,
+      overridesStore: makeStore({ 'toggle.executor.email.send': false }),
+    });
+
+    expect(toggleState.isDisabled('executor.email.send')).toBe(true);
+  });
+
+  it('restores an enabled module (true clears the disable)', () => {
+    const registry = new Registry();
+    const executor = new Executor({ registry });
+    const config = new Config({ sys_modules: { enabled: true } });
+    const toggleState = new ToggleState();
+    toggleState.disable('executor.email.send');
+
+    registerSysModules(registry, executor, config, undefined, {
+      toggleState,
+      overridesStore: makeStore({ 'toggle.executor.email.send': true }),
+    });
+
+    expect(toggleState.isDisabled('executor.email.send')).toBe(false);
+  });
+
+  it('does not leak the toggle key into Config', () => {
+    const registry = new Registry();
+    const executor = new Executor({ registry });
+    const config = new Config({ sys_modules: { enabled: true } });
+    const toggleState = new ToggleState();
+
+    registerSysModules(registry, executor, config, undefined, {
+      toggleState,
+      overridesStore: makeStore({ 'toggle.executor.email.send': false }),
+    });
+
+    expect(config.get('toggle.executor.email.send')).toBeUndefined();
+  });
+
+  it('still applies non-toggle override keys to Config', () => {
+    const registry = new Registry();
+    const executor = new Executor({ registry });
+    const config = new Config({ sys_modules: { enabled: true } });
+
+    registerSysModules(registry, executor, config, undefined, {
+      toggleState: new ToggleState(),
+      overridesStore: makeStore({ 'executor.default_timeout': 1234 }),
+    });
+
+    expect(config.get('executor.default_timeout')).toBe(1234);
+  });
+
+  it('ignores a toggle key whose value is not a boolean', () => {
+    const registry = new Registry();
+    const executor = new Executor({ registry });
+    const config = new Config({ sys_modules: { enabled: true } });
+    const toggleState = new ToggleState();
+
+    registerSysModules(registry, executor, config, undefined, {
+      toggleState,
+      overridesStore: makeStore({ 'toggle.executor.email.send': 'nope' }),
+    });
+
+    expect(toggleState.isDisabled('executor.email.send')).toBe(false);
+    expect(config.get('toggle.executor.email.send')).toBeUndefined();
   });
 });
