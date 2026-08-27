@@ -19,7 +19,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import yaml from 'js-yaml';
 
-import { Config, CONSTRAINTS } from '../src/config.js';
+import { Config, CONSTRAINTS, _globalNsRegistry } from '../src/config.js';
 import { DEFAULTS } from '../src/config-defaults.js';
 import { FRAMEWORK_CONFIG_KEYS } from '../src/config-key-surface.js';
 import { ConfigError } from '../src/errors.js';
@@ -351,5 +351,73 @@ describe('Conformance: unknown keys inside a framework section', () => {
       }),
     );
     expect(() => Config.load(file, { validate: true })).not.toThrow();
+  });
+});
+
+describe('default tiers mirror the canonical schemas (A-D-021)', () => {
+  const schemasRoot = path.resolve(findFixturesRoot(), '..', '..', 'schemas');
+
+  /** Every `default:` a schema declares, as full dot-paths. */
+  function schemaDefaults(node: unknown, prefix = ''): Record<string, unknown> {
+    const out: Record<string, unknown> = {};
+    const props = (node as { properties?: Record<string, Record<string, unknown>> } | null)
+      ?.properties;
+    for (const [key, value] of Object.entries(props ?? {})) {
+      const dotted = prefix ? `${prefix}.${key}` : key;
+      if ('default' in value) out[dotted] = value.default;
+      if (value.properties) Object.assign(out, schemaDefaults(value, dotted));
+    }
+    return out;
+  }
+
+  function leaves(node: unknown, prefix = ''): Record<string, unknown> {
+    const out: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries((node ?? {}) as Record<string, unknown>)) {
+      const dotted = prefix ? `${prefix}.${key}` : key;
+      if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
+        Object.assign(out, leaves(value, dotted));
+      } else {
+        out[dotted] = value;
+      }
+    }
+    return out;
+  }
+
+  it('DEFAULTS is defaults.schema.json, key for key', () => {
+    // Narrower than "every default key is allowed by some schema": that passes
+    // on a table with extra keys, because `sys-modules.schema.json` allows them
+    // too. `defaults.schema.json` IS the legacy default table, and it is
+    // `additionalProperties: false`. apcore-python carried six extra
+    // `sys_modules` leaves under exactly that gap.
+    const canonical = schemaDefaults(
+      JSON.parse(fs.readFileSync(path.join(schemasRoot, 'defaults.schema.json'), 'utf-8')),
+    );
+    expect(Object.keys(leaves(DEFAULTS)).sort()).toEqual(Object.keys(canonical).sort());
+    for (const [key, expected] of Object.entries(canonical)) {
+      expect(leaves(DEFAULTS)[key], `default for ${key}`).toEqual(expected);
+    }
+  });
+
+  it('the sys_modules namespace supplies every default its own schema declares', () => {
+    // §9.15.3 gives `sys-modules.schema.json` ownership of this namespace, and
+    // it declares fourteen defaults. This registration supplied eleven —
+    // `error_history.*` and `events.subscribers` were missing, so those keys
+    // resolved to undefined in namespace mode while the schema documents a
+    // value. `control.overrides_path` is excluded: its declared default is
+    // null, which a namespace default cannot express distinctly from absence.
+    const declared = schemaDefaults(
+      JSON.parse(fs.readFileSync(path.join(schemasRoot, 'sys-modules.schema.json'), 'utf-8')),
+    );
+    const expected = Object.fromEntries(
+      Object.entries(declared).filter(([, value]) => value !== null),
+    );
+    expect(Object.keys(expected).length).toBeGreaterThanOrEqual(13);
+
+    const supplied = leaves(_globalNsRegistry.get('sys_modules')?.defaults ?? {});
+    const missing = Object.keys(expected).filter((key) => !(key in supplied));
+    expect(missing, 'defaults declared by the schema but not supplied').toEqual([]);
+    for (const [key, value] of Object.entries(expected)) {
+      expect(supplied[key], `namespace default for ${key}`).toEqual(value);
+    }
   });
 });

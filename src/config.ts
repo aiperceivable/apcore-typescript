@@ -1424,6 +1424,17 @@ Config.registerNamespace({
     manifest: { enabled: true },
     usage: { enabled: true, retention_hours: 168, bucketing_strategy: 'hourly' },
     control: { enabled: true },
-    events: { enabled: false, thresholds: { error_rate: 0.1, latency_p99_ms: 5000.0 } },
+    // `error_history` and `events.subscribers` are declared with defaults by
+    // schemas/sys-modules.schema.json and were missing here, so this namespace
+    // answered for eleven of its own schema's fourteen keys.
+    // `control.overrides_path` is the one deliberate omission: its declared
+    // default is null, which a namespace default cannot express distinctly
+    // from absence (sync finding A-D-021).
+    error_history: { max_entries_per_module: 50, max_total_entries: 1000 },
+    events: {
+      enabled: false,
+      subscribers: [],
+      thresholds: { error_rate: 0.1, latency_p99_ms: 5000.0 },
+    },
   },
 });
