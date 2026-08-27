@@ -47,8 +47,35 @@ export function mergeModuleMetadata(
   const codeDocs = (moduleObj['documentation'] as string) ?? null;
   const codeDeps = moduleObj['dependencies'];
 
+  // The caller's own top-level keys are extension metadata and MUST survive.
+  //
+  // This used to read only `meta['metadata']`, so `register(id, mod, null,
+  // { 'x-owner': 'billing' })` produced `descriptor.metadata === {}` — the
+  // `x-` extension layer of the three-layer metadata model, silently dropped.
+  // apcore-rust stores the caller's map verbatim on the descriptor and
+  // apcore-python surfaces it through its versioned-metadata store, so this
+  // SDK was the only one losing it (sync finding A-D-003).
+  //
+  // Canonical keys are excluded because they are already extracted into their
+  // own descriptor fields above; re-emitting them under `metadata` would
+  // duplicate them.
+  const CANONICAL_KEYS = new Set([
+    'description',
+    'name',
+    'tags',
+    'version',
+    'annotations',
+    'examples',
+    'metadata',
+    'documentation',
+    'dependencies',
+  ]);
+  const extensionKeys: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(meta)) {
+    if (!CANONICAL_KEYS.has(key)) extensionKeys[key] = value;
+  }
   const yamlMetadata = (meta['metadata'] as Record<string, unknown>) ?? {};
-  const mergedMetadata = { ...codeMetadata, ...yamlMetadata };
+  const mergedMetadata = { ...codeMetadata, ...extensionKeys, ...yamlMetadata };
 
   // Spec PROTOCOL_SPEC.md §4.13: annotations must be FIELD-LEVEL merged
   // (YAML > code > defaults), not whole-replaced. Delegates to

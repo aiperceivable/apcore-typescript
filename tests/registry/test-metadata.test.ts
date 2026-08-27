@@ -10,6 +10,7 @@ import {
 } from '../../src/registry/metadata.js';
 import { ConfigError, ConfigNotFoundError } from '../../src/errors.js';
 import { createAnnotations } from '../../src/module.js';
+import { Registry } from '../../src/registry/registry.js';
 import type { ModuleAnnotations } from '../../src/module.js';
 
 describe('loadMetadata', () => {
@@ -367,5 +368,49 @@ describe('loadIdMap', () => {
     writeFileSync(idMapPath, 'mappings: []\n');
     const result = loadIdMap(idMapPath);
     expect(result).toEqual({});
+  });
+});
+
+describe('caller extension metadata survives registration (sync finding A-D-003)', () => {
+  // `mergeModuleMetadata` read only `meta['metadata']`, so the caller's own
+  // top-level keys — the `x-` extension layer of the three-layer metadata
+  // model — were dropped: `register(id, mod, null, { 'x-owner': 'billing' })`
+  // produced `descriptor.metadata === {}`. apcore-rust stores the caller's map
+  // verbatim on the descriptor and apcore-python surfaces it through its
+  // versioned-metadata store, so this SDK was the only one losing it.
+  const mod = {
+    description: 'd',
+    inputSchema: { type: 'object' },
+    outputSchema: { type: 'object' },
+    execute: async () => ({}),
+  };
+
+  it('keeps x- prefixed extension keys', async () => {
+    const registry = new Registry();
+    await registry.register('a.b', mod, null, { 'x-owner': 'billing' });
+    expect(registry.getDefinition('a.b')?.metadata).toMatchObject({ 'x-owner': 'billing' });
+  });
+
+  it('keeps arbitrary non-canonical keys', async () => {
+    const registry = new Registry();
+    await registry.register('a.c', mod, null, { foo: 1 });
+    expect(registry.getDefinition('a.c')?.metadata).toMatchObject({ foo: 1 });
+  });
+
+  it('still honours a nested metadata block', async () => {
+    const registry = new Registry();
+    await registry.register('a.d', mod, null, { metadata: { bar: 2 } });
+    expect(registry.getDefinition('a.d')?.metadata).toMatchObject({ bar: 2 });
+  });
+
+  it('does not leak canonical keys into metadata', async () => {
+    const registry = new Registry();
+    await registry.register('a.e', mod, null, { description: 'yaml-desc', tags: ['t'], foo: 1 });
+    const d = registry.getDefinition('a.e');
+    expect(d?.description).toBe('yaml-desc');
+    expect(d?.tags).toEqual(['t']);
+    // description/tags are extracted into their own descriptor fields, so
+    // re-emitting them under `metadata` would duplicate them.
+    expect(d?.metadata).toEqual({ foo: 1 });
   });
 });
