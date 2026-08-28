@@ -355,6 +355,46 @@ function precheckRule(rule: ACLRule, mode: EvaluationPath): RuleFault[] {
 }
 
 /** @internal — exported so `./acl-file.ts` can reuse the parser. */
+/**
+ * The complete set of keys an ACL rule may carry (PROTOCOL_SPEC §6.1).
+ *
+ * Closed on purpose: a key nothing evaluates is otherwise dropped in silence,
+ * which widens an `allow` rule with no warning (#107).
+ */
+const RULE_KEYS = new Set(['callers', 'targets', 'effect', 'description', 'conditions']);
+
+/**
+ * Reserved in earlier revisions of §6.1 and evaluated by no implementation.
+ * Rejected like any other unknown key, but named as reserved in the message: an
+ * operator who wrote `actions: ["describe"]` meant to restrict the rule and is
+ * better served by "not implemented" than by "unknown key".
+ */
+const RESERVED_RULE_KEYS = new Set(['id', 'actions', 'priority']);
+
+function rejectUnknownRuleKeys(index: number, ruleObj: Record<string, unknown>): void {
+  const unknown = Object.keys(ruleObj)
+    .filter((k) => !RULE_KEYS.has(k))
+    .sort();
+  if (unknown.length === 0) return;
+  const reserved = unknown.filter((k) => RESERVED_RULE_KEYS.has(k));
+  const other = unknown.filter((k) => !RESERVED_RULE_KEYS.has(k));
+  const parts: string[] = [];
+  if (reserved.length > 0) {
+    parts.push(
+      `${reserved.map((k) => `'${k}'`).join(', ')} reserved for a future ` +
+        'specification version and evaluated by no implementation',
+    );
+  }
+  if (other.length > 0) {
+    parts.push(`${other.map((k) => `'${k}'`).join(', ')} unrecognised`);
+  }
+  throw new ACLRuleError(
+    `Rule ${index} carries ${parts.join('; ')}. The rule key set is closed ` +
+      `(${[...RULE_KEYS].sort().join(', ')}); a key nothing evaluates would be ` +
+      'dropped silently and leave the rule wider than written.',
+  );
+}
+
 export function _parseAclRule(rawRule: unknown, index: number): ACLRule {
   if (typeof rawRule !== 'object' || rawRule === null || Array.isArray(rawRule)) {
     throw new ACLRuleError(`Rule ${index} must be a mapping, got ${typeof rawRule}`);
@@ -366,6 +406,11 @@ export function _parseAclRule(rawRule: unknown, index: number): ACLRule {
       throw new ACLRuleError(`Rule ${index} missing required key '${key}'`);
     }
   }
+
+  // A missing key was already rejected above so an omission cannot render a
+  // rule inert; an unknown key is the same hazard pointing the other way, and
+  // was dropped in silence until #107.
+  rejectUnknownRuleKeys(index, ruleObj);
 
   const effect = ruleObj['effect'] as string;
   if (effect !== 'allow' && effect !== 'deny') {
