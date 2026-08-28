@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+---
+
+## [0.28.0] - Unreleased
+
 ### Added
 
 - **`ACL.defaultEffect` and `ACL.rules` read-only accessors (spec v1.23.0 §6.8, apcore#101).** Both fields were `private` with no getter, so a TypeScript consumer could not reach either of them at all — not the rule list `check()` evaluates, and not the single most consequential value in an ACL, the effect applied when nothing matches. Tooling that reports or audits the enforced policy — an admin surface, a preflight report, a linter over the rules §6.1.2 flags — had to re-read and re-parse the ACL file to recover a value the loaded object already held, and that second copy drifts from the object across `reload()`.
