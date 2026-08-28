@@ -185,6 +185,9 @@ describe('OrHandler', () => {
     const ctx = makeContext();
     const value = [{ match: false }, { match: true }];
     expect(handler.evaluate(value, ctx)).toBe(true);
+    // Both branches are visited: $or short-circuits only on a SATISFIED child,
+    // and the first child here is UNSATISFIED.
+    expect(evalCallCount).toBe(2);
   });
 
   it('returns false when all sub-conditions fail', () => {
@@ -194,11 +197,17 @@ describe('OrHandler', () => {
     expect(handler.evaluate([{ a: 1 }, { b: 2 }], ctx)).toBe(false);
   });
 
-  it('returns false when value is not an array', () => {
+  it('reports UNEVALUABLE when value is not an array (§6.1.1 case 4)', () => {
+    // A value malformed for its key is unevaluable, not false. A handler handed
+    // `$or: "typo"` that returns false looks exactly like one that answered
+    // "no", which put a deny rule carrying the typo back into the inert state
+    // §6.1.1 exists to end.
     const evalFn = (): ConditionOutcome => 'satisfied';
     const handler = new OrHandler(evalFn);
     const ctx = makeContext();
-    expect(handler.evaluate({ sub: true }, ctx)).toBe(false);
+    expect(handler.evaluateOutcome({ sub: true }, ctx)).toBe('unevaluable');
+    expect(handler.evaluateOutcome('conditions', ctx)).toBe('unevaluable');
+    // The legacy boolean surface still reports "not satisfied".
     expect(handler.evaluate('conditions', ctx)).toBe(false);
   });
 
@@ -209,24 +218,34 @@ describe('OrHandler', () => {
     expect(handler.evaluate([], ctx)).toBe(false);
   });
 
-  it('skips non-object, null, and array sub-conditions', () => {
+  it('reports UNEVALUABLE for non-object, null, and array sub-conditions', () => {
     const evalFn = (): ConditionOutcome => 'satisfied';
     const handler = new OrHandler(evalFn);
     const ctx = makeContext();
-    // Items that are primitives, null, or arrays should be skipped
+    // A branch that is not a condition object is malformed, not absent.
+    expect(handler.evaluateOutcome(['string', null, [1, 2]], ctx)).toBe('unevaluable');
     expect(handler.evaluate(['string', null, [1, 2]], ctx)).toBe(false);
   });
 
-  it('passes context to inner evaluate function', () => {
+  it('passes context and the §6.1.4 child path to the inner evaluate function', () => {
     let receivedContext: Context | null = null;
-    const evalFn = (_conds: Record<string, unknown>, context: Context): ConditionOutcome => {
+    let receivedPath: string | null = null;
+    const evalFn = (
+      _conds: Record<string, unknown>,
+      context: Context,
+      childPath: string,
+    ): ConditionOutcome => {
       receivedContext = context;
+      receivedPath = childPath;
       return 'satisfied';
     };
     const handler = new OrHandler(evalFn);
     const ctx = makeContext({ identityType: 'user' });
     handler.evaluate([{ x: 1 }], ctx);
     expect(receivedContext).toBe(ctx);
+    // A branch's path carries its 0-based index, so a key inside it is
+    // reported as `$or[0].k` rather than under the operator's own key.
+    expect(receivedPath).toBe('$or[0]');
   });
 });
 
@@ -249,13 +268,14 @@ describe('NotHandler', () => {
     expect(handler.evaluate({ something: true }, ctx)).toBe(false);
   });
 
-  it('returns false when value is not a plain object', () => {
+  it('reports UNEVALUABLE when value is not a plain object (§6.1.1 case 4)', () => {
     const evalFn = (): ConditionOutcome => 'satisfied';
     const handler = new NotHandler(evalFn);
     const ctx = makeContext();
-    expect(handler.evaluate('string', ctx)).toBe(false);
-    expect(handler.evaluate(null, ctx)).toBe(false);
-    expect(handler.evaluate([{ x: 1 }], ctx)).toBe(false);
+    for (const bad of ['string', null, [{ x: 1 }]] as unknown[]) {
+      expect(handler.evaluateOutcome(bad, ctx)).toBe('unevaluable');
+      expect(handler.evaluate(bad, ctx)).toBe(false);
+    }
   });
 
   it('passes context to inner evaluate function', () => {

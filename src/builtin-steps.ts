@@ -399,6 +399,12 @@ export class BuiltinApprovalGate implements Step {
       // arguments and the Context — alongside the module ID and annotations.
       // These arguments have NOT been schema-validated: this gate is Step 5
       // and input validation is Step 7 (§12.8).
+      //
+      // `_approval_token` is already gone: `_takeApprovalToken` above strips it
+      // from `ctx.inputs` before this point, which §7.9.6 rule 5 requires
+      // explicitly — §7.4's "before passing to subsequent steps" does not reach
+      // a decision made INSIDE Step 5, so an implementation can satisfy §7.4
+      // literally and still hand the token to the policy.
       decision = this._policy.resolve(ctx.moduleId, mod?.['annotations'] ?? null, {
         arguments: ctx.inputs ?? null,
         context: ctx.context ?? null,

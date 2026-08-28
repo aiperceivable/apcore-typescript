@@ -107,26 +107,44 @@ export type AuditLogger = (entry: AuditEntry) => void;
 export type { ConditionOutcome } from './acl-handlers.js';
 
 /**
- * One rule/condition pair reported by {@link ACL.validateConditions}
- * (PROTOCOL_SPEC §6.1.2 rule 3, §6.1.3).
+ * One structural or registry fault reported by {@link ACL.validateRules}
+ * (PROTOCOL_SPEC §6.1.2 rule 3, §6.1.3, §6.1.4).
  *
- * `syncRegistered` and `asyncRegistered` are reported separately and MUST NOT
+ * `syncResolvable` and `asyncResolvable` are reported separately and MUST NOT
  * be collapsed into one boolean: `asyncCheck()` consults the async registry
  * and falls back to the sync one, while `check()` consults only the sync
  * registry, so a key registered *only* as an async handler is a working
  * condition on one path and an unevaluable one on the other.
  */
-export interface ConditionValidationFinding {
+export interface RuleValidationFinding {
   /** Index of the offending rule in definition order. */
   readonly ruleIndex: number;
-  /** The condition key that does not resolve on the sync path. */
-  readonly conditionKey: string;
+  /**
+   * Where the fault sits (§6.1.4): `roles`, `$or[1].mispelled`, `$` for a
+   * `conditions` that is not a mapping, `callers` / `targets` for §6.1.4.1.
+   * Findings order by this, not by key — a nested `$or` can carry one key at
+   * several positions, which leaves key ordering undefined.
+   */
+  readonly conditionPath: string;
+  /**
+   * The condition key itself, for readers who do not need the path. `null`
+   * where the fault has no key: a non-mapping `conditions`, a malformed
+   * `callers` / `targets`, or a non-mapping `$or` element.
+   */
+  readonly conditionKey: string | null;
   /** The rule's effect — a finding on a `deny` rule is the consequential one. */
   readonly effect: string;
-  /** Whether the key resolves for `check()`. Always `false` on a finding. */
-  readonly syncRegistered: boolean;
-  /** Whether the key resolves for `asyncCheck()`. */
-  readonly asyncRegistered: boolean;
+  /**
+   * Whether the condition resolves for `check()`.
+   *
+   * Both flags mean **resolvable on that evaluation path**, not "present in
+   * that registry" (§6.1.3 rule 2) — which is why they are `*Resolvable` and
+   * not `*Registered`. A structural fault is resolvable on neither path, so
+   * both are `false`; an async-only key is `false` / `true`.
+   */
+  readonly syncResolvable: boolean;
+  /** Whether the condition resolves for `asyncCheck()` — the union of the two registries. */
+  readonly asyncResolvable: boolean;
 }
 
 /**
@@ -141,44 +159,199 @@ type RuleOutcome = 'match' | 'no_match' | 'unevaluable';
 /**
  * Per-`check()` capture slot for unevaluable conditions.
  *
- * `errors` is keyed by condition key so the same key reported twice in one
- * evaluation collapses to one message and the set can be ordered
- * lexicographically on the way out. `pending` records, in evaluation order,
- * the keys recorded since the rule loop last drained it, so the loop can name
- * exactly the keys that made the rule it just evaluated unevaluable (§6.1.1
- * rule 3 requires the warning to name the key, the rule index and the effect).
+ * `errors` is keyed by §6.1.4 **condition path** so the same path reported
+ * twice in one evaluation collapses to one message and the set can be ordered
+ * lexicographically on the way out — by path and not by key, because a nested
+ * `$or` can carry one key at several positions, which leaves key ordering
+ * undefined. `pending` records the paths added since the rule loop last drained
+ * it, so the loop can name exactly the ones that made the rule it just
+ * evaluated unevaluable (§6.1.1 rule 3 requires the warning to name the path,
+ * the rule index and the effect).
  */
 interface HandlerErrorFrame {
+  /** §6.1.4 condition path → message. Keyed by path so §6.1.1 rule 2 can order by it. */
   readonly errors: Map<string, string>;
+  /** Paths recorded since the rule loop last drained this, in discovery order. */
   pending: string[];
 }
 
 /**
- * Synthetic `handler_error` key used when a rule's `conditions` value is not a
- * mapping at all, so no real condition key exists to name.
+ * JSONPath-style root token for the `conditions` object itself (§6.1.4). Used
+ * when `conditions` is not a mapping at all, so no key exists to name.
  */
-const MALFORMED_CONDITIONS_KEY = '$conditions';
+const CONDITIONS_ROOT_PATH = '$';
+
+/** Which registry decides "resolvable" — §6.1.4 checks the path in use. */
+type EvaluationPath = 'sync' | 'async';
 
 /**
- * Every condition key a `conditions` object references, including keys nested
- * inside `$or` / `$not` sub-objects (PROTOCOL_SPEC §6.1.2 rule 2).
+ * One structural or registry fault found by §6.1.4's precheck.
  *
- * Tolerates a malformed `conditions` value by yielding nothing: load-time
- * validation warns, it never throws, and `_parseAclRule` already rejects the
- * malformed shape on the file path.
+ * The precheck is context-independent and runs no handler, so a fault is a
+ * pure function of the rule — which is what lets every SDK report the same
+ * set, in the same order, for the same rule.
  */
-function collectConditionKeys(conditions: unknown, out: string[]): void {
-  if (!isConditionsObject(conditions)) return;
-  for (const [key, value] of Object.entries(conditions)) {
-    out.push(key);
-    if (key === '$or') {
-      if (Array.isArray(value)) {
-        for (const sub of value) collectConditionKeys(sub, out);
-      }
-    } else if (key === '$not') {
-      collectConditionKeys(value, out);
+interface RuleFault {
+  readonly path: string;
+  readonly key: string | null;
+  readonly message: string;
+  readonly syncResolvable: boolean;
+  readonly asyncResolvable: boolean;
+}
+
+/**
+ * §6.1.3 — whether a condition key resolves on each evaluation path.
+ *
+ * Both flags mean **resolvable on that path**, not "present in that registry":
+ * `asyncCheck()` falls back to the sync registry, so `asyncResolvable` is the
+ * union of the two and every built-in leaf handler is resolvable on both.
+ *
+ * Installed by the `ACL` class body below, which owns the two private
+ * registries; declaring it here keeps the precheck a plain function.
+ */
+let conditionResolvability: (key: string) => {
+  syncResolvable: boolean;
+  asyncResolvable: boolean;
+} = () => ({ syncResolvable: false, asyncResolvable: false });
+
+/** Order faults by §6.1.4 condition path (§6.1.1 rule 2, §6.1.2 rule 3). */
+function byPath(a: RuleFault, b: RuleFault): number {
+  return a.path < b.path ? -1 : a.path > b.path ? 1 : 0;
+}
+
+/** Join a parent path with a child key, per §6.1.4's path table. */
+function childPath(prefix: string, key: string): string {
+  return prefix === '' ? key : `${prefix}.${key}`;
+}
+
+/**
+ * §6.1.4.1 — `callers` and `targets` MUST be lists of strings.
+ *
+ * A bare string is iterable in several host languages, so `callers: "admin.*"`
+ * written where `["admin.*"]` was meant is read character by character and its
+ * `*` matches everything — an `allow` rule carrying that typo grants access to
+ * every caller. TypeScript instead threw a `TypeError` out of `check()`, which
+ * fails closed but violates `Contract: ACL.check`'s "MUST NOT raise to
+ * indicate a deny". Either way the value must never be read as a pattern set:
+ * it is a malformed rule, and §6.1.1's effect table decides what that means.
+ */
+function precheckPatternField(
+  field: 'callers' | 'targets',
+  value: unknown,
+  out: RuleFault[],
+): void {
+  let detail: string | null = null;
+  if (!Array.isArray(value)) {
+    detail = `got ${aclTypeName(value)}`;
+  } else {
+    const badIndex = value.findIndex((p) => typeof p !== 'string');
+    if (badIndex !== -1) {
+      detail = `got a list whose element ${badIndex} is ${aclTypeName(value[badIndex])}`;
     }
   }
+  if (detail === null) return;
+  out.push({
+    path: field,
+    key: null,
+    message: `ACL rule field '${field}' must be a list of strings, ${detail}`,
+    // A structural fault is resolvable on neither evaluation path.
+    syncResolvable: false,
+    asyncResolvable: false,
+  });
+}
+
+/**
+ * §6.1.4 — walk a rule's whole `conditions` tree, every `$or` / `$not` branch
+ * included, checking structure and the handler registries only.
+ *
+ * Supplies no context and invokes no handler, so it can run **before** §6.5's
+ * "conditions present but no context provided" check — which is what closes
+ * the bypass where `conditions: {mispelled: true}` on a `deny` rule passed
+ * traffic simply because the caller carried no identity. It never
+ * short-circuits: it has no decisive outcome to short-circuit on, and its
+ * completeness is what makes §6.1.1 rule 2's deterministic `handler_error`
+ * achievable.
+ *
+ * @param prefix - The §6.1.4 path of the object being walked (`''` at the root).
+ */
+function precheckConditions(
+  conditions: unknown,
+  prefix: string,
+  mode: EvaluationPath,
+  out: RuleFault[],
+): void {
+  if (!isConditionsObject(conditions)) {
+    // §6.1.1 case 5 at the root; a non-mapping `$or` element deeper in.
+    const path = prefix === '' ? CONDITIONS_ROOT_PATH : prefix;
+    out.push({
+      path,
+      key: null,
+      message: `ACL conditions '${path}' must be a mapping, got ${aclTypeName(conditions)}`,
+      syncResolvable: false,
+      asyncResolvable: false,
+    });
+    return;
+  }
+
+  for (const [key, value] of Object.entries(conditions)) {
+    const path = childPath(prefix, key);
+
+    if (key === '$or') {
+      // §6.1.1 case 4 — a value malformed for its key.
+      if (!Array.isArray(value)) {
+        out.push({
+          path,
+          key,
+          message: `ACL condition '${path}' must be a list of condition objects, got ${aclTypeName(value)}`,
+          syncResolvable: false,
+          asyncResolvable: false,
+        });
+        continue;
+      }
+      value.forEach((sub, i) => precheckConditions(sub, `${path}[${i}]`, mode, out));
+      continue;
+    }
+
+    if (key === '$not') {
+      if (!isConditionsObject(value)) {
+        out.push({
+          path,
+          key,
+          message: `ACL condition '${path}' must be a condition object, got ${aclTypeName(value)}`,
+          syncResolvable: false,
+          asyncResolvable: false,
+        });
+        continue;
+      }
+      precheckConditions(value, path, mode, out);
+      continue;
+    }
+
+    // §6.1.1 case 1 / §6.1.3 — resolvable on the evaluation path in use.
+    const { syncResolvable, asyncResolvable } = conditionResolvability(key);
+    const resolvable = mode === 'sync' ? syncResolvable : asyncResolvable;
+    if (resolvable) continue;
+    out.push({
+      path,
+      key,
+      message: `Unknown ACL condition '${path}'`,
+      syncResolvable,
+      asyncResolvable,
+    });
+  }
+}
+
+/**
+ * §6.1.4 — the complete, ordered fault set for one rule, structural pattern
+ * fields included. Ordered by path so every SDK reports the same sequence.
+ */
+function precheckRule(rule: ACLRule, mode: EvaluationPath): RuleFault[] {
+  const faults: RuleFault[] = [];
+  precheckPatternField('callers', rule.callers, faults);
+  precheckPatternField('targets', rule.targets, faults);
+  if (rule.conditions != null) precheckConditions(rule.conditions, '', mode, faults);
+  faults.sort(byPath);
+  return faults;
 }
 
 /** @internal — exported so `./acl-file.ts` can reuse the parser. */
@@ -245,6 +418,18 @@ export class ACL {
   private static conditionHandlers = new Map<string, ACLConditionHandler>();
   private static asyncConditionHandlers = new Map<string, ACLConditionHandler>();
 
+  static {
+    // Give the module-level precheck read access to the two private
+    // registries without widening the class's public surface.
+    conditionResolvability = (key: string) => {
+      const syncResolvable = ACL.conditionHandlers.has(key);
+      return {
+        syncResolvable,
+        asyncResolvable: syncResolvable || ACL.asyncConditionHandlers.has(key),
+      };
+    };
+  }
+
   static registerCondition(key: string, handler: ACLConditionHandler): void {
     ACL.conditionHandlers.set(key, handler);
   }
@@ -287,12 +472,12 @@ export class ACL {
    * @internal — read-and-clear this evaluation's captured handler errors.
    *
    * PROTOCOL_SPEC §6.1.1 rule 2: when more than one condition in a single
-   * `check()` is unevaluable, `handler_error` MUST report every one of them,
-   * ordered **lexicographically by condition key** and separated by `"; "`.
-   * Lexicographic rather than evaluation order because the two are not the
+   * `check()` is unevaluable, `handler_error` MUST report every one it
+   * determined, ordered **lexicographically by condition path** and separated
+   * by `"; "`. By path rather than evaluation order because the two are not the
    * same across languages — `serde_json`'s map is ordered while a JavaScript
-   * object preserves insertion order — so "the first one encountered" would
-   * write a different key into the audit log for the same rule per SDK.
+   * object preserves insertion order — and by path rather than key because a
+   * key may occur at several positions in a nested `$or` / `$not` tree.
    */
   private static _takeFrameError(frame: HandlerErrorFrame): string | null {
     if (frame.errors.size === 0) return null;
@@ -307,17 +492,17 @@ export class ACL {
 
   /**
    * @internal — record an unevaluable condition on the evaluation currently in
-   * flight and warn about it. Keyed by condition key so §6.1.1 rule 2's
-   * lexicographic ordering has something to order.
+   * flight and warn about it. Keyed by §6.1.4 condition path so §6.1.1 rule 2's
+   * lexicographic ordering has something well-defined to order.
    */
   private static _recordUnevaluable(
     frame: HandlerErrorFrame | null,
-    key: string,
+    path: string,
     message: string,
   ): void {
     if (frame !== null) {
-      if (!frame.errors.has(key)) frame.errors.set(key, message);
-      frame.pending.push(key);
+      if (!frame.errors.has(path)) frame.errors.set(path, message);
+      frame.pending.push(path);
     }
     console.warn(
       `[apcore:acl] ${message} — the condition is UNEVALUABLE, not false ` +
@@ -336,26 +521,27 @@ export class ACL {
    */
   private static _evaluateConditionSync(
     key: string,
+    path: string,
     value: unknown,
     context: Context,
     frame: HandlerErrorFrame | null,
   ): ConditionOutcome {
     const handler = ACL.conditionHandlers.get(key);
     if (handler === undefined) {
-      ACL._recordUnevaluable(frame, key, `Unknown ACL condition '${key}'`);
+      ACL._recordUnevaluable(frame, path, `Unknown ACL condition '${path}'`);
       return 'unevaluable';
     }
     try {
       const result = isOutcomeHandler(handler)
-        ? handler.evaluateOutcome(value, context)
+        ? handler.evaluateOutcome(value, context, path)
         : handler.evaluate(value, context);
       if (result instanceof Promise) {
         // apcore-typescript cannot inspect a Promise synchronously, so an
         // async handler reached from check() yields no answer at all.
         ACL._recordUnevaluable(
           frame,
-          key,
-          `Async condition '${key}' in sync context — use asyncCheck()`,
+          path,
+          `Async condition '${path}' in sync context — use asyncCheck()`,
         );
         return 'unevaluable';
       }
@@ -364,8 +550,8 @@ export class ACL {
     } catch (e) {
       ACL._recordUnevaluable(
         frame,
-        key,
-        `Handler for condition '${key}' threw: ${e instanceof Error ? e.message : String(e)}`,
+        path,
+        `Handler for condition '${path}' threw: ${e instanceof Error ? e.message : String(e)}`,
       );
       return 'unevaluable';
     }
@@ -389,25 +575,33 @@ export class ACL {
   static _evaluateConditions(
     conditions: Record<string, unknown>,
     context: Context,
+    prefix = '',
   ): ConditionOutcome {
     // Bind the frame at entry so writes land on this evaluation's slot even if
     // another evaluation becomes current in the meantime.
     const frame = ACL._currentFrame;
-    // Fail closed on a malformed `conditions`. `_parseAclRule` rejects these at load
-    // time, but rules built programmatically (`new ACL([...])`, `addRule()`) skip the
-    // parser entirely, and a scalar here would make `Object.entries()` return `[]` —
-    // satisfying the AND-loop vacuously and turning an `allow` rule unconditional.
+    // Fail closed on a malformed `conditions`. §6.1.4's precheck normally
+    // catches this before evaluation begins; the guard stays because a scalar
+    // here would make `Object.entries()` return `[]`, satisfying the AND-loop
+    // vacuously and turning an `allow` rule unconditional.
     if (!isConditionsObject(conditions)) {
+      const path = prefix === '' ? CONDITIONS_ROOT_PATH : prefix;
       ACL._recordUnevaluable(
         frame,
-        MALFORMED_CONDITIONS_KEY,
-        `ACL conditions must be a mapping, got ${aclTypeName(conditions)}`,
+        path,
+        `ACL conditions '${path}' must be a mapping, got ${aclTypeName(conditions)}`,
       );
       return 'unevaluable';
     }
     let sawUnevaluable = false;
     for (const [key, value] of Object.entries(conditions)) {
-      const outcome = ACL._evaluateConditionSync(key, value, context, frame);
+      const outcome = ACL._evaluateConditionSync(
+        key,
+        childPath(prefix, key),
+        value,
+        context,
+        frame,
+      );
       if (outcome === 'unsatisfied') return 'unsatisfied';
       if (outcome === 'unevaluable') sawUnevaluable = true;
     }
@@ -423,39 +617,42 @@ export class ACL {
   static async _evaluateConditionsAsync(
     conditions: Record<string, unknown>,
     context: Context,
+    prefix = '',
   ): Promise<ConditionOutcome> {
     // Bind the frame at entry — after an `await` the static may point at
     // another in-flight evaluation's frame.
     const frame = ACL._currentFrame;
     // Same fail-closed guard as the sync path — see _evaluateConditions.
     if (!isConditionsObject(conditions)) {
+      const rootPath = prefix === '' ? CONDITIONS_ROOT_PATH : prefix;
       ACL._recordUnevaluable(
         frame,
-        MALFORMED_CONDITIONS_KEY,
-        `ACL conditions must be a mapping, got ${aclTypeName(conditions)}`,
+        rootPath,
+        `ACL conditions '${rootPath}' must be a mapping, got ${aclTypeName(conditions)}`,
       );
       return 'unevaluable';
     }
     let sawUnevaluable = false;
     for (const [key, value] of Object.entries(conditions)) {
+      const path = childPath(prefix, key);
       // §6.1.3: the async registry is consulted first, then the sync one.
       const handler = ACL.asyncConditionHandlers.get(key) ?? ACL.conditionHandlers.get(key);
       if (handler === undefined) {
-        ACL._recordUnevaluable(frame, key, `Unknown ACL condition '${key}'`);
+        ACL._recordUnevaluable(frame, path, `Unknown ACL condition '${path}'`);
         sawUnevaluable = true;
         continue;
       }
       let outcome: ConditionOutcome;
       try {
         const result = isOutcomeHandler(handler)
-          ? await handler.evaluateOutcome(value, context)
+          ? await handler.evaluateOutcome(value, context, path)
           : await handler.evaluate(value, context);
         outcome = typeof result === 'boolean' ? (result ? 'satisfied' : 'unsatisfied') : result;
       } catch (e) {
         ACL._recordUnevaluable(
           frame,
-          key,
-          `Handler for condition '${key}' threw: ${e instanceof Error ? e.message : String(e)}`,
+          path,
+          `Handler for condition '${path}' threw: ${e instanceof Error ? e.message : String(e)}`,
         );
         outcome = 'unevaluable';
       }
@@ -483,7 +680,7 @@ export class ACL {
     // §6.1.2: direct construction is an entry point that accepts rules, so it
     // is covered by load-time validation too — `ACL.load()` reaches this same
     // constructor, which is why the file path needs no separate hook.
-    this._warnUnresolvableConditionKeys();
+    this._warnRuleFaults();
   }
 
   /**
@@ -510,8 +707,12 @@ export class ACL {
   }
 
   /**
-   * Report every rule that references a condition key which does not resolve
-   * on the **sync** path (PROTOCOL_SPEC §6.1.2 rule 3, §6.1.3).
+   * Report every rule that fails §6.1.4's precheck on the **sync** path
+   * (PROTOCOL_SPEC §6.1.2 rule 3, §6.1.3, §6.1.4).
+   *
+   * Named `validateRules` and not `validateConditions` because it reports
+   * structural faults in `callers` and `targets` as well (§6.1.4.1), not only
+   * faults inside `conditions`.
    *
    * Condition handlers are registered at runtime into a process-wide registry
    * and `acl.root` discovery commonly runs during bootstrap, ahead of the
@@ -519,29 +720,30 @@ export class ACL {
    * throwing, and this is the deterministic check to run once registration is
    * complete. A pure read: it mutates nothing and registers nothing.
    *
-   * A finding is emitted whenever `syncRegistered` is false, **including**
-   * when `asyncRegistered` is true: an application calling `check()` then has
+   * A finding is emitted whenever `syncResolvable` is false, **including**
+   * when `asyncResolvable` is true: an application calling `check()` then has
    * a condition it cannot evaluate. A caller that only ever uses
    * `asyncCheck()` may ignore such a finding — that judgement belongs to the
    * caller, not to the validator.
    *
-   * Findings are ordered by rule index, then lexicographically by condition
-   * key, so the collection is comparable across SDKs and across runs.
+   * Findings are ordered by rule index, then lexicographically by **condition
+   * path** — by path and not by key, because a nested `$or` may carry the same
+   * key at several positions, which leaves key ordering undefined.
    */
-  validateConditions(): readonly ConditionValidationFinding[] {
-    const findings: ConditionValidationFinding[] = [];
+  validateRules(): readonly RuleValidationFinding[] {
+    const findings: RuleValidationFinding[] = [];
     const rules = this._rules.slice();
     for (let ruleIndex = 0; ruleIndex < rules.length; ruleIndex++) {
       const rule = rules[ruleIndex];
-      for (const key of ACL._referencedConditionKeys(rule)) {
-        if (ACL.conditionHandlers.has(key)) continue;
+      for (const fault of precheckRule(rule, 'sync')) {
         findings.push(
           Object.freeze({
             ruleIndex,
-            conditionKey: key,
+            conditionPath: fault.path,
+            conditionKey: fault.key,
             effect: rule.effect,
-            syncRegistered: false,
-            asyncRegistered: ACL.asyncConditionHandlers.has(key),
+            syncResolvable: fault.syncResolvable,
+            asyncResolvable: fault.asyncResolvable,
           }),
         );
       }
@@ -550,40 +752,29 @@ export class ACL {
   }
 
   /**
-   * @internal — the deduplicated, lexicographically ordered condition keys a
-   * rule references, `$or` / `$not` nesting included.
-   */
-  private static _referencedConditionKeys(rule: ACLRule): string[] {
-    if (rule.conditions == null) return [];
-    const keys: string[] = [];
-    collectConditionKeys(rule.conditions, keys);
-    return [...new Set(keys)].sort();
-  }
-
-  /**
    * @internal — §6.1.2 rules 1-2 and 4: every entry point that accepts rules
-   * warns, and none of them fails, for a condition key that does not resolve
-   * on the sync path. The warning names the rule index, the key and the rule's
-   * `effect`; the `effect` is in the message because a misconfigured `deny`
-   * rule is the consequential case.
+   * warns, and none of them fails, for a rule that fails §6.1.4's precheck on
+   * the sync path. The warning names the rule index, the condition path and
+   * the rule's `effect`; the `effect` is in the message because a misconfigured
+   * `deny` rule is the consequential case.
    *
    * @param onlyIndex - Validate a single rule index (used by `addRule`).
    */
-  private _warnUnresolvableConditionKeys(onlyIndex?: number): void {
+  private _warnRuleFaults(onlyIndex?: number): void {
     const rules = this._rules;
     for (let i = 0; i < rules.length; i++) {
       if (onlyIndex !== undefined && i !== onlyIndex) continue;
       const rule = rules[i];
-      for (const key of ACL._referencedConditionKeys(rule)) {
-        if (ACL.conditionHandlers.has(key)) continue;
-        const detail = ACL.asyncConditionHandlers.has(key)
-          ? 'is registered only as an async handler, so it resolves under asyncCheck() but is UNEVALUABLE under check()'
-          : 'has no registered handler';
+      for (const fault of precheckRule(rule, 'sync')) {
+        const detail =
+          fault.key !== null && !fault.syncResolvable && fault.asyncResolvable
+            ? `${fault.message} — registered only as an async handler, so it resolves under asyncCheck() but is UNEVALUABLE under check()`
+            : fault.message;
         console.warn(
-          `[apcore:acl] Rule ${i} (effect=${rule.effect}) references condition ` +
-            `'${key}', which ${detail}. PROTOCOL_SPEC §6.1.1: an unevaluable condition ` +
-            `makes a deny rule DENY and an allow rule not grant. Register a handler, or ` +
-            `call acl.validateConditions() once bootstrap is complete.`,
+          `[apcore:acl] Rule ${i} (effect=${rule.effect}): ${detail}. ` +
+            'PROTOCOL_SPEC §6.1.1: an unevaluable condition makes a deny rule DENY and an ' +
+            'allow rule not grant. Fix the rule or register a handler, and call ' +
+            'acl.validateRules() once bootstrap is complete.',
         );
       }
     }
@@ -754,10 +945,27 @@ export class ACL {
     context: Context | null,
     ruleIndex: number,
   ): Promise<RuleOutcome> {
+    const frame = ACL._currentFrame;
+
+    const structural = ACL._precheckPatternFields(rule);
+    if (structural.length > 0) {
+      ACL._recordFaults(structural, frame);
+      return 'unevaluable';
+    }
+
     if (!this._matchPatternsAsync(rule.callers, caller, context)) return 'no_match';
     if (!this._matchPatternsAsync(rule.targets, target, context)) return 'no_match';
 
     if (rule.conditions != null) {
+      // §6.1.4, async path: "resolvable" is decided against the async registry
+      // with its fallback to the sync one (§6.1.3), so an async-only key is a
+      // live condition here and a precheck fault under check().
+      const faults: RuleFault[] = [];
+      precheckConditions(rule.conditions, '', 'async', faults);
+      if (faults.length > 0) {
+        ACL._recordFaults(faults.sort(byPath), frame);
+        return 'unevaluable';
+      }
       if (context === null) {
         this._warnConditionalRuleWithoutContext(rule, ruleIndex);
         return 'no_match';
@@ -835,6 +1043,29 @@ export class ACL {
     return patterns.some((p) => this._matchPattern(p, value, context));
   }
 
+  /**
+   * @internal — §6.1.4.1: `callers` / `targets` are checked for structure
+   * before they are read as pattern sets, so a malformed one is unevaluable
+   * rather than a `TypeError` out of `check()` (or, in a language where a bare
+   * string is iterable, a wildcard that grants everything).
+   *
+   * Both fields are checked even when the first is already malformed, and
+   * before the patterns are matched at all: the precheck does not
+   * short-circuit, and a rule whose fields cannot be read is not a rule that
+   * can be said to miss.
+   */
+  private static _precheckPatternFields(rule: ACLRule): RuleFault[] {
+    const faults: RuleFault[] = [];
+    precheckPatternField('callers', rule.callers, faults);
+    precheckPatternField('targets', rule.targets, faults);
+    return faults;
+  }
+
+  /** @internal — record a precheck's faults on the in-flight evaluation. */
+  private static _recordFaults(faults: RuleFault[], frame: HandlerErrorFrame | null): void {
+    for (const fault of faults) ACL._recordUnevaluable(frame, fault.path, fault.message);
+  }
+
   private _matchesRule(
     rule: ACLRule,
     caller: string,
@@ -842,11 +1073,34 @@ export class ACL {
     context: Context | null,
     ruleIndex: number,
   ): RuleOutcome {
+    const frame = ACL._currentFrame;
+
+    const structural = ACL._precheckPatternFields(rule);
+    if (structural.length > 0) {
+      ACL._recordFaults(structural, frame);
+      return 'unevaluable';
+    }
+
     if (!this._matchPatterns(rule.callers, caller, context)) return 'no_match';
     if (!this._matchPatterns(rule.targets, target, context)) return 'no_match';
 
     if (rule.conditions != null) {
+      // §6.1.4: the structural and registry precheck is context-independent,
+      // runs no handler, and MUST run BEFORE §6.5's no-context check — that
+      // ordering is what closes the bypass where `conditions: {mispelled: true}`
+      // on a deny rule passed traffic simply because the caller carried no
+      // identity. It also cannot short-circuit, so every configuration fault in
+      // the tree reaches handler_error whatever a sibling would have done.
+      const faults: RuleFault[] = [];
+      precheckConditions(rule.conditions, '', 'sync', faults);
+      if (faults.length > 0) {
+        ACL._recordFaults(faults.sort(byPath), frame);
+        return 'unevaluable';
+      }
       if (context === null) {
+        // §6.1.4 rule 2: a rule that PASSES the precheck and then finds no
+        // context takes §6.5's path. `roles` is answerable in principle; this
+        // caller merely supplied no input for it.
         this._warnConditionalRuleWithoutContext(rule, ruleIndex);
         return 'no_match';
       }
@@ -924,7 +1178,7 @@ export class ACL {
     // Rule indices shifted by one; drop the per-index dedupe so a §6.5 warning
     // is not suppressed for a different rule that inherited an old index.
     this._warnedMissingContext.clear();
-    this._warnUnresolvableConditionKeys(0);
+    this._warnRuleFaults(0);
   }
 
   removeRule(callers: string[], targets: string[], conditions?: Record<string, unknown> | null): boolean {

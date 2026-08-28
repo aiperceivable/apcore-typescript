@@ -103,7 +103,7 @@ export type {
   AuditEntry,
   AuditLogger,
   ConditionOutcome,
-  ConditionValidationFinding,
+  RuleValidationFinding,
 } from '../acl.js';
 
 // ---- Errors --------------------------------------------------------------

@@ -1028,10 +1028,16 @@ export class Executor {
       if (this._policy !== null) {
         // Policy overrides win over declared annotations (apcore#76), so
         // preflight reports the same verdict the gate will enforce.
+        // §7.9.6 rule 5: `_approval_token` is a protocol-level key, not caller
+        // input, and MUST be stripped BEFORE policy resolution — §7.4's
+        // "before passing to subsequent steps" does not reach a decision made
+        // inside Step 5. Leaving it in place puts a token into the audit trail
+        // and the apcore.policy.override payload.
+        const { _approval_token: _policyToken, ...policyArguments } = effectiveInputs;
         requiresApproval = this._policy.resolve(moduleId, mod['annotations'], {
           // §7.9.6: preflight resolves against the same call site the gate
           // will see, so the reported verdict matches the enforced one.
-          arguments: effectiveInputs,
+          arguments: policyArguments,
           context: validateCtx,
         }).needsApproval;
       } else {

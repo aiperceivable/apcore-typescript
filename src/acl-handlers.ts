@@ -23,16 +23,25 @@ export interface ACLConditionHandler {
  */
 export type ConditionOutcome = 'satisfied' | 'unsatisfied' | 'unevaluable';
 
-/** Type alias for the recursive evaluation function used by compound handlers. */
+/**
+ * Type alias for the recursive evaluation function used by compound handlers.
+ *
+ * `path` is the PROTOCOL_SPEC §6.1.4 condition path of the sub-object being
+ * evaluated (`$or[1]`, `$or[1].$not`, `''` at the root), so a fault found
+ * inside it can be reported at its own position rather than under the
+ * operator's key.
+ */
 export type EvalFn = (
   conditions: Record<string, unknown>,
   context: Context,
+  path: string,
 ) => ConditionOutcome;
 
 /** Async variant of EvalFn for use under asyncCheck(). */
 export type AsyncEvalFn = (
   conditions: Record<string, unknown>,
   context: Context,
+  path: string,
 ) => Promise<ConditionOutcome>;
 
 /**
@@ -46,7 +55,15 @@ export type AsyncEvalFn = (
  * `false` is UNSATISFIED, a throw is UNEVALUABLE.
  */
 export interface ACLOutcomeConditionHandler extends ACLConditionHandler {
-  evaluateOutcome(value: unknown, context: Context): ConditionOutcome | Promise<ConditionOutcome>;
+  /**
+   * @param path - This condition key's own §6.1.4 path (`$or`, `$or[1].$not`),
+   *   from which a compound handler derives its children's paths.
+   */
+  evaluateOutcome(
+    value: unknown,
+    context: Context,
+    path: string,
+  ): ConditionOutcome | Promise<ConditionOutcome>;
 }
 
 /** True when a handler can report the three-valued outcome directly. */
@@ -128,12 +145,20 @@ export class OrHandler implements ACLOutcomeConditionHandler {
     this._evaluate = evaluateFn;
   }
 
-  evaluateOutcome(value: unknown, context: Context): ConditionOutcome {
-    if (!Array.isArray(value)) return 'unsatisfied';
+  evaluateOutcome(value: unknown, context: Context, path = '$or'): ConditionOutcome {
+    // §6.1.1 case 4: a value malformed for its key is UNEVALUABLE, not false.
+    // A handler handed `$or: "typo"` can return false and look exactly like one
+    // that answered "no" — which put a deny rule carrying the typo right back
+    // into the inert state §6.1.1 exists to end.
+    if (!Array.isArray(value)) return 'unevaluable';
     let sawUnevaluable = false;
-    for (const sub of value) {
-      if (!isPlainObject(sub)) continue;
-      const outcome = this._evaluate(sub, context);
+    for (let i = 0; i < value.length; i++) {
+      const sub = value[i];
+      if (!isPlainObject(sub)) {
+        sawUnevaluable = true;
+        continue;
+      }
+      const outcome = this._evaluate(sub, context, `${path}[${i}]`);
       if (outcome === 'satisfied') return 'satisfied';
       if (outcome === 'unevaluable') sawUnevaluable = true;
     }
@@ -159,9 +184,11 @@ export class NotHandler implements ACLOutcomeConditionHandler {
     this._evaluate = evaluateFn;
   }
 
-  evaluateOutcome(value: unknown, context: Context): ConditionOutcome {
-    if (!isPlainObject(value)) return 'unsatisfied';
-    const outcome = this._evaluate(value, context);
+  evaluateOutcome(value: unknown, context: Context, path = '$not'): ConditionOutcome {
+    // §6.1.1 case 4 — a non-object `$not` cannot be negated into anything
+    // meaningful, so it is UNEVALUABLE rather than false.
+    if (!isPlainObject(value)) return 'unevaluable';
+    const outcome = this._evaluate(value, context, path);
     if (outcome === 'unevaluable') return 'unevaluable';
     return outcome === 'satisfied' ? 'unsatisfied' : 'satisfied';
   }
@@ -179,12 +206,20 @@ export class OrHandlerAsync implements ACLOutcomeConditionHandler {
     this._evaluate = evaluateFn;
   }
 
-  async evaluateOutcome(value: unknown, context: Context): Promise<ConditionOutcome> {
-    if (!Array.isArray(value)) return 'unsatisfied';
+  async evaluateOutcome(
+    value: unknown,
+    context: Context,
+    path = '$or',
+  ): Promise<ConditionOutcome> {
+    if (!Array.isArray(value)) return 'unevaluable';
     let sawUnevaluable = false;
-    for (const sub of value) {
-      if (!isPlainObject(sub)) continue;
-      const outcome = await this._evaluate(sub, context);
+    for (let i = 0; i < value.length; i++) {
+      const sub = value[i];
+      if (!isPlainObject(sub)) {
+        sawUnevaluable = true;
+        continue;
+      }
+      const outcome = await this._evaluate(sub, context, `${path}[${i}]`);
       if (outcome === 'satisfied') return 'satisfied';
       if (outcome === 'unevaluable') sawUnevaluable = true;
     }
@@ -204,9 +239,13 @@ export class NotHandlerAsync implements ACLOutcomeConditionHandler {
     this._evaluate = evaluateFn;
   }
 
-  async evaluateOutcome(value: unknown, context: Context): Promise<ConditionOutcome> {
-    if (!isPlainObject(value)) return 'unsatisfied';
-    const outcome = await this._evaluate(value, context);
+  async evaluateOutcome(
+    value: unknown,
+    context: Context,
+    path = '$not',
+  ): Promise<ConditionOutcome> {
+    if (!isPlainObject(value)) return 'unevaluable';
+    const outcome = await this._evaluate(value, context, path);
     if (outcome === 'unevaluable') return 'unevaluable';
     return outcome === 'satisfied' ? 'unsatisfied' : 'satisfied';
   }

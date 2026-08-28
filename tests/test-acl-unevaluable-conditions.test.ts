@@ -16,7 +16,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ACL } from '../src/acl.js';
-import type { ACLRule, AuditEntry, ConditionValidationFinding } from '../src/acl.js';
+import type { ACLRule, AuditEntry, RuleValidationFinding } from '../src/acl.js';
 import type { ACLConditionHandler } from '../src/acl-handlers.js';
 import { Context, Identity } from '../src/context.js';
 import { ExecutionPolicy, PolicyRule } from '../src/policy.js';
@@ -170,13 +170,21 @@ describe('§6.1.1: an unevaluable condition resolves toward refusing access', ()
 // ---------------------------------------------------------------------------
 
 describe('§6.1.1: three-valued composition', () => {
-  const MISSING = 'compose_missing_key';
+  // These pin composition during HANDLER EXECUTION, so the unevaluable child
+  // must be a registered handler that throws. An *unregistered* key never
+  // reaches evaluation at all — §6.1.4's precheck catches it first, which is
+  // its own block below.
+  const THROWS_KEY = 'compose_throwing';
+
+  beforeEach(() => {
+    registerSync(THROWS_KEY, THROWS);
+  });
 
   it('AND: an outright UNSATISFIED wins over an unevaluable sibling', () => {
     // roles is evaluated first and answers "no", so the AND is UNSATISFIED and
     // the deny rule stays inert — decided by a real answer, not by a failure.
     const { decision, entry } = checkWithAudit(
-      [rule('deny', { roles: ['admin'], [MISSING]: true })],
+      [rule('deny', { roles: ['admin'], [THROWS_KEY]: true })],
       'allow',
       ctxWith(['viewer']),
     );
@@ -188,17 +196,17 @@ describe('§6.1.1: three-valued composition', () => {
 
   it('AND: no UNSATISFIED child and one UNEVALUABLE child is UNEVALUABLE', () => {
     const { decision, entry } = checkWithAudit(
-      [rule('deny', { roles: ['admin'], [MISSING]: true })],
+      [rule('deny', { roles: ['admin'], [THROWS_KEY]: true })],
       'allow',
       ctxWith(['admin']),
     );
     expect(decision).toBe(false);
-    expect(entry.handlerError).toContain(MISSING);
+    expect(entry.handlerError).toContain(THROWS_KEY);
   });
 
   it('$or: an outright SATISFIED wins over an unevaluable sibling', () => {
     const { decision } = checkWithAudit(
-      [rule('allow', { $or: [{ [MISSING]: true }, { roles: ['admin'] }] })],
+      [rule('allow', { $or: [{ [THROWS_KEY]: true }, { roles: ['admin'] }] })],
       'deny',
       ctxWith(['admin']),
     );
@@ -207,12 +215,12 @@ describe('§6.1.1: three-valued composition', () => {
 
   it('$or: no SATISFIED child and one UNEVALUABLE child is UNEVALUABLE', () => {
     const { decision, entry } = checkWithAudit(
-      [rule('deny', { $or: [{ [MISSING]: true }, { roles: ['admin'] }] })],
+      [rule('deny', { $or: [{ [THROWS_KEY]: true }, { roles: ['admin'] }] })],
       'allow',
       ctxWith(['viewer']),
     );
     expect(decision).toBe(false);
-    expect(entry.handlerError).toContain(MISSING);
+    expect(entry.handlerError).toContain(`$or[0].${THROWS_KEY}`);
   });
 
   it('$or: every child UNSATISFIED is UNSATISFIED, not unevaluable', () => {
@@ -228,13 +236,13 @@ describe('§6.1.1: three-valued composition', () => {
   it('$not of an UNEVALUABLE child is UNEVALUABLE, never SATISFIED', () => {
     // The bypass this rule closes: negating "no answer" into "yes" would let a
     // misspelled key inside a $not satisfy the rule it was meant to gate.
-    const denied = checkWithAudit([rule('deny', { $not: { [MISSING]: true } })], 'allow');
+    const denied = checkWithAudit([rule('deny', { $not: { [THROWS_KEY]: true } })], 'allow');
     expect(denied.decision).toBe(false);
-    expect(denied.entry.handlerError).toContain(MISSING);
+    expect(denied.entry.handlerError).toContain(`$not.${THROWS_KEY}`);
 
-    const notGranted = checkWithAudit([rule('allow', { $not: { [MISSING]: true } })], 'deny');
+    const notGranted = checkWithAudit([rule('allow', { $not: { [THROWS_KEY]: true } })], 'deny');
     expect(notGranted.decision).toBe(false);
-    expect(notGranted.entry.handlerError).toContain(MISSING);
+    expect(notGranted.entry.handlerError).toContain(`$not.${THROWS_KEY}`);
   });
 
   it('$not still negates the two decisive outcomes', () => {
@@ -255,21 +263,190 @@ describe('§6.1.1: three-valued composition', () => {
 
   it('does not short-circuit AND on UNEVALUABLE — a later sibling can still decide', () => {
     let reached = false;
-    registerSync('zz_after_missing', {
+    registerSync('zz_after_throwing', {
       evaluate: () => {
         reached = true;
         return false;
       },
     });
     const { decision, entry } = checkWithAudit(
-      [rule('deny', { [MISSING]: true, zz_after_missing: true })],
+      [rule('deny', { [THROWS_KEY]: true, zz_after_throwing: true })],
       'allow',
     );
     expect(reached).toBe(true);
     // The later sibling answered an outright "no", which wins the AND.
     expect(decision).toBe(true);
     // ...but the key that WAS reached and was unevaluable still has to surface.
-    expect(entry.handlerError).toContain(MISSING);
+    expect(entry.handlerError).toContain(THROWS_KEY);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// §6.1.4 — the structural and registry precheck
+// ---------------------------------------------------------------------------
+
+describe('§6.1.4: the precheck runs before evaluation and before the no-context check', () => {
+  it('a misspelled key on a deny rule denies even without a Context', () => {
+    // The bypass §6.1.4 closes. Before v1.25.0 this returned true in all three
+    // SDKs: §6.5's no-context check ran first, the rule "did not match", and
+    // the call fell through to default_effect: allow.
+    const entries: AuditEntry[] = [];
+    const acl = new ACL([rule('deny', { mispelled: true })], 'allow', (e) => entries.push(e));
+    expect(acl.check('caller.a', 'target.b')).toBe(false);
+    expect(entries[0].handlerError).toContain('mispelled');
+  });
+
+  it('a WELL-FORMED conditional deny rule is still skipped without a Context', () => {
+    // §6.1.4 rule 2 — the control for the case above, and the guard against an
+    // over-reaching precheck. `roles` is registered and well-formed, so the
+    // rule passes the precheck and then takes §6.5's path: it does not match,
+    // the call is allowed, and handler_error stays null. A registered,
+    // context-dependent condition is NOT unevaluable merely because this
+    // caller sent no context.
+    const entries: AuditEntry[] = [];
+    const acl = new ACL([rule('deny', { roles: ['admin'] })], 'allow', (e) => entries.push(e));
+    expect(acl.check('caller.a', 'target.b')).toBe(true);
+    expect(entries[0].handlerError).toBeNull();
+  });
+
+  it('reports every fault in the tree, even where evaluation would short-circuit', () => {
+    // `roles` would answer "no" first and short-circuit the AND. The precheck
+    // does not short-circuit, so the misspelled sibling is found regardless —
+    // this is what makes §6.1.1 rule 2's diagnostics deterministic.
+    const { decision, entry } = checkWithAudit(
+      [rule('deny', { roles: ['admin'], zz_mispelled: true })],
+      'allow',
+      ctxWith(['viewer']),
+    );
+    expect(decision).toBe(false);
+    expect(entry.handlerError).toContain('zz_mispelled');
+  });
+
+  it('runs no handler', () => {
+    let ran = false;
+    registerSync('precheck_watcher', {
+      evaluate: () => {
+        ran = true;
+        return true;
+      },
+    });
+    // The sibling fault makes the rule unevaluable before anything executes.
+    checkWithAudit([rule('deny', { precheck_watcher: true, aaa_mispelled: true })], 'allow');
+    expect(ran).toBe(false);
+  });
+
+  it('walks every $or / $not branch', () => {
+    const { entry } = checkWithAudit(
+      [
+        rule('deny', {
+          $or: [{ roles: ['admin'] }, { $not: { deep_mispelled: true } }],
+        }),
+      ],
+      'allow',
+    );
+    expect(entry.handlerError).toContain('$or[1].$not.deep_mispelled');
+  });
+
+  it('classifies a malformed $or value as UNEVALUABLE, so a deny rule denies', () => {
+    // §6.1.1 case 4. Before v1.25.0 all three SDKs read this as UNSATISFIED,
+    // leaving a deny rule carrying `$or: "typo"` inert — the v1.22.0 defect
+    // through a second door.
+    const { decision, entry } = checkWithAudit([rule('deny', { $or: 'not-a-list' })], 'allow');
+    expect(decision).toBe(false);
+    expect(entry.handlerError).toContain("'$or'");
+  });
+
+  it('classifies a malformed $not value as UNEVALUABLE', () => {
+    const { decision, entry } = checkWithAudit([rule('deny', { $not: 3 })], 'allow');
+    expect(decision).toBe(false);
+    expect(entry.handlerError).toContain("'$not'");
+  });
+
+  it('classifies a non-mapping $or element as UNEVALUABLE at its own index', () => {
+    const { decision, entry } = checkWithAudit(
+      [rule('deny', { $or: [{ roles: ['admin'] }, 'oops'] })],
+      'allow',
+    );
+    expect(decision).toBe(false);
+    expect(entry.handlerError).toContain("'$or[1]'");
+  });
+
+  it('classifies a non-mapping conditions as UNEVALUABLE at path $', () => {
+    const { decision, entry } = checkWithAudit(
+      [{ callers: ['*'], targets: ['*'], effect: 'deny', description: '', conditions: 'oops' as never }],
+      'allow',
+    );
+    expect(decision).toBe(false);
+    expect(entry.handlerError).toContain("'$'");
+    expect(entry.handlerError).toContain('must be a mapping, got string');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// §6.1.4.1 — malformed callers / targets (apcore#106)
+// ---------------------------------------------------------------------------
+
+describe('§6.1.4.1: a callers/targets that is not a list of strings is unevaluable', () => {
+  function ruleWithCallers(effect: string, callers: unknown): ACLRule {
+    return {
+      callers: callers as string[],
+      targets: ['*'],
+      effect,
+      description: 'malformed',
+      conditions: null,
+    };
+  }
+
+  it('a string callers on an allow rule MUST NOT grant', () => {
+    // The fail-open case: a bare string is iterable, so "admin.*" is read
+    // character by character and its `*` matches everything. Measured in
+    // apcore-python, this granted an unrelated caller under default_effect deny.
+    const { decision, entry } = checkWithAudit(
+      [ruleWithCallers('allow', 'admin.*')],
+      'deny',
+      ctxWith(),
+    );
+    expect(decision).toBe(false);
+    expect(entry.handlerError).toContain("'callers'");
+  });
+
+  it('a scalar callers on a deny rule denies WITHOUT raising', () => {
+    // apcore-typescript threw a TypeError out of check() here, which violates
+    // `Contract: ACL.check`'s "check MUST NOT raise to indicate a deny".
+    const acl = new ACL([ruleWithCallers('deny', 5)], 'allow');
+    expect(() => acl.check('attacker', 'target.b', ctxWith())).not.toThrow();
+    expect(acl.check('attacker', 'target.b', ctxWith())).toBe(false);
+  });
+
+  it('a malformed targets is caught the same way', () => {
+    const acl = new ACL(
+      [{ callers: ['*'], targets: '*' as never, effect: 'deny', description: '', conditions: null }],
+      'allow',
+    );
+    expect(acl.check('caller.a', 'target.b', ctxWith())).toBe(false);
+  });
+
+  it('a list containing a non-string is malformed too', () => {
+    const { decision, entry } = checkWithAudit(
+      [ruleWithCallers('allow', ['ok.*', 7])],
+      'deny',
+      ctxWith(),
+    );
+    expect(decision).toBe(false);
+    expect(entry.handlerError).toContain('element 1 is number');
+  });
+
+  it('is unevaluable on the async path as well', async () => {
+    const acl = new ACL([ruleWithCallers('deny', 'admin.*')], 'allow');
+    await expect(acl.asyncCheck('attacker', 'target.b', ctxWith())).resolves.toBe(false);
+  });
+
+  it('an empty list is a well-formed rule that never matches', () => {
+    // §6.5 keeps this a plain non-match — it is not a structural fault.
+    const entries: AuditEntry[] = [];
+    const acl = new ACL([ruleWithCallers('deny', [])], 'allow', (e) => entries.push(e));
+    expect(acl.check('caller.a', 'target.b', ctxWith())).toBe(true);
+    expect(entries[0].handlerError).toBeNull();
   });
 });
 
@@ -451,71 +628,99 @@ describe('§6.1.2: every entry point that accepts rules warns, none of them fail
 });
 
 // ---------------------------------------------------------------------------
-// §6.1.2 rule 3 / §6.1.3 — validateConditions()
+// §6.1.2 rule 3 / §6.1.3 — validateRules()
 // ---------------------------------------------------------------------------
 
-describe('ACL.validateConditions()', () => {
+describe('ACL.validateRules()', () => {
   it('is empty when every referenced key resolves on the sync path', () => {
     const acl = new ACL([rule('allow', { roles: ['admin'], $not: { identity_types: ['bot'] } })], 'deny');
-    expect(acl.validateConditions()).toEqual([]);
+    expect(acl.validateRules()).toEqual([]);
   });
 
   it('never reports a rule with no conditions', () => {
     const acl = new ACL([rule('allow', null), rule('deny', null)], 'deny');
-    expect(acl.validateConditions()).toHaveLength(0);
+    expect(acl.validateRules()).toHaveLength(0);
   });
 
   it('reports rule index, key, effect and both registry flags', () => {
     const acl = new ACL([rule('allow', null), rule('deny', { typo_key: true })], 'deny');
-    const findings = acl.validateConditions();
+    const findings = acl.validateRules();
     expect(findings).toHaveLength(1);
     expect(findings[0]).toEqual({
       ruleIndex: 1,
+      conditionPath: 'typo_key',
       conditionKey: 'typo_key',
       effect: 'deny',
-      syncRegistered: false,
-      asyncRegistered: false,
-    } satisfies ConditionValidationFinding);
+      syncResolvable: false,
+      asyncResolvable: false,
+    } satisfies RuleValidationFinding);
   });
 
-  it('reports an async-only key with syncRegistered false and asyncRegistered TRUE', () => {
-    // §6.1.3 rule 2: a finding is emitted whenever syncRegistered is false,
-    // INCLUDING when asyncRegistered is true. Collapsing the two flags into one
+  it('reports an async-only key with syncResolvable false and asyncResolvable TRUE', () => {
+    // §6.1.3 rule 2: a finding is emitted whenever syncResolvable is false,
+    // INCLUDING when asyncResolvable is true. Collapsing the two flags into one
     // boolean would hide that an application calling check() has a condition it
     // cannot evaluate.
     registerAsync('validate_async_only', { evaluate: async () => true });
     const acl = new ACL([rule('deny', { validate_async_only: true })], 'deny');
-    const findings = acl.validateConditions();
+    const findings = acl.validateRules();
     expect(findings).toHaveLength(1);
-    expect(findings[0].syncRegistered).toBe(false);
-    expect(findings[0].asyncRegistered).toBe(true);
+    expect(findings[0].syncResolvable).toBe(false);
+    expect(findings[0].asyncResolvable).toBe(true);
   });
 
   it('does not report a key registered on both paths', () => {
     registerSync('validate_both', { evaluate: () => true });
     registerAsync('validate_both', { evaluate: async () => true });
     const acl = new ACL([rule('deny', { validate_both: true })], 'deny');
-    expect(acl.validateConditions()).toHaveLength(0);
+    expect(acl.validateRules()).toHaveLength(0);
   });
 
-  it('reports keys nested inside $or / $not', () => {
+  it('reports keys nested inside $or / $not, under their §6.1.4 paths', () => {
     const acl = new ACL(
       [rule('deny', { $or: [{ nested_a: true }, { roles: ['x'] }], $not: { nested_b: true } })],
       'deny',
     );
-    expect(acl.validateConditions().map((f) => f.conditionKey)).toEqual(['nested_a', 'nested_b']);
+    // Ordered by PATH, not by key: `$not.nested_b` sorts before
+    // `$or[0].nested_a` because `$n` < `$o`, whatever the insertion order was.
+    expect(acl.validateRules().map((f) => f.conditionPath)).toEqual([
+      '$not.nested_b',
+      '$or[0].nested_a',
+    ]);
+    expect(acl.validateRules().map((f) => f.conditionKey)).toEqual(['nested_b', 'nested_a']);
   });
 
-  it('orders findings by rule index, then lexicographically by key', () => {
+  it('orders findings by rule index, then lexicographically by path', () => {
     const acl = new ACL(
       [rule('deny', { z_one: true, a_one: true }), rule('allow', { m_two: true })],
       'deny',
     );
-    expect(acl.validateConditions().map((f) => [f.ruleIndex, f.conditionKey])).toEqual([
+    expect(acl.validateRules().map((f) => [f.ruleIndex, f.conditionPath])).toEqual([
       [0, 'a_one'],
       [0, 'z_one'],
       [1, 'm_two'],
     ]);
+  });
+
+  it('reports a structural fault in callers / targets (§6.1.4.1)', () => {
+    const acl = new ACL(
+      [{ callers: 'admin.*' as never, targets: ['*'], effect: 'allow', description: '', conditions: null }],
+      'deny',
+    );
+    const findings = acl.validateRules();
+    expect(findings).toHaveLength(1);
+    expect(findings[0].conditionPath).toBe('callers');
+    expect(findings[0].conditionKey).toBeNull();
+    expect(findings[0].syncResolvable).toBe(false);
+    expect(findings[0].asyncResolvable).toBe(false);
+  });
+
+  it('reports a malformed compound value under the operator path', () => {
+    const acl = new ACL([rule('deny', { $or: 'nope' })], 'deny');
+    const findings = acl.validateRules();
+    expect(findings).toHaveLength(1);
+    expect(findings[0].conditionPath).toBe('$or');
+    expect(findings[0].conditionKey).toBe('$or');
   });
 
   it('is a pure read: it mutates nothing and registers nothing', () => {
@@ -523,18 +728,18 @@ describe('ACL.validateConditions()', () => {
     const before = acl.rules;
     const entries: AuditEntry[] = [];
     const audited = new ACL([rule('deny', { pure_probe: true })], 'allow', (e) => entries.push(e));
-    audited.validateConditions();
+    audited.validateRules();
     expect(entries).toHaveLength(0);
-    expect(acl.validateConditions()).toEqual(acl.validateConditions());
+    expect(acl.validateRules()).toEqual(acl.validateRules());
     expect(acl.rules).toEqual(before);
     expect((ACL as any).conditionHandlers.has('pure_probe')).toBe(false);
   });
 
   it('becomes empty once the missing handler is registered', () => {
     const acl = new ACL([rule('deny', { late_bound: true })], 'deny');
-    expect(acl.validateConditions()).toHaveLength(1);
+    expect(acl.validateRules()).toHaveLength(1);
     registerSync('late_bound', { evaluate: () => true });
-    expect(acl.validateConditions()).toHaveLength(0);
+    expect(acl.validateRules()).toHaveLength(0);
   });
 });
 
@@ -689,5 +894,37 @@ describe('§7.9.6: the approval gate passes the call site', () => {
     expect(captured).toHaveLength(1);
     expect(captured[0]?.arguments).toEqual({ orderId: 'o-1' });
     expect(captured[0]?.context).toBe(context);
+  });
+
+  it('strips _approval_token BEFORE policy resolution, not merely before the module', async () => {
+    // §7.9.6 rule 5. §7.4 already requires the token to be removed "before
+    // passing to subsequent steps", which does not reach this case: policy
+    // resolution happens INSIDE Step 5, ahead of any subsequent step, so an
+    // implementation can satisfy §7.4 literally and still hand the token to
+    // the policy — and from there into the audit trail and the
+    // apcore.policy.override payload.
+    const captured: Array<PolicyCallSite | null> = [];
+    class RecordingPolicy extends ExecutionPolicy {
+      override resolve(
+        moduleId: string,
+        annos: unknown = null,
+        site: PolicyCallSite | null = null,
+      ): PolicyDecision {
+        captured.push(site);
+        return super.resolve(moduleId, annos, site);
+      }
+    }
+    const { BuiltinApprovalGate } = await import('../src/builtin-steps.js');
+    const gate = new BuiltinApprovalGate(null, new RecordingPolicy());
+    await gate.execute({
+      moduleId: 'orders.delete',
+      inputs: { orderId: 'o-1', _approval_token: 'tok-secret' },
+      context: new Context('trace-token', 'api.orders'),
+      module: { annotations: { requiresApproval: false, destructive: false } },
+    } as never);
+
+    expect(captured).toHaveLength(1);
+    expect(captured[0]?.arguments).toEqual({ orderId: 'o-1' });
+    expect(captured[0]?.arguments).not.toHaveProperty('_approval_token');
   });
 });
