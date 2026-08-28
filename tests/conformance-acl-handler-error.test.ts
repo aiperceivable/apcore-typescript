@@ -24,7 +24,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { ACL } from '../src/acl.js';
 import type { ACLRule, AuditEntry } from '../src/acl.js';
-import { Context } from '../src/context.js';
+import { Context, Identity } from '../src/context.js';
 import type { ACLConditionHandler } from '../src/acl-handlers.js';
 import { findFixturesRoot } from './spec-repo.js';
 
@@ -80,6 +80,22 @@ const SUPERSEDED_BY_SPEC_V1_22_0: Record<string, { expected: boolean; reason: st
       'The pre-v1.25.0 fixture still expects the fall-through to default_effect: allow.',
   },
 };
+
+/**
+ * Build the `Identity` a case's `context_identity` names.
+ *
+ * Several cases turn on whether a `roles` condition is SATISFIED, so the
+ * identity is part of the fixture rather than the driver's choice. A bare,
+ * identity-less context makes
+ * `execution_fault_does_not_gate_when_an_or_sibling_is_satisfied` return
+ * `false` where `true` is expected — its `roles` branch is UNSATISFIED rather
+ * than SATISFIED, so the `$or` is UNEVALUABLE and the `allow` rule correctly
+ * does not grant. That failure reads as over-gating and is not, which is
+ * exactly why the field must be honoured rather than guessed at.
+ */
+function buildIdentity(raw: any): Identity {
+  return new Identity(raw.id, raw.type, raw.roles ?? []);
+}
 
 /**
  * Every §6.1.4 condition path named by a `handler_error`, in the order the
@@ -154,7 +170,17 @@ describe('Conformance: ACL unevaluable conditions (§6.1.1 / §6.1.4 / A-D-011 /
       // §6.1.4: a context is supplied only when the case asks for one. The
       // no-context cases are what pin the precheck's ordering against §6.5.
       const withContext = tc.with_context !== false;
-      const ctx = withContext ? new Context('trace-id', tc.caller_id, [], null, null) : null;
+      if (withContext) {
+        // Fail loudly rather than substituting a bare context: a case whose
+        // identity is missing is a case that is not testing what it claims.
+        expect(
+          tc.context_identity,
+          `case '${tc.id}' has with_context true but no context_identity`,
+        ).toBeTruthy();
+      }
+      const ctx = withContext
+        ? new Context('trace-id', tc.caller_id, [], null, buildIdentity(tc.context_identity))
+        : null;
 
       let decision: boolean | undefined;
       // §6.1.1 rule 4 / Contract: ACL.check — nothing may raise out of check().

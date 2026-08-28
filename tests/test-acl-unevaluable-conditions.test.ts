@@ -383,6 +383,122 @@ describe('§6.1.4: the precheck runs before evaluation and before the no-context
 });
 
 // ---------------------------------------------------------------------------
+// §6.1.4 rules 4 and 5 — what the precheck may and may not decide
+// ---------------------------------------------------------------------------
+
+describe('§6.1.4 rule 5: a precheck fault gates the rule; an execution fault does not', () => {
+  // The discriminating pair. Both rules carry an `$or` whose second branch is
+  // SATISFIED for this caller, so §6.1.1's table alone ("an outright yes wins")
+  // would resolve both the same way. It does not: the split is
+  // precheck-versus-execution, not structural-versus-everything.
+  const dev = () => ctxWith(['dev']);
+
+  it('a PRECHECK fault gates even when an $or sibling is satisfied', () => {
+    // The rule is not well-formed enough to evaluate, so no sibling can rescue
+    // it. Otherwise a typo stays silent for exactly as long as some sibling
+    // keeps matching — the failure mode §6.1.1 exists to end, one level down.
+    const { decision, entry } = checkWithAudit(
+      [rule('deny', { $or: [{ mispelled: true }, { roles: ['dev'] }] })],
+      'allow',
+      dev(),
+    );
+    expect(decision).toBe(false);
+    expect(entry.handlerError).toContain('$or[0].mispelled');
+  });
+
+  it('an EXECUTION fault does NOT gate when an $or sibling is satisfied', () => {
+    // The handler IS registered, so the precheck passes; it only fails when
+    // run. §6.1.1's table applies and the satisfied branch wins, so the allow
+    // rule matches and the call is GRANTED — with handlerError still set,
+    // because §6.3.1's "if and only if" binds to conditions, not to outcomes.
+    registerSync('gate_split_throwing', THROWS);
+    const { decision, entry } = checkWithAudit(
+      [rule('allow', { $or: [{ gate_split_throwing: true }, { roles: ['dev'] }] })],
+      'deny',
+      dev(),
+    );
+    expect(decision).toBe(true);
+    expect(entry.handlerError).toContain('$or[0].gate_split_throwing');
+  });
+
+  it('gating also holds for a context-less call, where nothing is ever evaluated', () => {
+    // Consistency with §6.1.4 rule 1: a precheck fault must resolve a call on
+    // which the composition table has nothing to operate on at all.
+    const entries: AuditEntry[] = [];
+    const acl = new ACL(
+      [rule('deny', { $or: [{ mispelled: true }, { roles: ['dev'] }] })],
+      'allow',
+      (e) => entries.push(e),
+    );
+    expect(acl.check('caller.a', 'target.b')).toBe(false);
+    expect(entries[0].handlerError).toContain('$or[0].mispelled');
+  });
+});
+
+describe('§6.1.4 rule 4: the precheck must not enlarge the set of calls a rule applies to', () => {
+  it('a scoped rule\'s condition typo does not decide a call outside its scope', () => {
+    // Without rule 4(c), one misspelled key in a narrowly scoped rule would
+    // decide calls the rule was never written about — `callers: ["api.*"]`
+    // denying a `worker.*` caller, which breaks first-match-wins.
+    const entries: AuditEntry[] = [];
+    const acl = new ACL(
+      [
+        {
+          callers: ['api.*'],
+          targets: ['*'],
+          effect: 'deny',
+          description: 'scoped to api',
+          conditions: { mispelled: true },
+        },
+      ],
+      'allow',
+      (e) => entries.push(e),
+    );
+    expect(acl.check('worker.job', 'target.b', ctxWith())).toBe(true);
+    // Not consulted, and not reported: the rule did not apply to this call.
+    expect(entries[0].handlerError).toBeNull();
+    // It applies to a caller inside its scope, and there it gates.
+    expect(acl.check('api.gateway', 'target.b', ctxWith())).toBe(false);
+  });
+
+  it('the same typo is still reported by validateRules(), which is call-free', () => {
+    // Where a scoped rule's typo is meant to surface. §6.1.2 reports every
+    // fault in every rule regardless of any call.
+    const acl = new ACL(
+      [
+        {
+          callers: ['api.*'],
+          targets: ['*'],
+          effect: 'deny',
+          description: 'scoped to api',
+          conditions: { mispelled: true },
+        },
+      ],
+      'allow',
+    );
+    expect(acl.validateRules().map((f) => f.conditionPath)).toEqual(['mispelled']);
+  });
+
+  it('a MALFORMED pattern field makes the rule unevaluable — its scope is unknowable', () => {
+    // Rule 4(b) precedes 4(c): a field that cannot be read cannot be said to
+    // miss, so the rule resolves per §6.1.1's effect table instead.
+    const acl = new ACL(
+      [
+        {
+          callers: 'api.*' as never,
+          targets: ['*'],
+          effect: 'deny',
+          description: 'malformed scope',
+          conditions: null,
+        },
+      ],
+      'allow',
+    );
+    expect(acl.check('worker.job', 'target.b', ctxWith())).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // §6.1.4.1 — malformed callers / targets (apcore#106)
 // ---------------------------------------------------------------------------
 
