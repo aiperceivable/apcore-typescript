@@ -56,7 +56,8 @@ interface Case {
   expected_matched_rule_index: number | null;
   expected_audit_handler_error_present: boolean;
   expected_validation_finding_path: string | null;
-  expected_validation_finding_paths: string[] | null;
+  /** Added by spec v1.28.0's follow-up; absent in the fixture's first shape. */
+  expected_validation_finding_paths?: string[] | null;
 }
 
 const cases: Case[] = PRESENT
@@ -122,11 +123,18 @@ describeIfPresent('Conformance: argument-scoped approval (§6.1.6/§6.1.7/§6.1.
       const findings = acl.validateRules();
       // §6.1.8 rule 3: every faulty predicate is reported, so a case may pin
       // the exact finding set rather than the presence of one.
-      if (tc.expected_validation_finding_paths !== null) {
+      //
+      // `?? null` rather than a bare `!== null`: drivers land one push BEFORE
+      // the fixture in this project, so a driver must tolerate the fixture
+      // shape that predates the key it reads. An absent key arrives as
+      // `undefined`, which is not `null`, and the strict comparison sent every
+      // case into this branch to be compared against `undefined`.
+      const expectedPaths = tc.expected_validation_finding_paths ?? null;
+      if (expectedPaths !== null) {
         expect(
           findings.map((f) => f.conditionPath),
           tc.note,
-        ).toEqual(tc.expected_validation_finding_paths);
+        ).toEqual(expectedPaths);
         for (const f of findings) {
           expect(f.syncResolvable, tc.note).toBe(false);
           expect(f.asyncResolvable, tc.note).toBe(false);
