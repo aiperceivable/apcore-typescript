@@ -21,7 +21,7 @@ import {
   NotHandlerAsync,
   arraysEqual,
   deepEqual,
-  describeArgumentsFault,
+  describeArgumentsFaults,
   isOutcomeHandler,
 } from './acl-handlers.js';
 
@@ -412,11 +412,10 @@ function precheckConditions(
       // and therefore identical across SDKs. Whether a projection was supplied
       // is a per-call question and deliberately NOT asked here, exactly as
       // `roles` is not faulted for a caller who supplied no identity.
-      const fault = describeArgumentsFault(value, path);
-      if (fault !== null) {
-        // §6.1.8: the path descends to the offending predicate; the KEY stays
-        // `arguments`, for a reader who wants the condition rather than its
-        // position in the tree.
+      // §6.1.8: the path descends to the offending predicate and EVERY faulty
+      // predicate is reported; the KEY stays `arguments`, for a reader who
+      // wants the condition rather than its position in the tree.
+      for (const fault of describeArgumentsFaults(value, path)) {
         out.push({
           path: fault.path,
           key,

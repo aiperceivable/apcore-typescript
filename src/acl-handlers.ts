@@ -178,11 +178,17 @@ function isStringArray(value: unknown): value is string[] {
  * §6.1.8 fixes the reported PATH: it descends to `arguments.<predicate>` where
  * one predicate is at fault and stops at `arguments` where none can be named,
  * exactly as §6.1.4 descends into `$or[1].k`. `arguments` alone does not say
- * which of several predicates is wrong, and findings order by path, so
- * descending keeps that order total when one block carries two faults.
+ * which of several predicates is wrong.
+ *
+ * **Every** faulty predicate is reported and the walk does not stop at the
+ * first (§6.1.8 rule 3). Reporting one would make the *choice* of which one
+ * observable, and no reading of §6.1.4 makes "the first" a pure function of the
+ * rule: `{ has_key: 'force', zzz: [...] }` carries both a malformed value and
+ * an unrecognised name, and checking names before values reports a different
+ * path from walking predicate by predicate.
  *
  * @param path - The §6.1.4 condition path of the `arguments` key itself.
- * @returns `null` when well-formed, else the fault's own path and its message.
+ * @returns One entry per fault, empty when well-formed.
  */
 export interface ArgumentsFault {
   /** The §6.1.8 condition path — `arguments` or `arguments.<predicate>`. */
@@ -190,42 +196,49 @@ export interface ArgumentsFault {
   readonly message: string;
 }
 
-export function describeArgumentsFault(value: unknown, path: string): ArgumentsFault | null {
+export function describeArgumentsFaults(value: unknown, path: string): ArgumentsFault[] {
   if (!isPlainObject(value)) {
     const kind = Array.isArray(value) ? 'array' : value === null ? 'null' : typeof value;
-    return { path, message: `ACL condition '${path}' must be a mapping of argument predicates, got ${kind}` };
+    // Terminal: a value that is not a mapping has no predicates to walk.
+    return [
+      { path, message: `ACL condition '${path}' must be a mapping of argument predicates, got ${kind}` },
+    ];
   }
   const entries = Object.entries(value);
   if (entries.length === 0) {
     // `arguments: {}` asks nothing. Reading it as vacuously true would widen
     // an `allow` rule with no warning, which is the §6.1.5 failure class.
-    return {
-      path,
-      message:
-        `ACL condition '${path}' carries no predicate; expected at least one of ` +
-        `${[...ARGUMENT_PREDICATES].sort().join(', ')}`,
-    };
+    return [
+      {
+        path,
+        message:
+          `ACL condition '${path}' carries no predicate; expected at least one of ` +
+          `${[...ARGUMENT_PREDICATES].sort().join(', ')}`,
+      },
+    ];
   }
-  // Sorted rather than in insertion order, so the reported path is a pure
+  // Sorted rather than in insertion order, so the finding ORDER is a pure
   // function of the rule (§6.1.4 determinism) when a block carries two faults.
+  const faults: ArgumentsFault[] = [];
   for (const [predicate, names] of [...entries].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
     if (!ARGUMENT_PREDICATES.has(predicate)) {
-      return {
+      faults.push({
         path: `${path}.${predicate}`,
         message:
           `Unknown ACL argument predicate '${path}.${predicate}'; the vocabulary is closed ` +
           `(${[...ARGUMENT_PREDICATES].sort().join(', ')})`,
-      };
+      });
+      continue;
     }
     if (!isStringArray(names)) {
       const kind = Array.isArray(names) ? 'array with a non-string element' : typeof names;
-      return {
+      faults.push({
         path: `${path}.${predicate}`,
         message: `ACL argument predicate '${path}.${predicate}' must be a list of strings, got ${kind}`,
-      };
+      });
     }
   }
-  return null;
+  return faults;
 }
 
 /** Supplies the projection bound to the ACL evaluation currently in flight. */
@@ -263,7 +276,7 @@ export class ArgumentsHandler implements ACLOutcomeConditionHandler {
     // a projection happens to be available. §6.1.4's precheck normally reports
     // this before evaluation begins; the guard stays because
     // `_evaluateConditions` is reachable directly.
-    if (describeArgumentsFault(value, path) !== null) return 'unevaluable';
+    if (describeArgumentsFaults(value, path).length > 0) return 'unevaluable';
 
     const projection = this._projection();
     if (projection === null) {

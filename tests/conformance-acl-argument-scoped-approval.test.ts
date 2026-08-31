@@ -56,6 +56,7 @@ interface Case {
   expected_matched_rule_index: number | null;
   expected_audit_handler_error_present: boolean;
   expected_validation_finding_path: string | null;
+  expected_validation_finding_paths: string[] | null;
 }
 
 const cases: Case[] = PRESENT
@@ -119,7 +120,18 @@ describeIfPresent('Conformance: argument-scoped approval (§6.1.6/§6.1.7/§6.1.
       // no context and no handler, so validateRules() must surface them at
       // deploy time rather than at the first call that trips them.
       const findings = acl.validateRules();
-      if (tc.expected_validation_finding_path !== null) {
+      // §6.1.8 rule 3: every faulty predicate is reported, so a case may pin
+      // the exact finding set rather than the presence of one.
+      if (tc.expected_validation_finding_paths !== null) {
+        expect(
+          findings.map((f) => f.conditionPath),
+          tc.note,
+        ).toEqual(tc.expected_validation_finding_paths);
+        for (const f of findings) {
+          expect(f.syncResolvable, tc.note).toBe(false);
+          expect(f.asyncResolvable, tc.note).toBe(false);
+        }
+      } else if (tc.expected_validation_finding_path !== null) {
         const at = findings.filter((f) => f.conditionPath === tc.expected_validation_finding_path);
         expect(
           at.length,
