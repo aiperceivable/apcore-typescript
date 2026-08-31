@@ -66,7 +66,7 @@ interface Case {
   target_id: string;
   arguments: Record<string, unknown> | null;
   /**
-   * Set where a rule carries `callers_raw` — a deliberately malformed pattern
+   * Set where a rule carries `callers_raw` / `targets_raw` — a deliberately malformed pattern
    * field a statically typed SDK may not be able to express. TypeScript CAN
    * express it (a cast reaches the same shape a JS caller reaches by accident),
    * so this driver never skips: §6.1.4.1 exists precisely for the construction
@@ -136,12 +136,14 @@ function build(tc: Case): { acl: ACL; entries: AuditEntry[] } {
   const rules = tc.rules.map(
     (r) =>
       ({
-        // `callers_raw` carries a value that is not a list of strings. The cast
-        // is the point of the case: §6.1.4.1 must classify it as unevaluable
-        // rather than iterate the string character by character, where a `*`
-        // would match every caller.
+        // `callers_raw` / `targets_raw` carry a value that is not a list of
+        // strings. The cast is the point of those cases: §6.1.4.1 must classify
+        // it as unevaluable rather than iterate the string character by
+        // character, where a `*` would match every caller. Both fields are
+        // honoured because §6.1.1 rule 5's malformed-scope clause names both,
+        // and reading only one leaves the other half of the clause unverified.
         callers: (r.callers_raw !== undefined ? r.callers_raw : r.callers) as string[],
-        targets: r.targets as string[],
+        targets: (r.targets_raw !== undefined ? r.targets_raw : r.targets) as string[],
         effect: r.effect as string,
         description: '',
         ...(r.conditions !== undefined ? { conditions: r.conditions as Record<string, unknown> } : {}),
