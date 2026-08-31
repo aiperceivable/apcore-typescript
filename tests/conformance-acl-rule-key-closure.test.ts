@@ -41,26 +41,6 @@ const fixture = PRESENT
     })
   : { closed_rule_keys: [], reserved_rule_keys: [], test_cases: [] as Case[] };
 
-/**
- * Rule keys the fixture pins as UNKNOWN that a later spec version has since
- * made real, keyed by key name.
- *
- * `acl_rule_key_closure.json` was written for spec v1.27.0 and reached for
- * `approval` as its example of "a key from a proposal that has not landed".
- * Spec v1.28.0 §6.1.6 landed that proposal, so the case `unknown_key_is_rejected`
- * now asserts the opposite of the specification: a rule carrying
- * `approval: required` MUST load, and MUST be rejected only when it sits on an
- * `effect: deny` rule.
- *
- * The fixture is the spec repo's to regenerate as part of #108, and this table
- * goes inert the moment it is — a regenerated fixture lists `approval` in
- * `closed_rule_keys`, which is checked below before the override is allowed to
- * fire. Deleting the entry then is a no-op rather than a silent loosening.
- */
-const SUPERSEDED_BY_SPEC_V1_28_0: Record<string, string> = {
-  approval: 'spec v1.28.0 §6.1.6 (#108) — orthogonal approval requirement on an ACL rule',
-};
-
 /** Minimal YAML emitter — the cases are flat maps, arrays and scalars. */
 function toYaml(value: unknown, indent = 0): string {
   const pad = ' '.repeat(indent);
@@ -115,21 +95,6 @@ describeIfPresent('Conformance: ACL rule keys are a closed set (§6.1, spec v1.2
       const unknownKeys = Object.keys(tc.rule).filter(
         (k) => !fixture.closed_rule_keys.includes(k),
       );
-      const superseded = unknownKeys.filter(
-        (k) => k in SUPERSEDED_BY_SPEC_V1_28_0 && !fixture.closed_rule_keys.includes(k),
-      );
-      if (tc.expected_load === 'reject' && superseded.length === unknownKeys.length) {
-        // §6.1.6: `approval` is a real rule key on an `allow` rule…
-        const acl = ACL.load(file);
-        expect(acl.rules.length, superseded.map((k) => SUPERSEDED_BY_SPEC_V1_28_0[k]).join('; '))
-          .toBe(1);
-        expect(acl.rules[0].approval).toBe('required');
-        // …and rejected only in the combination that means nothing.
-        write({ ...tc.rule, effect: 'deny' }, tc.default_effect);
-        expect(() => ACL.load(file)).toThrow(ACLRuleError);
-        return;
-      }
-
       if (tc.expected_load === 'ok') {
         const acl = ACL.load(file);
         expect(acl.rules.length, tc.note).toBe(1);

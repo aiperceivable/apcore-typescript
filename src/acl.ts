@@ -722,6 +722,31 @@ export class ACL {
   }
 
   /**
+   * @internal — §6.3.1's if-and-only-if, for a handler that reports UNEVALUABLE
+   * by *returning* it rather than by throwing.
+   *
+   * The three producers above all record as they go. An
+   * {@link ACLOutcomeConditionHandler} can also just return `'unevaluable'` —
+   * the built-in `arguments` condition does, when no governance projection was
+   * supplied (§6.1.8 rule 1) — and nothing would then reach `handlerError`,
+   * leaving an operator with a denial and no reason for it.
+   *
+   * `$or` and `$not` return `'unevaluable'` too, but only when *propagating* a
+   * child's, and that child has already recorded the precise path; a generic
+   * entry at the operator's own path would duplicate it while naming a less
+   * useful location. `sizeBefore` tells the two apart: anything recorded during
+   * the call means the subtree spoke for itself.
+   */
+  private static _recordBareUnevaluable(
+    frame: EvaluationFrame | null,
+    path: string,
+    sizeBefore: number,
+  ): void {
+    if (frame !== null && frame.errors.size > sizeBefore) return;
+    ACL._recordUnevaluable(frame, path, `Handler for condition '${path}' could not evaluate it as written`);
+  }
+
+  /**
    * Evaluate one condition key on the **sync** path.
    *
    * Three of the four UNEVALUABLE producers live here (§6.1.1): no registered
@@ -742,6 +767,7 @@ export class ACL {
       ACL._recordUnevaluable(frame, path, `Unknown ACL condition '${path}'`);
       return 'unevaluable';
     }
+    const sizeBefore = frame?.errors.size ?? 0;
     try {
       const result = isOutcomeHandler(handler)
         ? handler.evaluateOutcome(value, context, path)
@@ -757,6 +783,7 @@ export class ACL {
         return 'unevaluable';
       }
       if (typeof result === 'boolean') return result ? 'satisfied' : 'unsatisfied';
+      if (result === 'unevaluable') ACL._recordBareUnevaluable(frame, path, sizeBefore);
       return result;
     } catch (e) {
       ACL._recordUnevaluable(
@@ -854,11 +881,13 @@ export class ACL {
         continue;
       }
       let outcome: ConditionOutcome;
+      const sizeBefore = frame?.errors.size ?? 0;
       try {
         const result = isOutcomeHandler(handler)
           ? await handler.evaluateOutcome(value, context, path)
           : await handler.evaluate(value, context);
         outcome = typeof result === 'boolean' ? (result ? 'satisfied' : 'unsatisfied') : result;
+        if (outcome === 'unevaluable') ACL._recordBareUnevaluable(frame, path, sizeBefore);
       } catch (e) {
         ACL._recordUnevaluable(
           frame,
