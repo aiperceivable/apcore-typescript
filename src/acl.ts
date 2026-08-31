@@ -414,7 +414,16 @@ function precheckConditions(
       // `roles` is not faulted for a caller who supplied no identity.
       const fault = describeArgumentsFault(value, path);
       if (fault !== null) {
-        out.push({ path, key, message: fault, syncResolvable: false, asyncResolvable: false });
+        // §6.1.8: the path descends to the offending predicate; the KEY stays
+        // `arguments`, for a reader who wants the condition rather than its
+        // position in the tree.
+        out.push({
+          path: fault.path,
+          key,
+          message: fault.message,
+          syncResolvable: false,
+          asyncResolvable: false,
+        });
       }
       continue;
     }

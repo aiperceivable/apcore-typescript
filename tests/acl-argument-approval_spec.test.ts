@@ -497,7 +497,10 @@ describe('§6.1.7 the arguments condition', () => {
       warn.mockRestore();
     }
     expect(findings).toHaveLength(1);
-    expect(findings[0].conditionPath).toBe('arguments');
+    // §6.1.8: the path descends to the offending predicate, exactly as §6.1.4
+    // descends into `$or[1].k`. The KEY stays `arguments`, for a reader who
+    // wants the condition rather than its position in the tree.
+    expect(findings[0].conditionPath).toBe('arguments.has_key');
     expect(findings[0].conditionKey).toBe('arguments');
     expect(findings[0].effect).toBe('deny');
   });
