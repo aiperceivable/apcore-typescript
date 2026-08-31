@@ -1044,6 +1044,16 @@ export class Executor {
         requiresApproval = this._needsApproval(mod);
       }
     }
+    // §7.9.5 — report the GOVERNANCE-effective requirement, the union of §6.9
+    // rows 3–5, which since v1.28.0 includes an ACL rule carrying `approval`
+    // (§6.1.6). Reporting only the policy-effective value would tell a caller
+    // no approval is needed for a call the gate will stop. The ACL check runs
+    // in the dry-run pipeline above (it is `pure`), so its verdict is already
+    // on `pipeCtx` — and §6.9 row 4 forbids a policy from clearing it, which is
+    // why this is OR-ed on top rather than folded into the branch above.
+    if (pipeCtx.aclApprovalRequired === true) {
+      requiresApproval = true;
+    }
 
     // Module-level introspection is gated on TWO conditions, not one.
     //

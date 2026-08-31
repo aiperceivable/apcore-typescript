@@ -5,8 +5,13 @@
 import type { Context } from './context.js';
 import { ACLRuleError } from './errors.js';
 import { matchPattern } from './utils/pattern.js';
-import type { ACLConditionHandler, ConditionOutcome } from './acl-handlers.js';
+import type {
+  ACLConditionHandler,
+  ConditionOutcome,
+  GovernanceProjection,
+} from './acl-handlers.js';
 import {
+  ArgumentsHandler,
   IdentityTypesHandler,
   RolesHandler,
   MaxCallDepthHandler,
@@ -16,6 +21,7 @@ import {
   NotHandlerAsync,
   arraysEqual,
   deepEqual,
+  describeArgumentsFault,
   isOutcomeHandler,
 } from './acl-handlers.js';
 
@@ -76,12 +82,68 @@ export function _isAclDiscovererInstalled(): boolean {
   return _aclDiscoverer !== null;
 }
 
+/**
+ * A rule's approval requirement (PROTOCOL_SPEC §6.1.6).
+ *
+ * Orthogonal to `effect`, which carries authorization. A rule answers two
+ * independent questions — "may this caller reach this target at all?" and
+ * "must *this particular call* be put to a human first?" — and folding them
+ * into one enumeration would make the meaningless state "denied and needs
+ * approval" representable while forcing the real one, "allowed but ask first",
+ * to be spelled as a kind of denial.
+ */
+export type ACLApproval = 'required' | 'not_required';
+
 export interface ACLRule {
   callers: string[];
   targets: string[];
   effect: string;
   description: string;
   conditions?: Record<string, unknown> | null;
+  /**
+   * Whether a call matching this rule must be put to a human before it runs
+   * (PROTOCOL_SPEC §6.1.6). Absent means `'not_required'`, so every rule
+   * written before v1.28.0 keeps its meaning exactly.
+   *
+   * `'required'` on an `effect: deny` rule is rejected with {@link ACLRuleError}
+   * at every entry point that accepts rules. The combination has no meaning,
+   * and silently ignoring one half of a governance rule is the failure mode
+   * §6.1.5 was written to end.
+   */
+  approval?: ACLApproval;
+}
+
+/**
+ * The structured result of an ACL check (PROTOCOL_SPEC §6.8.1).
+ *
+ * `check()` returns a boolean, which can carry authorization but not the
+ * second axis of §6.1.6. This is the accessor that carries both.
+ */
+export interface AccessDecision {
+  /** Authorization — unchanged semantics from today's boolean. */
+  readonly access: 'allow' | 'deny';
+  /** Whether **this call** must be put to a human before it runs (§6.1.6). */
+  readonly approvalRequired: boolean;
+  /** Index of the rule that decided, or `null` when none matched. */
+  readonly matchedRuleIndex: number | null;
+  /** Which branch of §6.3 produced the decision. */
+  readonly reason: string;
+}
+
+/**
+ * Per-call inputs to an ACL check beyond caller, target and `Context`.
+ *
+ * Optional throughout: an ACL consulted outside the pipeline supplies none,
+ * and a condition that needs one it did not get is UNEVALUABLE under §6.1.1
+ * rather than quietly answered against an empty stand-in.
+ */
+export interface AccessCheckOptions {
+  /**
+   * The §6.1.8 governance projection of the call's arguments — key set and
+   * JSON types, never a value. Read by the built-in `arguments` condition
+   * (§6.1.7). The pipeline computes it at Step 3 and passes it here at Step 4.
+   */
+  readonly arguments?: GovernanceProjection | null;
 }
 
 /** Structured record of an ACL check decision. */
@@ -100,11 +162,21 @@ export interface AuditEntry {
   /** Error message from a condition handler that threw during evaluation, if any.
    *  Cross-language parity with apcore-python AuditEntry.handler_error (sync A-D-024). */
   readonly handlerError: string | null;
+  /**
+   * Whether the matched rule required this call to be put to a human
+   * (PROTOCOL_SPEC §6.3.1, §6.1.6). `false` when no rule matched or the
+   * matched rule required none.
+   *
+   * A field **beside** `decision` rather than a third `decision` value:
+   * `decision` is a string downstream consumers parse, and widening it would
+   * break every existing parser.
+   */
+  readonly approvalRequired: boolean;
 }
 
 export type AuditLogger = (entry: AuditEntry) => void;
 
-export type { ConditionOutcome } from './acl-handlers.js';
+export type { ConditionOutcome, GovernanceProjection } from './acl-handlers.js';
 
 /**
  * One structural or registry fault reported by {@link ACL.validateRules}
@@ -157,7 +229,7 @@ export interface RuleValidationFinding {
 type RuleOutcome = 'match' | 'no_match' | 'unevaluable';
 
 /**
- * Per-`check()` capture slot for unevaluable conditions.
+ * Per-`check()` state private to one evaluation.
  *
  * `errors` is keyed by §6.1.4 **condition path** so the same path reported
  * twice in one evaluation collapses to one message and the set can be ordered
@@ -167,12 +239,19 @@ type RuleOutcome = 'match' | 'no_match' | 'unevaluable';
  * it, so the loop can name exactly the ones that made the rule it just
  * evaluated unevaluable (§6.1.1 rule 3 requires the warning to name the path,
  * the rule index and the effect).
+ *
+ * `projection` rides the same frame because it has exactly the same lifetime
+ * and the same hazards: a nested `check()` from inside a condition handler, or
+ * a concurrent `asyncCheck()` suspended mid-evaluation, must not read another
+ * call's arguments.
  */
-interface HandlerErrorFrame {
+interface EvaluationFrame {
   /** §6.1.4 condition path → message. Keyed by path so §6.1.1 rule 2 can order by it. */
   readonly errors: Map<string, string>;
   /** Paths recorded since the rule loop last drained this, in discovery order. */
   pending: string[];
+  /** §6.1.8 governance projection supplied for this evaluation, if any. */
+  readonly projection: GovernanceProjection | null;
 }
 
 /**
@@ -327,6 +406,19 @@ function precheckConditions(
       continue;
     }
 
+    if (key === 'arguments') {
+      // §6.1.7's predicate vocabulary is closed and its values are structural,
+      // so the whole condition is checkable here — context-free, handler-free
+      // and therefore identical across SDKs. Whether a projection was supplied
+      // is a per-call question and deliberately NOT asked here, exactly as
+      // `roles` is not faulted for a caller who supplied no identity.
+      const fault = describeArgumentsFault(value, path);
+      if (fault !== null) {
+        out.push({ path, key, message: fault, syncResolvable: false, asyncResolvable: false });
+      }
+      continue;
+    }
+
     // §6.1.1 case 1 / §6.1.3 — resolvable on the evaluation path in use.
     const { syncResolvable, asyncResolvable } = conditionResolvability(key);
     const resolvable = mode === 'sync' ? syncResolvable : asyncResolvable;
@@ -361,7 +453,43 @@ function precheckRule(rule: ACLRule, mode: EvaluationPath): RuleFault[] {
  * Closed on purpose: a key nothing evaluates is otherwise dropped in silence,
  * which widens an `allow` rule with no warning (#107).
  */
-const RULE_KEYS = new Set(['callers', 'targets', 'effect', 'description', 'conditions']);
+const RULE_KEYS = new Set([
+  'callers',
+  'targets',
+  'effect',
+  'description',
+  'conditions',
+  // §6.1.6 (v1.28.0). Adding it was only safe once v1.27.0 closed this set: an
+  // SDK that still dropped unknown keys would read a `deny`-with-`approval`
+  // rule as a bare rule and act on half of what its author wrote.
+  'approval',
+]);
+
+/** The two values §6.1.6 defines for a rule's `approval` field. */
+const APPROVAL_VALUES = new Set<string>(['required', 'not_required']);
+
+/**
+ * §6.1.6 rule 2 — `approval: required` on a `deny` rule is rejected.
+ *
+ * "Denied **and** needs approval" is not a state that means anything. Loading
+ * it and enforcing only the `deny` half would be acting on half of a
+ * governance rule, which is the failure mode §6.1.5 was written to end.
+ *
+ * Applied at every entry point that accepts rules — file loading, direct
+ * construction and runtime insertion — because a rule built in code is exactly
+ * as meaningless as one parsed from YAML.
+ */
+function rejectDenyWithApproval(rule: ACLRule, index: number): void {
+  if (rule.approval !== 'required') return;
+  if (rule.effect !== 'deny') return;
+  throw new ACLRuleError(
+    `Rule ${index} carries approval: 'required' on an effect: 'deny' rule. ` +
+      'Authorization and approval are two independent results (PROTOCOL_SPEC §6.1.6) ' +
+      'and "denied and needs approval" is not a state that means anything — a denied ' +
+      'call never reaches the approval gate. Drop the approval field, or make the rule ' +
+      "effect: 'allow' with approval: 'required' if the intent was \"allowed but ask first\".",
+  );
+}
 
 /**
  * Reserved in earlier revisions of §6.1 and evaluated by no implementation.
@@ -438,13 +566,32 @@ export function _parseAclRule(rawRule: unknown, index: number): ACLRule {
     );
   }
 
-  return {
+  // §6.1.6: `approval` is optional and its absence means 'not_required', so
+  // every rule written before v1.28.0 keeps its meaning exactly. A value
+  // outside the two-member enumeration is rejected rather than coerced — a
+  // governance field set by truthiness is a decision made by accident.
+  const rawApproval = ruleObj['approval'];
+  let approval: ACLApproval = 'not_required';
+  if (rawApproval !== undefined && rawApproval !== null) {
+    if (typeof rawApproval !== 'string' || !APPROVAL_VALUES.has(rawApproval)) {
+      throw new ACLRuleError(
+        `Rule ${index} has invalid approval '${String(rawApproval)}', ` +
+          "must be 'required' or 'not_required'",
+      );
+    }
+    approval = rawApproval as ACLApproval;
+  }
+
+  const rule: ACLRule = {
     callers: callers as string[],
     targets: targets as string[],
     effect,
     description: (ruleObj['description'] as string) ?? '',
     conditions: (rawConditions as Record<string, unknown>) ?? null,
+    approval,
   };
+  rejectDenyWithApproval(rule, index);
+  return rule;
 }
 
 /** True only for a plain object — excludes null, arrays and every primitive. */
@@ -498,18 +645,37 @@ export class ACL {
    * apcore-rust's depth-tracked thread-local / tokio task-local
    * (sync findings A-D-026, W2).
    */
-  private static _currentFrame: HandlerErrorFrame | null = null;
+  private static _currentFrame: EvaluationFrame | null = null;
 
   /** @internal — open a capture frame; returns [frame, previousFrame]. */
-  private static _pushHandlerErrorFrame(): [HandlerErrorFrame, HandlerErrorFrame | null] {
+  private static _pushEvaluationFrame(
+    projection: GovernanceProjection | null,
+  ): [EvaluationFrame, EvaluationFrame | null] {
     const previous = ACL._currentFrame;
-    const frame: HandlerErrorFrame = { errors: new Map<string, string>(), pending: [] };
+    const frame: EvaluationFrame = {
+      errors: new Map<string, string>(),
+      pending: [],
+      projection,
+    };
     ACL._currentFrame = frame;
     return [frame, previous];
   }
 
+  /**
+   * @internal — the §6.1.8 governance projection bound to the evaluation
+   * currently in flight, or `null` when the caller supplied none.
+   *
+   * Read by the built-in `arguments` handler. It rides the evaluation frame
+   * rather than a bare static so a nested `check()` from inside a condition
+   * handler, or a concurrent `asyncCheck()` suspended mid-evaluation, cannot
+   * read another call's arguments.
+   */
+  static _currentGovernanceProjection(): GovernanceProjection | null {
+    return ACL._currentFrame?.projection ?? null;
+  }
+
   /** @internal — restore the caller's capture frame. */
-  private static _popHandlerErrorFrame(previous: HandlerErrorFrame | null): void {
+  private static _popEvaluationFrame(previous: EvaluationFrame | null): void {
     ACL._currentFrame = previous;
   }
 
@@ -524,7 +690,7 @@ export class ACL {
    * object preserves insertion order — and by path rather than key because a
    * key may occur at several positions in a nested `$or` / `$not` tree.
    */
-  private static _takeFrameError(frame: HandlerErrorFrame): string | null {
+  private static _takeFrameError(frame: EvaluationFrame): string | null {
     if (frame.errors.size === 0) return null;
     const message = [...frame.errors.keys()]
       .sort()
@@ -541,7 +707,7 @@ export class ACL {
    * lexicographic ordering has something well-defined to order.
    */
   private static _recordUnevaluable(
-    frame: HandlerErrorFrame | null,
+    frame: EvaluationFrame | null,
     path: string,
     message: string,
   ): void {
@@ -569,7 +735,7 @@ export class ACL {
     path: string,
     value: unknown,
     context: Context,
-    frame: HandlerErrorFrame | null,
+    frame: EvaluationFrame | null,
   ): ConditionOutcome {
     const handler = ACL.conditionHandlers.get(key);
     if (handler === undefined) {
@@ -722,6 +888,10 @@ export class ACL {
     this._rules = [...rules];
     this._defaultEffect = defaultEffect;
     this._auditLogger = auditLogger ?? null;
+    // §6.1.6 rule 2 is fatal, not a warning: unlike an unregistered condition
+    // key (§6.1.2 rule 1, which must not break bootstrap order) a
+    // `deny` + `approval: required` rule can never become meaningful later.
+    this._rules.forEach(rejectDenyWithApproval);
     // §6.1.2: direct construction is an entry point that accepts rules, so it
     // is covered by load-time validation too — `ACL.load()` reaches this same
     // constructor, which is why the file path needs no separate hook.
@@ -871,7 +1041,40 @@ export class ACL {
     this._yamlPath = yamlPath;
   }
 
-  check(callerId: string | null, targetId: string, context?: Context | null): boolean {
+  /**
+   * Whether the call is authorized — the legacy boolean entry point.
+   *
+   * **It fails closed on an approval requirement** (PROTOCOL_SPEC §6.8.1): a
+   * rule resolving to `allow` with `approvalRequired: true` makes this return
+   * `false`. `check()` is public API consumed by callers that are not the
+   * Executor — tooling, preflight helpers, third-party integrations — and such
+   * a caller can only read a boolean as "let it through / do not". Returning
+   * `true` would let it execute a call the ACL said needed a human. `false` is
+   * wrong in the benign direction: the caller sees a refusal where the truth
+   * was "ask first". Use {@link ACL.checkAccess} to see both axes.
+   */
+  check(
+    callerId: string | null,
+    targetId: string,
+    context?: Context | null,
+    options?: AccessCheckOptions | null,
+  ): boolean {
+    const decision = this.checkAccess(callerId, targetId, context, options);
+    return decision.access === 'allow' && !decision.approvalRequired;
+  }
+
+  /**
+   * The structured decision for a call (PROTOCOL_SPEC §6.8.1) — authorization
+   * and approval requirement as the two independent results §6.1.6 defines.
+   *
+   * Emits exactly one audit entry, like {@link ACL.check}, which delegates here.
+   */
+  checkAccess(
+    callerId: string | null,
+    targetId: string,
+    context?: Context | null,
+    options?: AccessCheckOptions | null,
+  ): AccessDecision {
     const effectiveCaller = callerId === null ? '@external' : callerId;
     const ctx = context ?? null;
     // Snapshot rules + defaultEffect + auditLogger atomically so concurrent
@@ -883,7 +1086,7 @@ export class ACL {
     // Open a capture frame private to this evaluation. A nested check()
     // invoked from a condition handler pushes its own frame and restores
     // ours on exit, so it can no longer consume our handler error.
-    const [frame, previousFrame] = ACL._pushHandlerErrorFrame();
+    const [frame, previousFrame] = ACL._pushEvaluationFrame(options?.arguments ?? null);
 
     try {
       for (let idx = 0; idx < rules.length; idx++) {
@@ -892,31 +1095,35 @@ export class ACL {
         const outcome = this._matchesRule(rule, effectiveCaller, targetId, ctx, idx);
         if (outcome === 'unevaluable' && !ACL._resolveUnevaluable(rule, idx, frame)) continue;
         if (outcome === 'no_match') continue;
-        const decision = rule.effect === 'allow';
-        if (auditLogger) {
-          auditLogger(this._buildAuditEntry(
-            effectiveCaller, targetId, decision ? 'allow' : 'deny',
-            'rule_match', rule, idx, ctx, ACL._takeFrameError(frame),
-          ));
-        }
-        return decision;
+        return this._decideByRule(effectiveCaller, targetId, rule, idx, ctx, auditLogger, frame);
       }
 
-      const defaultDecision = defaultEffect === 'allow';
-      if (auditLogger) {
-        const reason = rules.length === 0 ? 'no_rules' : 'default_effect';
-        auditLogger(this._buildAuditEntry(
-          effectiveCaller, targetId, defaultDecision ? 'allow' : 'deny',
-          reason, null, null, ctx, ACL._takeFrameError(frame),
-        ));
-      }
-      return defaultDecision;
+      return this._decideByDefault(
+        effectiveCaller, targetId, defaultEffect, rules.length, ctx, auditLogger, frame,
+      );
     } finally {
-      ACL._popHandlerErrorFrame(previousFrame);
+      ACL._popEvaluationFrame(previousFrame);
     }
   }
 
-  async asyncCheck(callerId: string | null, targetId: string, context?: Context | null): Promise<boolean> {
+  /** Async twin of {@link ACL.check}, with the same §6.8.1 fail-closed rule. */
+  async asyncCheck(
+    callerId: string | null,
+    targetId: string,
+    context?: Context | null,
+    options?: AccessCheckOptions | null,
+  ): Promise<boolean> {
+    const decision = await this.asyncCheckAccess(callerId, targetId, context, options);
+    return decision.access === 'allow' && !decision.approvalRequired;
+  }
+
+  /** Async twin of {@link ACL.checkAccess} (PROTOCOL_SPEC §6.8.1). */
+  async asyncCheckAccess(
+    callerId: string | null,
+    targetId: string,
+    context?: Context | null,
+    options?: AccessCheckOptions | null,
+  ): Promise<AccessDecision> {
     const effectiveCaller = callerId === null ? '@external' : callerId;
     const ctx = context ?? null;
     // Snapshot mutable fields before any await to prevent async-gap races
@@ -924,8 +1131,8 @@ export class ACL {
     const rules = this._rules.slice();
     const defaultEffect = this._defaultEffect;
     const auditLogger = this._auditLogger;
-    // Open a capture frame private to this evaluation (see check()).
-    const [frame, previousFrame] = ACL._pushHandlerErrorFrame();
+    // Open a capture frame private to this evaluation (see checkAccess()).
+    const [frame, previousFrame] = ACL._pushEvaluationFrame(options?.arguments ?? null);
 
     try {
       for (let idx = 0; idx < rules.length; idx++) {
@@ -939,28 +1146,73 @@ export class ACL {
         ACL._currentFrame = frame;
         if (outcome === 'unevaluable' && !ACL._resolveUnevaluable(rule, idx, frame)) continue;
         if (outcome === 'no_match') continue;
-        const decision = rule.effect === 'allow';
-        if (auditLogger) {
-          auditLogger(this._buildAuditEntry(
-            effectiveCaller, targetId, decision ? 'allow' : 'deny',
-            'rule_match', rule, idx, ctx, ACL._takeFrameError(frame),
-          ));
-        }
-        return decision;
+        return this._decideByRule(effectiveCaller, targetId, rule, idx, ctx, auditLogger, frame);
       }
 
-      const defaultDecision = defaultEffect === 'allow';
-      if (auditLogger) {
-        const reason = rules.length === 0 ? 'no_rules' : 'default_effect';
-        auditLogger(this._buildAuditEntry(
-          effectiveCaller, targetId, defaultDecision ? 'allow' : 'deny',
-          reason, null, null, ctx, ACL._takeFrameError(frame),
-        ));
-      }
-      return defaultDecision;
+      return this._decideByDefault(
+        effectiveCaller, targetId, defaultEffect, rules.length, ctx, auditLogger, frame,
+      );
     } finally {
-      ACL._popHandlerErrorFrame(previousFrame);
+      ACL._popEvaluationFrame(previousFrame);
     }
+  }
+
+  /**
+   * @internal — build the {@link AccessDecision} for a matched rule and emit
+   * its audit entry. Shared by the sync and async paths so the two cannot
+   * drift on §6.1.6's second axis.
+   */
+  private _decideByRule(
+    callerId: string,
+    targetId: string,
+    rule: ACLRule,
+    ruleIndex: number,
+    ctx: Context | null,
+    auditLogger: AuditLogger | null,
+    frame: EvaluationFrame,
+  ): AccessDecision {
+    const access = rule.effect === 'allow' ? 'allow' : 'deny';
+    // §6.1.6: the two results are orthogonal, and `approval: required` on a
+    // `deny` rule is rejected at every entry point — the `access` guard is
+    // belt-and-braces against a rule object mutated in place after load.
+    const approvalRequired = access === 'allow' && rule.approval === 'required';
+    if (auditLogger) {
+      auditLogger(
+        this._buildAuditEntry(
+          callerId, targetId, access, 'rule_match', rule, ruleIndex, ctx,
+          ACL._takeFrameError(frame), approvalRequired,
+        ),
+      );
+    }
+    return Object.freeze({ access, approvalRequired, matchedRuleIndex: ruleIndex, reason: 'rule_match' });
+  }
+
+  /**
+   * @internal — build the {@link AccessDecision} for the no-rule-matched path.
+   *
+   * §6.9 row 2: `default_effect` stays `allow` / `deny` only. There is no
+   * default approval requirement, so no match means `false`.
+   */
+  private _decideByDefault(
+    callerId: string,
+    targetId: string,
+    defaultEffect: string,
+    ruleCount: number,
+    ctx: Context | null,
+    auditLogger: AuditLogger | null,
+    frame: EvaluationFrame,
+  ): AccessDecision {
+    const access = defaultEffect === 'allow' ? 'allow' : 'deny';
+    const reason = ruleCount === 0 ? 'no_rules' : 'default_effect';
+    if (auditLogger) {
+      auditLogger(
+        this._buildAuditEntry(
+          callerId, targetId, access, reason, null, null, ctx,
+          ACL._takeFrameError(frame), false,
+        ),
+      );
+    }
+    return Object.freeze({ access, approvalRequired: false, matchedRuleIndex: null, reason });
   }
 
   private _matchPatternsAsync(patterns: string[], value: string, context: Context | null): boolean {
@@ -1032,6 +1284,7 @@ export class ACL {
     matchedRuleIndex: number | null,
     context: Context | null,
     handlerError: string | null = null,
+    approvalRequired = false,
   ): AuditEntry {
     let identityType: string | null = null;
     let roles: readonly string[] = [];
@@ -1060,6 +1313,7 @@ export class ACL {
       callDepth,
       traceId,
       handlerError,
+      approvalRequired,
     };
   }
 
@@ -1107,7 +1361,7 @@ export class ACL {
   }
 
   /** @internal — record a precheck's faults on the in-flight evaluation. */
-  private static _recordFaults(faults: RuleFault[], frame: HandlerErrorFrame | null): void {
+  private static _recordFaults(faults: RuleFault[], frame: EvaluationFrame | null): void {
     for (const fault of faults) ACL._recordUnevaluable(frame, fault.path, fault.message);
   }
 
@@ -1194,7 +1448,7 @@ export class ACL {
   private static _resolveUnevaluable(
     rule: ACLRule,
     ruleIndex: number,
-    frame: HandlerErrorFrame,
+    frame: EvaluationFrame,
   ): boolean {
     const takesEffect = rule.effect === 'deny';
     const keys = [...new Set(frame.pending)];
@@ -1219,6 +1473,9 @@ export class ACL {
    * warn, never fail.
    */
   addRule(rule: ACLRule): void {
+    // §6.1.6 rule 2 — rejected before insertion, so a meaningless rule never
+    // enters the list (§6.1.2 rule 4: runtime insertion is an entry point too).
+    rejectDenyWithApproval(rule, 0);
     this._rules.unshift(rule);
     // Rule indices shifted by one; drop the per-index dedupe so a §6.5 warning
     // is not suppressed for a different rule that inherited an old index.
@@ -1267,6 +1524,12 @@ export class ACL {
 ACL.registerCondition('identity_types', new IdentityTypesHandler());
 ACL.registerCondition('roles', new RolesHandler());
 ACL.registerCondition('max_call_depth', new MaxCallDepthHandler());
+// §6.1.7 — `arguments` is BUILT IN and there is no registration point for it.
+// It is registered here, with the other built-ins, precisely so that §6.1.4's
+// precheck covers it for free: `argument:` written for `arguments:` is then an
+// unregistered condition key, so the rule is unevaluable rather than silently
+// inert. It reads the §6.1.8 projection bound to the evaluation in flight.
+ACL.registerCondition('arguments', new ArgumentsHandler(ACL._currentGovernanceProjection));
 ACL.registerCondition('$or', new OrHandler(ACL._evaluateConditions.bind(ACL)));
 ACL.registerCondition('$not', new NotHandler(ACL._evaluateConditions.bind(ACL)));
 // Async-aware variants used by asyncCheck() so Promise-returning conditions

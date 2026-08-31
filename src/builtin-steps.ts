@@ -8,7 +8,8 @@
 
 import type { TSchema } from '@sinclair/typebox';
 import { Kind } from '@sinclair/typebox';
-import type { ACL } from './acl.js';
+import type { ACL, AccessDecision } from './acl.js';
+import { buildGovernanceProjection } from './acl-handlers.js';
 import type { ApprovalHandler, ApprovalResult } from './approval.js';
 import { createApprovalRequest, createApprovalResult } from './approval.js';
 import type { Config } from './config.js';
@@ -217,7 +218,7 @@ export class BuiltinModuleLookup implements Step {
   readonly removable = false;
   readonly replaceable = false;
   readonly pure = true;
-  readonly provides = ['module'] as const;
+  readonly provides = ['module', 'governanceProjection'] as const;
 
   private _registry: Registry;
   private readonly _toggleState: ToggleState;
@@ -240,6 +241,18 @@ export class BuiltinModuleLookup implements Step {
     }
 
     ctx.module = mod;
+
+    // PROTOCOL_SPEC §6.1.8: the governance projection is computed HERE, during
+    // module lookup, so it is available to the ACL check at Step 4. The
+    // ordering is normative, not incidental.
+    //
+    // It is NOT `context.redactedInputs`, set a few lines below: that field's
+    // contract is safe *logging*, it is a raw copy when the module declares no
+    // input schema, and one field serving both "safe to log" and "input to a
+    // security decision" will eventually break one of them in a change made
+    // for the other. The projection carries the key set and each key's JSON
+    // type, and structurally cannot carry a value.
+    ctx.governanceProjection = buildGovernanceProjection(ctx.inputs);
 
     // Early input redaction: set context.redactedInputs BEFORE middleware
     // runs (step 6). This ensures logging middleware sees redacted data.
@@ -269,7 +282,10 @@ export class BuiltinACLCheck implements Step {
   readonly description = 'Access control list enforcement';
   readonly removable = true;
   readonly replaceable = true;
-  readonly requires = ['context', 'module'] as const;
+  // `governanceProjection` is declared as a requirement so §6.1.8 rule 1's
+  // "computed at Step 3, available at Step 4" is enforced by the strategy's
+  // dependency check rather than left to step ordering holding by habit.
+  readonly requires = ['context', 'module', 'governanceProjection'] as const;
   readonly pure = true;
 
   private _acl: ACL | null;
@@ -290,19 +306,14 @@ export class BuiltinACLCheck implements Step {
       return { action: 'continue' };
     }
     const callerId = ctx.context.callerId;
-    // Prefer the async ACL path so conditions registered via
-    // `ACL.registerAsyncCondition()` are actually awaited. The sync evaluator
-    // fails a Promise-returning condition closed, which makes a `deny` rule
-    // guarded by an async condition silently NOT match — letting a later
-    // catch-all `allow` win (fail-open). Mirrors apcore-python
-    // `builtin_steps.py` (`hasattr(self._acl, "async_check")`); the sync
-    // `check()` remains the fallback for duck-typed ACL providers.
-    const aclLike = this._acl as unknown as { asyncCheck?: unknown };
-    const allowed =
-      typeof aclLike.asyncCheck === 'function'
-        ? await this._acl.asyncCheck(callerId, ctx.moduleId, ctx.context)
-        : this._acl.check(callerId, ctx.moduleId, ctx.context);
-    if (!allowed) {
+    const decision = await this._decide(ctx, callerId);
+    // §6.9 rows 3–4 / §7.4: the ACL's approval requirement is carried to the
+    // approval gate at Step 5, which fires on the union of it, the module's
+    // annotation and `gateDestructive`. An implementation that reads only the
+    // annotation silently ignores every rule carrying `approval` — the rule
+    // loads, matches, and does nothing.
+    ctx.aclApprovalRequired = decision.approvalRequired;
+    if (decision.access !== 'allow') {
       // Publish a governance event on denial (canonical name proposed in
       // apcore#77). Guarded by dryRun so a validate() preflight probe never
       // emits a spurious denial event. Fires only on deny — allows are
@@ -311,6 +322,52 @@ export class BuiltinACLCheck implements Step {
       throw new ACLDeniedError(callerId, ctx.moduleId);
     }
     return { action: 'continue' };
+  }
+
+  /**
+   * Obtain the {@link AccessDecision} for this call from whichever entry point
+   * the attached provider offers.
+   *
+   * The structured accessors (§6.8.1) come first because they carry both axes
+   * of §6.1.6; the boolean ones are the compatibility path for a duck-typed
+   * provider, and a boolean can only mean "authorized", so such a provider
+   * contributes no approval requirement.
+   *
+   * Within each pair the async entry point is preferred so conditions
+   * registered via `ACL.registerAsyncCondition()` are actually awaited. The
+   * sync evaluator fails a Promise-returning condition closed, which makes a
+   * `deny` rule guarded by an async condition silently NOT match — letting a
+   * later catch-all `allow` win (fail-open).
+   *
+   * The Executor deliberately does NOT use the boolean `check()` here: §6.8.1
+   * makes that fail closed on an approval requirement, which would turn
+   * "allowed but ask first" into a denial instead of a trip through the gate.
+   */
+  private async _decide(ctx: PipelineContext, callerId: string | null): Promise<AccessDecision> {
+    const options = { arguments: ctx.governanceProjection ?? null };
+    const aclLike = this._acl as unknown as {
+      asyncCheckAccess?: unknown;
+      checkAccess?: unknown;
+      asyncCheck?: unknown;
+    };
+    if (typeof aclLike.asyncCheckAccess === 'function') {
+      return await (this._acl as ACL).asyncCheckAccess(
+        callerId, ctx.moduleId, ctx.context, options,
+      );
+    }
+    if (typeof aclLike.checkAccess === 'function') {
+      return (this._acl as ACL).checkAccess(callerId, ctx.moduleId, ctx.context, options);
+    }
+    const allowed =
+      typeof aclLike.asyncCheck === 'function'
+        ? await (this._acl as ACL).asyncCheck(callerId, ctx.moduleId, ctx.context)
+        : (this._acl as ACL).check(callerId, ctx.moduleId, ctx.context);
+    return {
+      access: allowed ? 'allow' : 'deny',
+      approvalRequired: false,
+      matchedRuleIndex: null,
+      reason: 'rule_match',
+    };
   }
 
   /** Emit `apcore.acl.denied` on the event bus (apcore#77) when live. */
@@ -391,6 +448,16 @@ export class BuiltinApprovalGate implements Step {
     // undeclared key, nor the module's own execute().
     const approvalToken = this._takeApprovalToken(ctx);
 
+    // §6.9 row 4 — the ACL is a CALLER-scoped authorization layer and an
+    // `ExecutionPolicy` is a MODULE-scoped platform override, so a policy may
+    // ADD an approval requirement and MUST NOT remove one the ACL set. Letting
+    // a module-scoped override cancel a caller-scoped decision is a privilege
+    // escalation: a policy rule written for `orders.*` would silently strip a
+    // requirement an ACL author attached to one untrusted caller. Union is the
+    // only safe composition, which is why this term is OR-ed into both
+    // branches below rather than folded into the policy's own resolution.
+    const aclApprovalRequired = ctx.aclApprovalRequired === true;
+
     let decision: PolicyDecision | null = null;
     let needs: boolean;
     let effectiveDestructive: boolean;
@@ -409,13 +476,14 @@ export class BuiltinApprovalGate implements Step {
         arguments: ctx.inputs ?? null,
         context: ctx.context ?? null,
       });
-      needs = decision.needsApproval;
+      needs = decision.needsApproval || aclApprovalRequired;
       effectiveDestructive = decision.destructive;
       if (decision.overridden) {
         this._emitPolicyAudit(decision, ctx.context);
       }
     } else {
-      needs = needsApproval(mod);
+      // §6.9 rows 3 and 5: module annotation ∪ ACL decision ∪ gate_destructive.
+      needs = needsApproval(mod) || aclApprovalRequired;
       effectiveDestructive = moduleIsDestructive(mod);
     }
 
@@ -478,6 +546,17 @@ export class BuiltinApprovalGate implements Step {
         // Reaching this point means the call needs approval, so requiresApproval
         // is true by definition (covers rule overrides and gateDestructive).
         ann = applyDecisionToAnnotations(ann, decision);
+      }
+
+      // §7.4 rule 3: the ApprovalRequest MUST carry the EFFECTIVE annotations,
+      // and an ACL-sourced requirement makes `requiresApproval` effectively
+      // true for this call. Without this the handler would be told the module
+      // does not require approval while being asked to adjudicate it — and the
+      // §7 contract that `requiresApproval` is guaranteed true on an
+      // ApprovalRequest would be broken by the one source that has no
+      // annotation to read.
+      if (!ann.requiresApproval) {
+        ann = Object.freeze({ ...ann, requiresApproval: true });
       }
 
       const request = createApprovalRequest({

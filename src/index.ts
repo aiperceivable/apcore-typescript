@@ -174,10 +174,14 @@ export type { StreamingModule } from './streaming.js';
 // ACL
 export { ACL } from './acl.js';
 export type {
+  AccessCheckOptions,
+  AccessDecision,
+  ACLApproval,
   ACLRule,
   AuditEntry,
   AuditLogger,
   ConditionOutcome,
+  GovernanceProjection,
   RuleValidationFinding,
 } from './acl.js';
 

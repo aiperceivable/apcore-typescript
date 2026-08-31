@@ -1,8 +1,9 @@
 /**
  * Built-in ACL condition handlers and handler interface.
  *
- * Defines the ACLConditionHandler interface, three basic handlers
- * (identity_types, roles, max_call_depth), and two compound operators ($or, $not).
+ * Defines the ACLConditionHandler interface, four basic handlers
+ * (identity_types, roles, max_call_depth, arguments), and two compound
+ * operators ($or, $not).
  */
 
 import type { Context } from './context.js';
@@ -76,6 +77,201 @@ export function isOutcomeHandler(
 /** True only for a plain object — excludes null, arrays and every primitive. */
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+// ---------------------------------------------------------------------------
+// Governance projection (PROTOCOL_SPEC §6.1.8)
+// ---------------------------------------------------------------------------
+
+/**
+ * The structure-only view of a call's arguments that the `arguments` condition
+ * reads (PROTOCOL_SPEC §6.1.8).
+ *
+ * It carries the argument **key set** and each key's JSON type, and it carries
+ * **no value at all**. That is structural, not a convention: a projection that
+ * cannot hold a value cannot leak one, whatever a future predicate does with
+ * it.
+ *
+ * It is deliberately NOT `Context.redactedInputs`. That field's contract is
+ * safe *logging*; it is a raw copy of the arguments when the module declares no
+ * `inputSchema` (redaction is driven by `x-sensitive` markers in that schema),
+ * and one field serving both "safe to log" and "input to a security decision"
+ * will eventually break one of them in a change made for the other.
+ */
+export interface GovernanceProjection {
+  /** The argument key set, in the order the arguments object presented them. */
+  readonly keys: readonly string[];
+  /** Each key's JSON type name — never its value. */
+  readonly types: Readonly<Record<string, string>>;
+}
+
+/**
+ * `_approval_token` is a protocol-level key (PROTOCOL_SPEC §7.4), not caller
+ * input, so it is excluded from the projection for the same reason §7.9.6
+ * rule 5 strips it before policy resolution: a retry carrying the token must
+ * present the same argument shape to governance as the original call did.
+ */
+const APPROVAL_TOKEN_KEY = '_approval_token';
+
+/** JSON type name for a projected argument — mirrors `aclTypeName` in acl.ts. */
+function jsonTypeName(value: unknown): string {
+  if (value === null) return 'null';
+  if (Array.isArray(value)) return 'array';
+  return typeof value;
+}
+
+/**
+ * Build the §6.1.8 governance projection of a call's arguments.
+ *
+ * Computed during module lookup (Step 3) and handed to the ACL check
+ * (Step 4); the ordering is normative in §6.1.8 rule 1 rather than an
+ * implementation detail that happens to hold.
+ */
+export function buildGovernanceProjection(
+  args: Record<string, unknown> | null | undefined,
+): GovernanceProjection {
+  const keys: string[] = [];
+  const types: Record<string, string> = {};
+  for (const [key, value] of Object.entries(args ?? {})) {
+    if (key === APPROVAL_TOKEN_KEY) continue;
+    keys.push(key);
+    types[key] = jsonTypeName(value);
+  }
+  return Object.freeze({ keys: Object.freeze(keys), types: Object.freeze(types) });
+}
+
+// ---------------------------------------------------------------------------
+// The `arguments` condition (PROTOCOL_SPEC §6.1.7)
+// ---------------------------------------------------------------------------
+
+/**
+ * The complete predicate vocabulary of the `arguments` condition (§6.1.7).
+ *
+ * Fixed, and there is no registration point for it: `registerCondition` writes
+ * runtime code into a process-wide registry, and a deployment-registered
+ * argument handler is exactly the unauditable host code §7.9.6 rule 2 exists to
+ * keep out of a governance verdict. A fixed vocabulary keeps the decision
+ * reproducible from the ACL document alone.
+ */
+export const ARGUMENT_PREDICATES: ReadonlySet<string> = new Set([
+  'has_key',
+  'has_all_keys',
+  'has_none_of',
+]);
+
+/** True for a list of strings — the only well-formed predicate value (§6.1.7). */
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((v) => typeof v === 'string');
+}
+
+/**
+ * Structural fault in an `arguments` condition value, or `null` when it is
+ * well-formed. Context-independent and handler-free by construction, so
+ * §6.1.4's precheck can call it and every SDK reports the same fault set.
+ *
+ * Every fault here is UNEVALUABLE under §6.1.1's principle, never UNSATISFIED:
+ * a malformed predicate does not ask a question the implementation declined to
+ * answer, it asks no question at all — and recording that as "false" puts a
+ * `deny` rule carrying `has_keys:` (for `has_all_keys:`) back into the inert
+ * state §6.1.1 exists to end.
+ *
+ * @param path - The §6.1.4 condition path of the `arguments` key itself.
+ */
+export function describeArgumentsFault(value: unknown, path: string): string | null {
+  if (!isPlainObject(value)) {
+    const kind = Array.isArray(value) ? 'array' : value === null ? 'null' : typeof value;
+    return `ACL condition '${path}' must be a mapping of argument predicates, got ${kind}`;
+  }
+  const entries = Object.entries(value);
+  if (entries.length === 0) {
+    // `arguments: {}` asks nothing. Reading it as vacuously true would widen
+    // an `allow` rule with no warning, which is the §6.1.5 failure class.
+    return (
+      `ACL condition '${path}' carries no predicate; expected at least one of ` +
+      `${[...ARGUMENT_PREDICATES].sort().join(', ')}`
+    );
+  }
+  for (const [predicate, names] of entries) {
+    if (!ARGUMENT_PREDICATES.has(predicate)) {
+      return (
+        `Unknown ACL argument predicate '${path}.${predicate}'; the vocabulary is closed ` +
+        `(${[...ARGUMENT_PREDICATES].sort().join(', ')})`
+      );
+    }
+    if (!isStringArray(names)) {
+      const kind = Array.isArray(names) ? 'array with a non-string element' : typeof names;
+      return `ACL argument predicate '${path}.${predicate}' must be a list of strings, got ${kind}`;
+    }
+  }
+  return null;
+}
+
+/** Supplies the projection bound to the ACL evaluation currently in flight. */
+export type GovernanceProjectionProvider = () => GovernanceProjection | null;
+
+/**
+ * `arguments`: structure-only predicates over the call's argument KEYS
+ * (PROTOCOL_SPEC §6.1.7).
+ *
+ * | Predicate      | Passes when                                      |
+ * |----------------|--------------------------------------------------|
+ * | `has_key`      | **any** of the named keys is present             |
+ * | `has_all_keys` | **every** named key is present                   |
+ * | `has_none_of`  | **none** of the named keys is present            |
+ *
+ * Several predicates in one `arguments` object are AND-ed, matching how a
+ * `conditions` object combines its own keys.
+ *
+ * **No predicate reads a value.** The argument view available at Step 4 is not
+ * reliably redacted — redaction is driven by `x-sensitive` markers in the
+ * module's `inputSchema`, and a module without one gets none — and the
+ * arguments are unvalidated, because the ACL check is Step 4 and input schema
+ * validation is Step 7. Key presence is the one question well-defined on what
+ * is available.
+ */
+export class ArgumentsHandler implements ACLOutcomeConditionHandler {
+  private readonly _projection: GovernanceProjectionProvider;
+
+  constructor(projection: GovernanceProjectionProvider) {
+    this._projection = projection;
+  }
+
+  evaluateOutcome(value: unknown, _context: Context, path = 'arguments'): ConditionOutcome {
+    // Structure first, so a malformed predicate is UNEVALUABLE whether or not
+    // a projection happens to be available. §6.1.4's precheck normally reports
+    // this before evaluation begins; the guard stays because
+    // `_evaluateConditions` is reachable directly.
+    if (describeArgumentsFault(value, path) !== null) return 'unevaluable';
+
+    const projection = this._projection();
+    if (projection === null) {
+      // No projection was supplied for this evaluation — a bare `check()` from
+      // tooling, or an ACL consulted outside the pipeline. The condition asks
+      // about arguments nobody handed over, so no answer is obtainable and
+      // §6.1.1's principle applies: a `deny` rule takes effect, an `allow` rule
+      // does not grant. Reading it as an empty argument set would make
+      // `has_none_of` GRANT for a call whose arguments were never seen.
+      return 'unevaluable';
+    }
+
+    const present = new Set(projection.keys);
+    for (const [predicate, names] of Object.entries(value as Record<string, string[]>)) {
+      let passed: boolean;
+      if (predicate === 'has_key') {
+        passed = names.some((n) => present.has(n));
+      } else if (predicate === 'has_all_keys') {
+        passed = names.every((n) => present.has(n));
+      } else {
+        passed = !names.some((n) => present.has(n));
+      }
+      if (!passed) return 'unsatisfied';
+    }
+    return 'satisfied';
+  }
+
+  evaluate(value: unknown, context: Context): boolean {
+    return this.evaluateOutcome(value, context) === 'satisfied';
+  }
 }
 
 // ---------------------------------------------------------------------------

@@ -99,10 +99,14 @@ export type { ApprovalRequest, ApprovalResult, ApprovalHandler } from '../approv
 // ---- ACL (in-memory; ACL.load is Node-only and throws in browser) --------
 export { ACL } from '../acl.js';
 export type {
+  AccessCheckOptions,
+  AccessDecision,
+  ACLApproval,
   ACLRule,
   AuditEntry,
   AuditLogger,
   ConditionOutcome,
+  GovernanceProjection,
   RuleValidationFinding,
 } from '../acl.js';
 

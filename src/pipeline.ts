@@ -2,6 +2,7 @@
  *  Execution pipeline types for configurable step-based module invocation.
  */
 
+import type { GovernanceProjection } from './acl-handlers.js';
 import type { Context } from './context.js';
 import { ModuleError } from './errors.js';
 import type { ErrorOptions } from './errors.js';
@@ -201,6 +202,28 @@ export interface PipelineContext {
   executedMiddlewares?: unknown[];
   /** When set, pipeline halts after the first step where predicate returns true (§1.4). */
   runUntil?: ((state: PipelineState) => boolean) | null;
+
+  /**
+   * The §6.1.8 governance projection of `inputs` — argument key set and JSON
+   * types, never a value.
+   *
+   * Computed during module lookup (Step 3) and read by the ACL check
+   * (Step 4). That ordering is normative in §6.1.8 rule 1, not an
+   * implementation detail that happens to hold, which is why the two steps
+   * declare it in `provides` / `requires`.
+   */
+  governanceProjection?: GovernanceProjection | null;
+
+  /**
+   * Whether the ACL decision for this call carried an approval requirement
+   * (§6.1.6), set by the ACL check at Step 4 and consumed by the approval gate
+   * at Step 5.
+   *
+   * §6.9 rows 3–4: the gate fires on the **union** of this, the module's
+   * `requiresApproval` annotation and `gateDestructive`. An `ExecutionPolicy`
+   * override may add a requirement and MUST NOT remove the one recorded here.
+   */
+  aclApprovalRequired?: boolean;
 }
 
 // ---------------------------------------------------------------------------
