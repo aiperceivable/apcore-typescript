@@ -657,6 +657,209 @@ describe('§7.4 the approval gate consults the ACL decision', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// §6.1.1 rule 5 — an unevaluable allow rule's approval requirement is PENDING
+// ---------------------------------------------------------------------------
+
+/**
+ * The regression suite for apcore#109, held here and not only in the
+ * conformance driver: that driver reads a fixture from the sibling spec repo
+ * and skips itself when it is absent, so without this block the fix would be
+ * unverified on any checkout that has no spec repo beside it.
+ *
+ * The defect: §6.1.1 was written in spec v1.22.0, when a rule carried one axis,
+ * and "an `allow` rule MUST NOT grant" was a complete instruction then — the
+ * rule steps aside, and stepping aside was harmless because whatever granted
+ * next also said `allow`. v1.28.0 gave rules a second axis and did not revisit
+ * it, so a narrow `approval: required` gate whose condition could not be
+ * evaluated stepped aside and the broad rule behind it granted `git push
+ * --force` with `approvalRequired: false`.
+ */
+describe('§6.1.1 rule 5: an unevaluable allow rule leaves its approval requirement pending', () => {
+  /** The deployment shape §6.1.7 exists for: a narrow gate ahead of a broad allow. */
+  const gateThenBroadAllow = (conditions: Record<string, unknown>): ACLRule[] => [
+    rule({
+      callers: ['*'],
+      targets: ['cli.git_push'],
+      effect: 'allow',
+      approval: 'required',
+      conditions,
+    }),
+    rule({ callers: ['*'], targets: ['cli.git_push'], effect: 'allow' }),
+  ];
+
+  const HAS_FORCE = { arguments: { has_key: ['force'] } };
+
+  it('THE DEFECT: no projection, so the gate is unevaluable and the broad rule granted unapproved', () => {
+    const entries: AuditEntry[] = [];
+    const acl = new ACL(gateThenBroadAllow(HAS_FORCE), 'deny', (e) => entries.push(e));
+
+    // No `arguments` option at all — §6.1.8 case 1. `check()` is public API and
+    // a caller that is not the Executor may invoke it without a projection.
+    const decision = acl.checkAccess('agent.planner', 'cli.git_push', callerContext());
+
+    expect(decision.access).toBe('allow');
+    // Before the fix this was `false` and rule 1 had quietly replaced rule 0.
+    expect(decision.approvalRequired).toBe(true);
+    // The index still names the rule that actually DECIDED, not the one that
+    // raised the requirement — the requirement may outlive its rule, the
+    // diagnostic may not lie about which rule granted.
+    expect(decision.matchedRuleIndex).toBe(1);
+    // §6.1.1 rule 2 is untouched: a pending requirement neither suppresses nor
+    // substitutes for the handler error, and the entry carries the FINAL value.
+    expect(entries[0].handlerError).not.toBeNull();
+    expect(entries[0].approvalRequired).toBe(true);
+  });
+
+  it('a misspelled predicate reaches it WITH a projection, on the ordinary Executor path', () => {
+    // `has_keys` for `has_all_keys` — §6.1.8 case 3, an unevaluable rule that
+    // has nothing to do with a missing projection. This is the shape that
+    // proves the defect is not confined to callers who omit one.
+    const acl = new ACL(gateThenBroadAllow({ arguments: { has_keys: ['force'] } }), 'deny');
+    const decision = acl.checkAccess('agent.planner', 'cli.git_push', callerContext(), {
+      arguments: buildGovernanceProjection({ remote: 'origin', force: true }),
+    });
+
+    expect(decision.access).toBe('allow');
+    expect(decision.approvalRequired).toBe(true);
+    expect(decision.matchedRuleIndex).toBe(1);
+  });
+
+  it('rides through default_effect: allow, where there is no later rule to carry it', () => {
+    // The boundary a "a later rule grants" reading misses: there IS no later
+    // rule. §6.9 row 2 — the default carries the pending requirement, which
+    // makes approvalRequired: true with matchedRuleIndex: null legal.
+    const acl = new ACL([gateThenBroadAllow(HAS_FORCE)[0]], 'allow');
+    const decision = acl.checkAccess('agent.planner', 'cli.git_push', callerContext());
+
+    expect(decision.access).toBe('allow');
+    expect(decision.approvalRequired).toBe(true);
+    expect(decision.matchedRuleIndex).toBeNull();
+    expect(decision.reason).toBe('default_effect');
+  });
+
+  it('a malformed pattern field raises it, because the rule\'s scope cannot be read', () => {
+    // §6.1.4.1 — unevaluable BEFORE any pattern is matched. The one point at
+    // which a requirement attaches without a demonstrated pattern match, and
+    // consistent with what the same rule does under `deny`, where an unreadable
+    // scope denies every call. The cast is the point: a JS caller reaches this
+    // shape by writing `callers: '*'` where a list belongs.
+    const acl = new ACL(
+      [
+        rule({
+          callers: '*' as unknown as string[],
+          targets: ['cli.git_push'],
+          effect: 'allow',
+          approval: 'required',
+        }),
+        rule({ callers: ['*'], targets: ['cli.git_push'], effect: 'allow' }),
+      ],
+      'deny',
+    );
+    const decision = acl.checkAccess('agent.planner', 'cli.git_push', callerContext());
+
+    expect(decision.access).toBe('allow');
+    expect(decision.approvalRequired).toBe(true);
+    expect(decision.matchedRuleIndex).toBe(1);
+  });
+
+  it('CONTAINMENT: a rule whose patterns do not match this call raises nothing', () => {
+    // The case that keeps the fix from over-reaching. Rule 0 targets
+    // `cli.deploy`, so §6.1.4 rule 4c means its conditions are never consulted
+    // at all — an implementation that sets `pending` before matching patterns
+    // passes every other test in this block and fails this one.
+    const acl = new ACL(
+      [
+        rule({
+          callers: ['*'],
+          targets: ['cli.deploy'],
+          effect: 'allow',
+          approval: 'required',
+          conditions: HAS_FORCE,
+        }),
+        rule({ callers: ['*'], targets: ['cli.git_push'], effect: 'allow' }),
+      ],
+      'deny',
+    );
+    const decision = acl.checkAccess('agent.planner', 'cli.git_push', callerContext());
+
+    expect(decision.access).toBe('allow');
+    expect(decision.approvalRequired).toBe(false);
+    expect(decision.matchedRuleIndex).toBe(1);
+  });
+
+  it('a denial clears it, and matchedRuleIndex names the rule that decided', () => {
+    const acl = new ACL(
+      [
+        rule({
+          callers: ['*'],
+          targets: ['cli.git_push'],
+          effect: 'allow',
+          approval: 'required',
+          conditions: HAS_FORCE,
+        }),
+        rule({ callers: ['*'], targets: ['cli.git_push'], effect: 'deny' }),
+      ],
+      'allow',
+    );
+    const decision = acl.checkAccess('agent.planner', 'cli.git_push', callerContext());
+
+    expect(decision.access).toBe('deny');
+    // "Denied and needs approval" is not a state that means anything (§6.1.6).
+    expect(decision.approvalRequired).toBe(false);
+    expect(decision.matchedRuleIndex).toBe(1);
+  });
+
+  it('a deny default clears it exactly as a matched deny rule does', () => {
+    const acl = new ACL([gateThenBroadAllow(HAS_FORCE)[0]], 'deny');
+    const decision = acl.checkAccess('agent.planner', 'cli.git_push', callerContext());
+
+    expect(decision.access).toBe('deny');
+    expect(decision.approvalRequired).toBe(false);
+  });
+
+  it('the legacy boolean fails closed on a PENDING requirement too (§6.8.1)', () => {
+    // §6.8.1 makes fail-closed a property of the DECISION, not of the matched
+    // rule: the requirement here was raised by a rule that did not match.
+    const acl = new ACL(gateThenBroadAllow(HAS_FORCE), 'deny');
+    expect(acl.check('agent.planner', 'cli.git_push', callerContext())).toBe(false);
+  });
+
+  it('holds identically on the async entry points', async () => {
+    // A requirement that survives an unevaluable rule on one entry point and is
+    // lost on another is the same fail-open, reachable by choosing a call.
+    const acl = new ACL(gateThenBroadAllow(HAS_FORCE), 'deny');
+    const decision = await acl.asyncCheckAccess('agent.planner', 'cli.git_push', callerContext());
+
+    expect(decision.access).toBe('allow');
+    expect(decision.approvalRequired).toBe(true);
+    expect(decision.matchedRuleIndex).toBe(1);
+    expect(await acl.asyncCheck('agent.planner', 'cli.git_push', callerContext())).toBe(false);
+  });
+
+  it('reaches the Step 5 gate: a misspelled predicate still asks a human', async () => {
+    // End to end, on the pipeline. `BuiltinACLCheck` stores the structured
+    // decision's `approvalRequired` and `BuiltinApprovalGate` unions it with the
+    // module annotation, so the pending requirement gates the call without the
+    // gate knowing anything about §6.1.1.
+    const registry = new Registry();
+    registry.register('cli.git_push', makeModule());
+    const handler = new RecordingHandler('approved');
+    const executor = new Executor({
+      registry,
+      acl: new ACL(gateThenBroadAllow({ arguments: { has_keys: ['force'] } }), 'deny'),
+      approvalHandler: handler as never,
+    });
+
+    await executor.call('cli.git_push', { remote: 'origin', force: true }, callerContext());
+
+    // Before the fix the gate never saw this call: the typo turned "ask a
+    // human" into "do not ask" and `git push --force` ran unapproved.
+    expect(handler.requests).toHaveLength(1);
+    expect(handler.requests[0].moduleId).toBe('cli.git_push');
+  });
+});
+
 describe('§6.9 row 4: a policy may ADD a requirement and MUST NOT remove the ACL one', () => {
   function buildGate(policy: ExecutionPolicy | null, handler: RecordingHandler) {
     return new BuiltinApprovalGate(handler as never, policy, null);

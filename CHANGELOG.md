@@ -10,6 +10,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.29.0] - Unreleased
+
+### Fixed
+
+- **SECURITY: an unevaluable approval rule stepped aside and the call was granted without approval (spec v1.29.0 §6.1.1 rule 5, §6.8.1, §6.9 rows 1-2, [apcore#109](https://github.com/aiperceivable/apcore/issues/109)).** The shape §6.1.7 was written for is a narrow approval rule ahead of a broad allow — `git push --force` needs a human, `git push` does not. When the narrow rule's condition could not be *evaluated*, §6.1.1 resolved it to "does not match, MUST NOT grant" and scanning continued; the broad rule then granted, carrying no requirement of its own. The result was `access: 'allow'` with `approvalRequired: false` on exactly the call the operator gated, and `matchedRuleIndex` naming a rule that never mentioned approval — while `acl.ts` logged *"the allow rule does not match and MUST NOT grant"* on the very call it was granting. Reproduced in all three SDKs.
+
+  **The root cause is a section that outlived its assumptions.** §6.1.1 was written in spec v1.22.0, when a rule carried one axis, and "an `allow` rule MUST NOT grant" was a complete instruction then: the rule steps aside, and stepping aside was harmless because whatever granted next also said `allow`. Spec v1.28.0 gave rules a second axis (`approval`) and did not revisit it, so "does not grant" began silently discarding the requirement the rule carried.
+
+  **It is not confined to the legacy boolean or to a missing projection.** The trigger is an unevaluable `allow` rule, and §6.1.1 is the path that misconfiguration, §6.1.2's warn-don't-fail registration ordering and handler failure all take. A misspelled predicate (`has_keys` for `has_all_keys`) or an unregistered condition key reaches it **with a governance projection present**, on the ordinary Executor pipeline; `defaultEffect: 'allow'` reaches it with no second rule at all. `validateRules()` is not a mitigation — §6.1.2 makes an unregistered condition key a warning rather than a load failure, so nothing stops such a rule reaching production.
+
+  **The requirement is now pending rather than discarded.** An unevaluable `allow` rule carrying `approval: 'required'` records a pending requirement and scanning continues; the rule itself still does not grant. Whatever grants next composes it by **disjunction** — a later `allow` rule *or* `defaultEffect: 'allow'`, which makes `approvalRequired: true` with `matchedRuleIndex: null` a legal combination for the first time. A final decision of `deny` clears it, and `matchedRuleIndex` keeps naming the rule that actually decided rather than the unevaluable one. `handlerError` is untouched: a pending requirement neither suppresses nor substitutes for it, and `AuditEntry.approvalRequired` carries the **final** value. The §6.1.1 warning now names the surviving requirement, because the old wording was logged on the call the next rule then granted.
+
+  **Scope is what keeps it from over-reaching.** A rule whose well-formed `callers` / `targets` do not match this call returns `'no_match'` before its conditions are read at all (§6.1.4 rule 4c), so it raises nothing — a rule written about one target must not attach a human to calls it was never written about. A rule whose own pattern field is *malformed* (§6.1.4.1) does raise it: its scope cannot be read, so it cannot be shown not to apply, which is the posture that field already produces under `deny`, where an unreadable scope denies every call.
+
+  **Requiring a human rather than denying is deliberate.** The condition that could not be evaluated is the one that decides whether *this* call is the dangerous one, so refusing would turn every ordinary `git push` into the hard failure §6.1.7 exists to eliminate. "Ask" is the answer that is wrong in neither direction.
+
+  Applied to `checkAccess()`, `asyncCheckAccess()` and both legacy booleans — a requirement that survives on one entry point and is lost on another is the same fail-open, reachable by choosing a different call. §6.8.1's fail-closed rule for `check()` is now a property of the **decision**, not of the matched rule, so the boolean fails closed on a pending requirement identically.
+
+  **Backward compatible for correct configurations:** across all 20 pre-existing cases of `conformance/fixtures/acl_argument_scoped_approval.json` **with a projection**, no decision changes. Without a projection, two change, both `approvalRequired: false` → `true`.
+
+### Changed
+
+- **`tests/conformance-acl-argument-scoped-approval.test.ts` runs every case twice.** The fixture grew a second column (24 cases, up from 20): run 1 supplies a governance projection derived from `arguments`, run 2 supplies none at all, and both are contracts — §6.1.8 case 1 makes `check()` a public entry point that may be called without one. TypeScript can hand a projection to `check()` as well as to `checkAccess()`, so this SDK asserts all five keys in both columns rather than skipping the second; the column the drivers had been skipping is exactly where apcore#109 was sitting. Each column is now asserted against the async entry points too.
+
+---
+
 ## [0.28.0] - Unreleased
 
 ### Added

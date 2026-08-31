@@ -1124,19 +1124,30 @@ export class ACL {
     // invoked from a condition handler pushes its own frame and restores
     // ours on exit, so it can no longer consume our handler error.
     const [frame, previousFrame] = ACL._pushEvaluationFrame(options?.arguments ?? null);
+    // §6.1.1 rule 5 — an unevaluable `allow` rule's approval requirement is
+    // PENDING, not discarded. A plain local rather than frame state: it is
+    // per-evaluation by construction, so a nested check() cannot see it.
+    let pendingApproval = false;
 
     try {
       for (let idx = 0; idx < rules.length; idx++) {
         const rule = rules[idx];
         frame.pending.length = 0;
         const outcome = this._matchesRule(rule, effectiveCaller, targetId, ctx, idx);
-        if (outcome === 'unevaluable' && !ACL._resolveUnevaluable(rule, idx, frame)) continue;
-        if (outcome === 'no_match') continue;
-        return this._decideByRule(effectiveCaller, targetId, rule, idx, ctx, auditLogger, frame);
+        if (outcome === 'unevaluable') {
+          if (ACL._raisesPendingApproval(rule)) pendingApproval = true;
+          if (!ACL._resolveUnevaluable(rule, idx, frame)) continue;
+        } else if (outcome === 'no_match') {
+          continue;
+        }
+        return this._decideByRule(
+          effectiveCaller, targetId, rule, idx, ctx, auditLogger, frame, pendingApproval,
+        );
       }
 
       return this._decideByDefault(
         effectiveCaller, targetId, defaultEffect, rules.length, ctx, auditLogger, frame,
+        pendingApproval,
       );
     } finally {
       ACL._popEvaluationFrame(previousFrame);
@@ -1170,6 +1181,10 @@ export class ACL {
     const auditLogger = this._auditLogger;
     // Open a capture frame private to this evaluation (see checkAccess()).
     const [frame, previousFrame] = ACL._pushEvaluationFrame(options?.arguments ?? null);
+    // §6.1.1 rule 5 — see checkAccess(). The two paths MUST NOT drift on this:
+    // a requirement that survives an unevaluable rule on one path and is lost
+    // on the other is the same fail-open, reachable by choosing an entry point.
+    let pendingApproval = false;
 
     try {
       for (let idx = 0; idx < rules.length; idx++) {
@@ -1181,13 +1196,20 @@ export class ACL {
         const outcome = await this._matchesRuleAsync(rule, effectiveCaller, targetId, ctx, idx);
         // Re-arm again: the await above may have yielded to another evaluation.
         ACL._currentFrame = frame;
-        if (outcome === 'unevaluable' && !ACL._resolveUnevaluable(rule, idx, frame)) continue;
-        if (outcome === 'no_match') continue;
-        return this._decideByRule(effectiveCaller, targetId, rule, idx, ctx, auditLogger, frame);
+        if (outcome === 'unevaluable') {
+          if (ACL._raisesPendingApproval(rule)) pendingApproval = true;
+          if (!ACL._resolveUnevaluable(rule, idx, frame)) continue;
+        } else if (outcome === 'no_match') {
+          continue;
+        }
+        return this._decideByRule(
+          effectiveCaller, targetId, rule, idx, ctx, auditLogger, frame, pendingApproval,
+        );
       }
 
       return this._decideByDefault(
         effectiveCaller, targetId, defaultEffect, rules.length, ctx, auditLogger, frame,
+        pendingApproval,
       );
     } finally {
       ACL._popEvaluationFrame(previousFrame);
@@ -1198,6 +1220,11 @@ export class ACL {
    * @internal — build the {@link AccessDecision} for a matched rule and emit
    * its audit entry. Shared by the sync and async paths so the two cannot
    * drift on §6.1.6's second axis.
+   *
+   * @param pendingApproval - §6.1.1 rule 5: a requirement raised by an earlier
+   *   `allow` rule that was unevaluable and therefore did not grant. It
+   *   composes by **disjunction** with this rule's own, so the requirement may
+   *   originate in a rule that did not match (§6.9 row 1).
    */
   private _decideByRule(
     callerId: string,
@@ -1207,12 +1234,19 @@ export class ACL {
     ctx: Context | null,
     auditLogger: AuditLogger | null,
     frame: EvaluationFrame,
+    pendingApproval: boolean,
   ): AccessDecision {
     const access = rule.effect === 'allow' ? 'allow' : 'deny';
     // §6.1.6: the two results are orthogonal, and `approval: required` on a
     // `deny` rule is rejected at every entry point — the `access` guard is
     // belt-and-braces against a rule object mutated in place after load.
-    const approvalRequired = access === 'allow' && rule.approval === 'required';
+    //
+    // §6.1.1 rule 5, third bullet: a denial CLEARS a pending requirement, and
+    // `matchedRuleIndex` keeps naming the rule that actually decided rather
+    // than the unevaluable one that raised it — hence the `access` guard
+    // covering both terms rather than only the rule's own.
+    const approvalRequired =
+      access === 'allow' && (rule.approval === 'required' || pendingApproval);
     if (auditLogger) {
       auditLogger(
         this._buildAuditEntry(
@@ -1227,8 +1261,14 @@ export class ACL {
   /**
    * @internal — build the {@link AccessDecision} for the no-rule-matched path.
    *
-   * §6.9 row 2: `default_effect` stays `allow` / `deny` only. There is no
-   * default approval requirement, so no match means `false`.
+   * §6.9 row 2: `default_effect` stays `allow` / `deny` only — there is no
+   * default approval *source*. But `default_effect: allow` **MUST** carry a
+   * pending requirement (§6.1.1 rule 5) through to the result: on the shape
+   * where the gate is the only rule, there is no later rule to carry it, so
+   * the requirement would be lost with nothing left holding it. That yields
+   * `approvalRequired: true` with `matchedRuleIndex: null`, which §6.1.1
+   * rule 5 makes a legal combination as of v1.29.0. Absent a pending
+   * requirement, no match still means `false`.
    */
   private _decideByDefault(
     callerId: string,
@@ -1238,18 +1278,22 @@ export class ACL {
     ctx: Context | null,
     auditLogger: AuditLogger | null,
     frame: EvaluationFrame,
+    pendingApproval: boolean,
   ): AccessDecision {
     const access = defaultEffect === 'allow' ? 'allow' : 'deny';
     const reason = ruleCount === 0 ? 'no_rules' : 'default_effect';
+    // A `deny` default clears the pending requirement exactly as a matched
+    // `deny` rule does (§6.1.1 rule 5, third bullet).
+    const approvalRequired = access === 'allow' && pendingApproval;
     if (auditLogger) {
       auditLogger(
         this._buildAuditEntry(
           callerId, targetId, access, reason, null, null, ctx,
-          ACL._takeFrameError(frame), false,
+          ACL._takeFrameError(frame), approvalRequired,
         ),
       );
     }
-    return Object.freeze({ access, approvalRequired: false, matchedRuleIndex: null, reason });
+    return Object.freeze({ access, approvalRequired, matchedRuleIndex: null, reason });
   }
 
   private _matchPatternsAsync(patterns: string[], value: string, context: Context | null): boolean {
@@ -1471,6 +1515,40 @@ export class ACL {
   }
 
   /**
+   * @internal — §6.1.1 rule 5 (v1.29.0, apcore#109): whether an UNEVALUABLE
+   * rule leaves a **pending approval requirement** behind when it steps aside.
+   *
+   * Rule 1's "MUST NOT grant" was a complete instruction while a rule carried
+   * one axis. Since §6.1.6 it carries two, and losing the second one is a
+   * silent fail-open: a narrow `approval: required` gate ahead of a broad
+   * `allow` used to step aside and let the broad rule grant `git push --force`
+   * with `approvalRequired: false` — the exact call the operator gated.
+   *
+   * Only ever called with a rule the caller already classified `'unevaluable'`,
+   * and that classification is what supplies §6.1.1 rule 5's **scope**
+   * requirement without a second pattern match here:
+   *
+   * - A rule whose well-formed `callers` / `targets` do not match this call
+   *   returns `'no_match'` from {@link ACL._matchesRule} before its conditions
+   *   are read at all (§6.1.4 rule 4c), so it never reaches this and raises
+   *   nothing. A rule written about one target MUST NOT attach a human to
+   *   calls it was never written about.
+   * - A rule that is unevaluable because its own pattern field is *malformed*
+   *   (§6.1.4.1) DOES reach this, and MUST raise. Its scope cannot be read, so
+   *   it cannot be shown not to apply here — the same posture that field
+   *   already produces under `deny`, where an unreadable scope denies every
+   *   call.
+   *
+   * The `effect === 'allow'` guard is belt-and-braces: `approval: required` on
+   * a `deny` rule is rejected at every entry point (§6.1.6 rule 2), and an
+   * unevaluable `deny` rule takes effect anyway, where a denial would clear
+   * the requirement regardless.
+   */
+  private static _raisesPendingApproval(rule: ACLRule): boolean {
+    return rule.effect === 'allow' && rule.approval === 'required';
+  }
+
+  /**
    * @internal — apply §6.1.1's effect rule to a rule whose conditions could not
    * be evaluated, warn as rule 3 requires, and say whether the rule takes
    * effect.
@@ -1479,6 +1557,12 @@ export class ACL {
    * |---------|-------------------------------------------|
    * | `allow` | does not match → continue (MUST NOT grant)|
    * | `deny`  | rule MUST take effect → the call is denied |
+   *
+   * The `allow` row is only half the story since v1.29.0: the rule steps
+   * aside, but any `approval: required` it carried stays **pending** and is
+   * composed into whatever grants next ({@link ACL._raisesPendingApproval}).
+   * The warning says so, because the previous wording — "does not match and
+   * MUST NOT grant" — was logged on the very call the next rule then granted.
    *
    * @returns true when the rule matches and its effect stands.
    */
@@ -1495,7 +1579,13 @@ export class ACL {
         `${named}. PROTOCOL_SPEC §6.1.1 resolves this toward refusing access: ` +
         (takesEffect
           ? 'the deny rule takes effect and the call is DENIED.'
-          : 'the allow rule does not match and MUST NOT grant.'),
+          : 'the allow rule does not match and MUST NOT grant.') +
+        // §6.1.1 rule 5: naming the survivor here is what tells an operator
+        // that the gate they wrote is still in force after its rule stepped
+        // aside — and, when it is absent, that it is not.
+        (ACL._raisesPendingApproval(rule)
+          ? ' Its approval: required is PENDING (§6.1.1 rule 5) and composes into whatever grants next.'
+          : ''),
     );
     frame.pending.length = 0;
     return takesEffect;
