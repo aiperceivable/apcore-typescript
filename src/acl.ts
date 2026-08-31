@@ -97,6 +97,23 @@ export type ACLApproval = 'required' | 'not_required';
 export interface ACLRule {
   callers: string[];
   targets: string[];
+  /**
+   * Authorization — `'allow'` or `'deny'`, and nothing else (PROTOCOL_SPEC
+   * §6.1, §6.1.5).
+   *
+   * The value set is **closed at every entry point that accepts a rule** — file
+   * loading, direct construction and {@link ACL.addRule} — exactly as
+   * `approval` is (§6.1.6 rule 3). Anything else is rejected with
+   * {@link ACLRuleError} naming the rule index and the offending value; it is
+   * never resolved to a decision, because reading an unrecognised value as
+   * `deny` turns a rule the operator wrote to PERMIT into one that denies
+   * everything it matches whenever `defaultEffect` is `'allow'`.
+   *
+   * Declared `string` rather than a `'allow' | 'deny'` union for parity with
+   * apcore-python (`effect: str`) and apcore-rust (`pub effect: String`), and
+   * because the value arrives from YAML with no type system in the loop: the
+   * guarantee has to be the runtime check, not the declaration.
+   */
   effect: string;
   description: string;
   conditions?: Record<string, unknown> | null;
@@ -473,6 +490,40 @@ const RULE_KEYS = new Set([
   'approval',
 ]);
 
+/**
+ * The two values §6.1 defines for a rule's `effect`.
+ *
+ * Closed for the reason {@link RULE_KEYS} is, one level down: there an unknown
+ * KEY was dropped in silence, here a legal key's VALUE was (#111).
+ */
+const EFFECT_VALUES = new Set<string>(['allow', 'deny']);
+
+/**
+ * §6.1.5 (v1.30.0, #111) — reject an `effect` outside the closed value set.
+ *
+ * One function behind all three doors that accept a rule — file loading,
+ * direct construction and runtime insertion — because §6.1.6 rule 3 requires
+ * all three and two copies of a validation rule drift. This check used to live
+ * inline in {@link _parseAclRule} and so guarded only the file path: `effect:
+ * "Allow"`, the capitalisation an operator writes by hand, was rejected by
+ * `ACL.load()` and accepted by `new ACL([...])` and `addRule()` — while
+ * `default_effect`, the same two legal values one field up, was already
+ * guarded at every door.
+ *
+ * Rejecting is the whole point: an unrecognised `effect` **MUST NOT** be
+ * resolved to a decision. Reading it as `deny` looks safe and is not — under
+ * `defaultEffect: 'allow'` a rule the operator wrote to PERMIT denies
+ * everything it matches, with no error, no warning and nothing from
+ * {@link ACL.validateRules} — and on a `deny` rule it is only accidentally
+ * right, which lasts until someone revisits which way the fallback points.
+ */
+function rejectInvalidEffect(effect: unknown, index: number): void {
+  if (typeof effect === 'string' && EFFECT_VALUES.has(effect)) return;
+  throw new ACLRuleError(
+    `Rule ${index} has invalid effect '${String(effect)}', must be 'allow' or 'deny'`,
+  );
+}
+
 /** The two values §6.1.6 defines for a rule's `approval` field. */
 const APPROVAL_VALUES = new Set<string>(['required', 'not_required']);
 
@@ -548,10 +599,12 @@ export function _parseAclRule(rawRule: unknown, index: number): ACLRule {
   // was dropped in silence until #107.
   rejectUnknownRuleKeys(index, ruleObj);
 
+  // §6.1.5 — the same check `new ACL([...])` and `addRule()` run, not a second
+  // copy of it. Kept here as well as there so the load path still reports a bad
+  // `effect` ahead of a malformed `callers` / `targets`, which is the order the
+  // operator reads the rule in.
+  rejectInvalidEffect(ruleObj['effect'], index);
   const effect = ruleObj['effect'] as string;
-  if (effect !== 'allow' && effect !== 'deny') {
-    throw new ACLRuleError(`Rule ${index} has invalid effect '${effect}', must be 'allow' or 'deny'`);
-  }
 
   const callers = ruleObj['callers'];
   if (!Array.isArray(callers)) {
@@ -919,12 +972,23 @@ export class ACL {
   debug: boolean = false;
 
   constructor(rules: ACLRule[], defaultEffect: string = 'deny', auditLogger?: AuditLogger | null) {
-    if (defaultEffect !== 'allow' && defaultEffect !== 'deny') {
+    // §6.1.5 closes `default_effect` on the same terms as a rule's `effect`.
+    // This check has always been here and `ACL.load()` reaches it too, so both
+    // of its doors were covered — which is exactly what made a rule's `effect`
+    // guarding only the file path an INTERNAL inconsistency and not merely a
+    // cross-language one (#111).
+    if (!EFFECT_VALUES.has(defaultEffect)) {
       throw new ACLRuleError(`Invalid default_effect '${defaultEffect}', must be 'allow' or 'deny'`);
     }
     this._rules = [...rules];
     this._defaultEffect = defaultEffect;
     this._auditLogger = auditLogger ?? null;
+    // §6.1.5 (v1.30.0) — `effect` is a closed value set at THIS door too, not
+    // only at `ACL.load()`. Runs before the approval check because
+    // `rejectDenyWithApproval` reads `effect` to decide whether the pair is the
+    // meaningless one: `effect: 'Deny'` with `approval: 'required'` must fail on
+    // the effect rather than slip past a `!== 'deny'` early return.
+    this._rules.forEach((rule, i) => rejectInvalidEffect(rule.effect, i));
     // §6.1.6 rule 2 is fatal, not a warning: unlike an unregistered condition
     // key (§6.1.2 rule 1, which must not break bootstrap order) a
     // `deny` + `approval: required` rule can never become meaningful later.
@@ -1236,6 +1300,13 @@ export class ACL {
     frame: EvaluationFrame,
     pendingApproval: boolean,
   ): AccessDecision {
+    // §6.1.5 (v1.30.0): this ternary is TOTAL over the closed value set, not a
+    // fallback — as of #111 an `effect` outside {allow, deny} cannot reach here
+    // through any door that accepts a rule, which is what satisfies "an
+    // implementation MUST NOT resolve an unrecognised effect to a decision".
+    // It stays a ternary rather than becoming a throw because §6.1.1 makes
+    // `check()` a call that MUST NOT raise; closing the doors is the mechanism,
+    // and a rule object mutated in place after validation is the only residue.
     const access = rule.effect === 'allow' ? 'allow' : 'deny';
     // §6.1.6: the two results are orthogonal, and `approval: required` on a
     // `deny` rule is rejected at every entry point — the `access` guard is
@@ -1280,6 +1351,9 @@ export class ACL {
     frame: EvaluationFrame,
     pendingApproval: boolean,
   ): AccessDecision {
+    // Total over the closed set for the same reason as in `_decideByRule`:
+    // §6.1.5 closes `default_effect` on the same terms, and the constructor —
+    // which `ACL.load()` also reaches — has always rejected anything else.
     const access = defaultEffect === 'allow' ? 'allow' : 'deny';
     const reason = ruleCount === 0 ? 'no_rules' : 'default_effect';
     // A `deny` default clears the pending requirement exactly as a matched
@@ -1595,13 +1669,24 @@ export class ACL {
    * Insert a rule at the head of the list (highest priority).
    *
    * §6.1.2 rule 4 makes runtime insertion an entry point that must be covered
-   * by load-time validation, so an unresolvable condition key on the new rule
-   * warns here exactly as it does on construction. Insertion still succeeds:
-   * warn, never fail.
+   * by load-time validation, so the new rule meets exactly the checks
+   * construction applies — and the split between them is the same here as
+   * there. An unresolvable condition key **warns**: handlers are registered at
+   * runtime and a key can still become resolvable later, so failing would break
+   * bootstrap order. A malformed rule **throws** {@link ACLRuleError}, because
+   * nothing later can make it meaningful — an `effect` outside `allow` / `deny`
+   * (§6.1.5) or `approval: 'required'` on a `deny` rule (§6.1.6 rule 2). A
+   * throw leaves the rule list untouched.
    */
   addRule(rule: ACLRule): void {
-    // §6.1.6 rule 2 — rejected before insertion, so a meaningless rule never
-    // enters the list (§6.1.2 rule 4: runtime insertion is an entry point too).
+    // §6.1.5 and §6.1.6 rule 2 — both rejected before insertion, so neither a
+    // rule outside the closed `effect` value set nor a meaningless
+    // `deny` + `approval` pair ever enters the list (§6.1.2 rule 4: runtime
+    // insertion is an entry point too). `addRule` returns nothing by its own
+    // contract, which §6.1.6 rule 3 says is not an exemption — throwing is how
+    // TypeScript signals an unconstructable value, the same way the constructor
+    // does, so there is no fallible twin to add beside it.
+    rejectInvalidEffect(rule.effect, 0);
     rejectDenyWithApproval(rule, 0);
     this._rules.unshift(rule);
     // Rule indices shifted by one; drop the per-index dedupe so a §6.5 warning
