@@ -122,7 +122,7 @@ import {
 } from '../src/observability/index.js';
 import { DEFAULT_REDACTION_FIELD_PATTERNS } from '../src/observability/context-logger.js';
 import { TraceContext } from '../src/trace-context.js';
-import { findFixturesRoot } from './spec-repo.js';
+import { findFixturesRoot, findSchemasRoot } from './spec-repo.js';
 
 // ---------------------------------------------------------------------------
 // Fixture discovery
@@ -130,7 +130,7 @@ import { findFixturesRoot } from './spec-repo.js';
 
 const FIXTURES_ROOT = findFixturesRoot();
 
-const SCHEMAS_ROOT = path.resolve(FIXTURES_ROOT, '..', '..', 'schemas');
+const SCHEMAS_ROOT = findSchemasRoot();
 
 function loadFixture(name: string): any {
   const fullPath = path.join(FIXTURES_ROOT, `${name}.json`);

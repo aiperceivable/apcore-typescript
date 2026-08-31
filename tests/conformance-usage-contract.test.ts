@@ -19,7 +19,7 @@ import { UsageCollector, UsageMiddleware } from '../src/observability/usage.js';
 import { UsageModule, UsageSummaryModule } from '../src/sys-modules/usage.js';
 import { jsonSchemaToTypeBox } from '../src/schema/loader-pure.js';
 import { SchemaValidator } from '../src/schema/validator.js';
-import { findFixturesRoot } from './spec-repo.js';
+import { findFixturesRoot, findSchemasRoot } from './spec-repo.js';
 
 interface RecordSpec {
   at_offset: string;
@@ -48,7 +48,7 @@ const OFFSET = /^-(\d+)([hd])$/;
 // driver_contract.output_validates_against_the_canonical_schema: the same files
 // the spec repo ships, not a copy. `additionalProperties: false` is the point —
 // a field one SDK emits and the others do not fails here.
-const SCHEMAS_DIR = path.resolve(findFixturesRoot(), '..', '..', 'schemas');
+const SCHEMAS_DIR = findSchemasRoot();
 const SCHEMA_FOR: Record<string, string> = {
   'system.usage.summary': 'sys-usage-summary.schema.json',
   'system.usage.module': 'sys-usage-module.schema.json',

@@ -23,7 +23,7 @@ import { Config, CONSTRAINTS, _globalNsRegistry } from '../src/config.js';
 import { DEFAULTS } from '../src/config-defaults.js';
 import { FRAMEWORK_CONFIG_KEYS } from '../src/config-key-surface.js';
 import { ConfigError } from '../src/errors.js';
-import { findFixturesRoot } from './spec-repo.js';
+import { findFixturesRoot, findSchemasRoot } from './spec-repo.js';
 
 interface GovernanceFixture {
   allowed_keys: string[];
@@ -355,7 +355,7 @@ describe('Conformance: unknown keys inside a framework section', () => {
 });
 
 describe('default tiers mirror the canonical schemas (A-D-021)', () => {
-  const schemasRoot = path.resolve(findFixturesRoot(), '..', '..', 'schemas');
+  const schemasRoot = findSchemasRoot();
 
   /** Every `default:` a schema declares, as full dot-paths. */
   function schemaDefaults(node: unknown, prefix = ''): Record<string, unknown> {
