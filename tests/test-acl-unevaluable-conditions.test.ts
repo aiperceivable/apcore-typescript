@@ -18,6 +18,7 @@ import { join } from 'node:path';
 import { ACL } from '../src/acl.js';
 import type { ACLRule, AuditEntry, RuleValidationFinding } from '../src/acl.js';
 import type { ACLConditionHandler } from '../src/acl-handlers.js';
+import { ACLRuleError } from '../src/errors.js';
 import { Context, Identity } from '../src/context.js';
 import { ExecutionPolicy, PolicyRule } from '../src/policy.js';
 import type { PolicyCallSite, PolicyDecision } from '../src/policy.js';
@@ -557,12 +558,33 @@ describe('§6.1.4.1: a callers/targets that is not a list of strings is unevalua
     await expect(acl.asyncCheck('attacker', 'target.b', ctxWith())).resolves.toBe(false);
   });
 
-  it('an empty list is a well-formed rule that never matches', () => {
-    // §6.5 keeps this a plain non-match — it is not a structural fault.
+  // This pair replaces a test that asserted the opposite, and is deliberately
+  // two tests rather than a deletion so the reversal stays legible. It read:
+  //
+  //   it('an empty list is a well-formed rule that never matches', ...)
+  //     // §6.5 keeps this a plain non-match — it is not a structural fault.
+  //     expect(acl.check(...)).toBe(true);
+  //     expect(entries[0].handlerError).toBeNull();
+  //
+  // That reading is what spec v1.31.0 (§6.2.1, apcore#112) reverses. §6.5's
+  // edge-case table required an empty list to make the rule "never match",
+  // which on a `deny` rule under `defaultEffect: 'allow'` is a FAIL-OPEN: the
+  // call the rule was written to block is permitted. Arity is now closed at
+  // every door, and the value assigned onto a constructed rule — the one route
+  // no door covers — is a §6.1.4.1 precheck fault. The full contract lives in
+  // `tests/acl-pattern-arity_spec.test.ts`.
+
+  it('an empty list is REJECTED at construction, not accepted as a narrow rule', () => {
+    expect(() => new ACL([ruleWithCallers('deny', [])], 'allow')).toThrow(ACLRuleError);
+  });
+
+  it('an empty list assigned onto a constructed rule is unevaluable, so a deny rule DENIES', () => {
     const entries: AuditEntry[] = [];
-    const acl = new ACL([ruleWithCallers('deny', [])], 'allow', (e) => entries.push(e));
-    expect(acl.check('caller.a', 'target.b', ctxWith())).toBe(true);
-    expect(entries[0].handlerError).toBeNull();
+    const rule = ruleWithCallers('deny', ['*']);
+    const acl = new ACL([rule], 'allow', (e) => entries.push(e));
+    rule.callers = [];
+    expect(acl.check('caller.a', 'target.b', ctxWith())).toBe(false);
+    expect(entries[0].handlerError).toContain("'callers'");
   });
 });
 

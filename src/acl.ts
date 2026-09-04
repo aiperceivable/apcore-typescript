@@ -321,7 +321,89 @@ function childPath(prefix: string, key: string): string {
 }
 
 /**
- * §6.1.4.1 — `callers` and `targets` MUST be lists of strings.
+ * The two compound operators §6.2.1 defines for a pattern array.
+ *
+ * Reserved by **equality**, never by prefix or substring: `$orders.*` is an
+ * ordinary pattern that merely begins with the same character, and an
+ * implementation testing `p.startsWith('$')` would refuse a legal policy.
+ */
+const PATTERN_OPERATORS = new Set<string>(['$or', '$not']);
+
+/**
+ * §6.2.1 (v1.31.0, #112) — describe why a pattern array's shape is illegal, or
+ * `null` when it is legal.
+ *
+ * A pattern array is **FLAT**: the operators do not nest, there is no
+ * precedence, an operand is always a plain pattern string, and there is exactly
+ * one operator position — index 0. `$or` / `$not` therefore have two different
+ * grammars in this specification and only the one in `conditions` (§6.1.1)
+ * nests. The set of legal shapes is closed:
+ *
+ *   1. the array MUST NOT be empty;
+ *   2. every element MUST be a non-empty string;
+ *   3. `$or` at index 0 MUST be followed by at least one pattern;
+ *   4. `$not` at index 0 MUST be followed by exactly one pattern;
+ *   5. `$or` / `$not` MUST NOT appear at any index other than 0.
+ *
+ * Everything outside that set can never match, so a rule carrying it is not a
+ * narrow rule but no rule at all: through v1.30.0 all three SDKs returned
+ * `false` from the matcher for `[]`, `['$or']` and `['$not']`, reading an arity
+ * fault as a scope decision. On an `allow` rule that is merely useless; on a
+ * `deny` rule under `defaultEffect: 'allow'` it is a **fail-open** — the call
+ * the operator wrote the rule to block is permitted, by a rule that loaded
+ * without error and a validator that called it clean. `['$not', p1, p2, …]` was
+ * worse than inert: every SDK consulted `p1` and dropped the rest, so an
+ * `allow` rule excluding two targets GRANTED the second one.
+ *
+ * The checks run most-basic-first — empty array, empty element, reserved token
+ * out of position, operator arity — so the message names the fault an operator
+ * has to fix first rather than a consequence of it.
+ *
+ * @param patterns - Already known to hold only strings. The element TYPE is
+ *   §6.1.4.1's question and keeps precedence over this one, because an array
+ *   whose element 0 is not a string has no meaningful arity reading.
+ */
+function describePatternArrayShape(patterns: readonly string[]): string | null {
+  if (patterns.length === 0) {
+    return (
+      'the array is empty, so the rule can never match — write ["*"] if "everything" ' +
+      'was meant, or delete the rule if "nothing" was'
+    );
+  }
+
+  const emptyIndex = patterns.indexOf('');
+  if (emptyIndex !== -1) {
+    return `element ${emptyIndex} is the empty string, which matches no legal module ID`;
+  }
+
+  const strayIndex = patterns.findIndex((p, i) => i > 0 && PATTERN_OPERATORS.has(p));
+  if (strayIndex !== -1) {
+    return (
+      `'${patterns[strayIndex]}' appears at index ${strayIndex}, and a pattern array is FLAT — ` +
+      'the operators do not nest, there is no precedence, and index 0 is the only operator ' +
+      "position. `['$or', '$not', 'a']` is not or-of-not and `['api.*', '$not', 'cli.*']` is " +
+      'not "api.* but not cli.*"; no such form exists'
+    );
+  }
+
+  const first = patterns[0];
+  if (first === '$or' && patterns.length < 2) {
+    return "'$or' at index 0 must be followed by at least one pattern — this is an OR over nothing";
+  }
+  if (first === '$not' && patterns.length !== 2) {
+    const operands = patterns.length - 1;
+    return operands === 0
+      ? "'$not' at index 0 must be followed by exactly one pattern — this negates nothing"
+      : `'$not' at index 0 takes exactly one operand and this carries ${operands}. Before ` +
+          'v1.31.0 every SDK consulted the first and dropped the rest, so an allow rule ' +
+          'GRANTED every operand after it — write two rules (§6.2.1, §6.3)';
+  }
+  return null;
+}
+
+/**
+ * §6.1.4.1 — `callers` and `targets` MUST be lists of strings, and (v1.31.0,
+ * #112) their **shape** must be one §6.2.1 defines.
  *
  * A bare string is iterable in several host languages, so `callers: "admin.*"`
  * written where `["admin.*"]` was meant is read character by character and its
@@ -330,30 +412,171 @@ function childPath(prefix: string, key: string): string {
  * fails closed but violates `Contract: ACL.check`'s "MUST NOT raise to
  * indicate a deny". Either way the value must never be read as a pattern set:
  * it is a malformed rule, and §6.1.1's effect table decides what that means.
+ *
+ * The arity half is not disposed of the same way as the type half. `ACL.load`
+ * deliberately permitted an empty `callers` / `targets` — only omission was
+ * rejected — so a plain YAML file reached it, and a shape fault is now a
+ * precheck fault on exactly the same terms as a type fault: the rule's scope is
+ * unreadable, the rule is UNEVALUABLE, and §6.1.1's effect table decides. There
+ * is no partially-readable tier: `targets: []` is legible as an empty scope in
+ * a way `targets: 3` is not, and acting on that difference is the
+ * per-implementation judgement call that produced three different answers in
+ * #100. In particular §6.1.1 rule 5's "unknowable scope counts as scope"
+ * applies unchanged, so a rule carrying `approval: 'required'` still raises the
+ * pending requirement.
  */
 function precheckPatternField(
   field: 'callers' | 'targets',
   value: unknown,
   out: RuleFault[],
 ): void {
-  let detail: string | null = null;
+  let message: string | null = null;
   if (!Array.isArray(value)) {
-    detail = `got ${aclTypeName(value)}`;
+    message = `ACL rule field '${field}' must be a list of strings, got ${aclTypeName(value)}`;
   } else {
     const badIndex = value.findIndex((p) => typeof p !== 'string');
     if (badIndex !== -1) {
-      detail = `got a list whose element ${badIndex} is ${aclTypeName(value[badIndex])}`;
+      message =
+        `ACL rule field '${field}' must be a list of strings, got a list whose element ` +
+        `${badIndex} is ${aclTypeName(value[badIndex])}`;
+    } else {
+      // §6.2.1 (v1.31.0, #112) — the SHAPE branch, and deliberately the
+      // backstop rather than the primary mechanism: every entry point that
+      // accepts a rule now rejects these outright, so the only route left to
+      // here is a value assigned onto an already-constructed rule. `ACLRule`
+      // is a plain interface with mutable properties, so `rule.targets = []`
+      // bypasses every constructor — and unlike an unrecognised `effect`,
+      // which is never read again once the doors are closed, a mutated
+      // pattern array IS read: the matcher consults it on the next `check()`.
+      //
+      // Reached only after the element-type scan above, so a single field
+      // yields at most one fault and §6.1.4.1's TYPE fault keeps precedence:
+      // an array whose element 0 is not a string has no meaningful arity
+      // reading.
+      const shape = describePatternArrayShape(value as string[]);
+      if (shape !== null) {
+        message = `ACL rule field '${field}' has an illegal pattern-array shape: ${shape}`;
+      }
     }
   }
-  if (detail === null) return;
+  if (message === null) return;
   out.push({
     path: field,
     key: null,
-    message: `ACL rule field '${field}' must be a list of strings, ${detail}`,
+    message,
     // A structural fault is resolvable on neither evaluation path.
     syncResolvable: false,
     asyncResolvable: false,
   });
+}
+
+/**
+ * §6.2.1 tier 2 (v1.31.0, #112) — a pattern array that is well-formed under
+ * every tier-1 clause and still matches **no legal module ID**, or `null` when
+ * it can match something.
+ *
+ * Reported by {@link ACL.validateRules} and reachable from nowhere else. It is
+ * deliberately NOT a {@link RuleFault} the precheck produces: such an array
+ * **MUST NOT** be rejected, **MUST NOT** reach `handler_error`, and **MUST NOT**
+ * change any access decision. A `deny` rule with `targets: ['$not', '*']` still
+ * lets an unrelated target fall through to `defaultEffect` exactly as it did
+ * before v1.31.0 — the finding is the whole of the change for it.
+ *
+ * The split from tier 1 is not tidiness. Tier 1's predicate is finite and
+ * structural, so every SDK reports the same set and rejecting is safe. This one
+ * reasons about the **match relation**, which §6.2's algorithm defines but does
+ * not close — a future pattern feature changes which arrays are satisfiable. An
+ * incomplete predicate is survivable in a validator and not at a door: a
+ * rejection whose predicate differed between SDKs would mean the same ACL file
+ * loads in one language and fails in another, which is the cross-language split
+ * §6.1.5 exists to prevent. Divergence in this finding set is therefore
+ * acceptable and expected, and §6.1.3's sentence governs: this is diagnostics,
+ * not enforcement.
+ *
+ * The criterion is normative; the shapes below are a MUST-detect **minimum**
+ * and not a closed set — enumerating where a principle belonged is the mistake
+ * §6.1.1 corrected in v1.25.0.
+ *
+ * @param patterns - Already known to satisfy every tier-1 clause.
+ */
+function describeNeverMatchingPatternField(
+  field: 'callers' | 'targets',
+  patterns: readonly string[],
+): string | null {
+  if (patterns[0] === '$not') {
+    // `!true` is false for every input, so the rule fires for nothing. The
+    // criterion is "matches every module ID", not the single literal `*`.
+    const operand = patterns[1];
+    if (operand !== undefined && isUniversalPattern(operand)) {
+      return (
+        `'$not' negates '${operand}', which matches every module ID, so the rule ` +
+        'fires for none. "Not everything" is well-formed and protects nothing'
+      );
+    }
+    return null;
+  }
+  // Flat list and explicit `$or` are both OR-of-operands, so the array matches
+  // nothing only when every operand does.
+  const operands = patterns[0] === '$or' ? patterns.slice(1) : patterns;
+  if (operands.length > 0 && operands.every((p) => matchesNoModuleId(field, p))) {
+    return (
+      "every pattern is '@external' — the caller-side sentinel §6.5 substitutes for a null " +
+      'caller_id. No module ID is `@external`, so as a TARGET pattern it matches nothing. It ' +
+      'stays entirely legal in `callers`, which is what it is for'
+    );
+  }
+  return null;
+}
+
+/**
+ * True for a pattern that matches **every** module ID — `*`, `**`, or any
+ * pattern consisting only of wildcards (§6.2's algorithm treats a run of `*`
+ * exactly as one).
+ */
+function isUniversalPattern(pattern: string): boolean {
+  return pattern.length > 0 && /^\*+$/.test(pattern);
+}
+
+/**
+ * True for a pattern that can match no legal module ID **on this field**.
+ *
+ * Field-specific on purpose: `@external` is what a rule about top-level entry
+ * points is written with in `callers`, and is unmatchable in `targets`. A check
+ * that fired on both has read the rule as being about the token rather than
+ * about the field.
+ */
+function matchesNoModuleId(field: 'callers' | 'targets', pattern: string): boolean {
+  return field === 'targets' && pattern === '@external';
+}
+
+/**
+ * §6.2.1 tier 2 — the validator-only findings for one rule, in field order.
+ *
+ * Skips a field that already carries a tier-1 or §6.1.4.1 fault: it is reported
+ * once, by the mechanism that also decides, and "matches nothing" is not a
+ * second opinion worth having about an array that cannot be read at all.
+ */
+function neverMatchingFaults(rule: ACLRule): RuleFault[] {
+  const out: RuleFault[] = [];
+  for (const field of ['callers', 'targets'] as const) {
+    const value = rule[field];
+    if (!Array.isArray(value)) continue;
+    if (value.some((p) => typeof p !== 'string')) continue;
+    const patterns = value as string[];
+    if (describePatternArrayShape(patterns) !== null) continue;
+    const detail = describeNeverMatchingPatternField(field, patterns);
+    if (detail === null) continue;
+    out.push({
+      path: field,
+      key: null,
+      message: `ACL rule field '${field}' can match no module ID: ${detail}`,
+      // §6.1.3 rule 3's keyless structural fault shape: a null key and both
+      // resolvability flags false.
+      syncResolvable: false,
+      asyncResolvable: false,
+    });
+  }
+  return out;
 }
 
 /**
@@ -524,6 +747,67 @@ function rejectInvalidEffect(effect: unknown, index: number): void {
   );
 }
 
+/**
+ * §6.2.1 (v1.31.0, #112) — reject a `callers` / `targets` whose pattern-array
+ * shape is outside the closed set {@link describePatternArrayShape} states.
+ *
+ * **Closing the doors is the mechanism**, exactly as it is for the `effect`
+ * value set (§6.1.5) and the rule key set (§6.1.2): this runs at file loading,
+ * at direct construction and at runtime insertion alike, on §6.1.6 rule 3's
+ * reasoning. `schemas/acl-config.schema.json` has declared `minItems: 1` on
+ * both fields since the file existed and `minLength: 1` on their items, and
+ * nothing enforced either, because no implementation validates an ACL file
+ * against the schema at load time — the third instance of that shape after
+ * #107 and #111.
+ *
+ * A fail-stop is the right answer here because the affected population is, by
+ * construction, deployments carrying a rule that provably does nothing. A
+ * boot-time error naming `targets` is immediately actionable; "your deployment
+ * silently began permitting the call it was written to block" is not.
+ *
+ * The field's **type** is deliberately not this function's business. A
+ * `callers` that is not a list of strings cannot be produced by the loader
+ * (which rejects a non-list) and reaches `check()` only through a cast, where
+ * §6.1.4.1's precheck classifies it as unevaluable. Faulting it here as well
+ * would change that long-standing classification for a shape this section is
+ * not about.
+ *
+ * @param index - The rule's position, which every TypeScript entry point has:
+ *   the loader and the constructor take an ordered list, and `addRule` inserts
+ *   at the head. §6.1.5 forbids INVENTING a position, not naming a real one.
+ */
+function rejectMalformedPatternField(
+  field: 'callers' | 'targets',
+  value: unknown,
+  index: number,
+): void {
+  if (!Array.isArray(value)) return;
+  if (value.some((p) => typeof p !== 'string')) return;
+  const detail = describePatternArrayShape(value as string[]);
+  if (detail === null) return;
+  throw new ACLRuleError(
+    `Rule ${index} '${field}' has an illegal pattern-array shape: ${detail}. ` +
+      'PROTOCOL_SPEC §6.2.1 closes the set of legal shapes — at least one operand, every ' +
+      "element a non-empty string, '$or' at index 0 followed by at least one pattern, '$not' " +
+      "by exactly one, and '$or' / '$not' nowhere but index 0 — because a shape that can " +
+      'never match makes the rule inert, and an inert deny rule under ' +
+      "default_effect: 'allow' permits the call it was written to block.",
+  );
+}
+
+/**
+ * §6.2.1 — both pattern fields, checked in the order a reader reads the rule.
+ *
+ * Applied to `callers` and `targets` **identically**: §6.2.1 constrains them the
+ * same way, and an implementation validating one and inferring the other is the
+ * specific defect the conformance fixture's `*_in_callers_is_rejected` mirrors
+ * exist to catch.
+ */
+function rejectMalformedPatternFields(rule: ACLRule, index: number): void {
+  rejectMalformedPatternField('callers', rule.callers, index);
+  rejectMalformedPatternField('targets', rule.targets, index);
+}
+
 /** The two values §6.1.6 defines for a rule's `approval` field. */
 const APPROVAL_VALUES = new Set<string>(['required', 'not_required']);
 
@@ -610,11 +894,17 @@ export function _parseAclRule(rawRule: unknown, index: number): ACLRule {
   if (!Array.isArray(callers)) {
     throw new ACLRuleError(`Rule ${index} 'callers' must be a list, got ${typeof callers}`);
   }
+  // §6.2.1 (v1.31.0) — the same check `new ACL([...])` and `addRule()` run, not
+  // a second copy of it. Sits beside the type check because a YAML file reaches
+  // BOTH: `ACL.load` rejects an OMITTED `callers` / `targets` and, until
+  // v1.31.0, permitted an empty one.
+  rejectMalformedPatternField('callers', callers, index);
 
   const targets = ruleObj['targets'];
   if (!Array.isArray(targets)) {
     throw new ACLRuleError(`Rule ${index} 'targets' must be a list, got ${typeof targets}`);
   }
+  rejectMalformedPatternField('targets', targets, index);
 
   // `conditions` was previously taken with a bare `as` cast, which asserts a shape
   // TypeScript cannot check at runtime. A scalar therefore reached the gate, where
@@ -989,6 +1279,11 @@ export class ACL {
     // meaningless one: `effect: 'Deny'` with `approval: 'required'` must fail on
     // the effect rather than slip past a `!== 'deny'` early return.
     this._rules.forEach((rule, i) => rejectInvalidEffect(rule.effect, i));
+    // §6.2.1 (v1.31.0, #112) — a pattern array's SHAPE is closed at this door
+    // too. Runs after the effect check so a rule with both faults reports the
+    // effect first, which is the order `ACL.load()` reports them in and the
+    // order an operator reads the rule in.
+    this._rules.forEach(rejectMalformedPatternFields);
     // §6.1.6 rule 2 is fatal, not a warning: unlike an unregistered condition
     // key (§6.1.2 rule 1, which must not break bootstrap order) a
     // `deny` + `approval: required` rule can never become meaningful later.
@@ -1030,6 +1325,12 @@ export class ACL {
    * structural faults in `callers` and `targets` as well (§6.1.4.1), not only
    * faults inside `conditions`.
    *
+   * It is also the **only** reporter of §6.2.1's tier 2 (v1.31.0, #112): a
+   * pattern array that is well-formed under every structural rule and still
+   * matches no legal module ID — `['$not', '*']`, or `['@external']` as a
+   * `targets` pattern. Such a rule protects nothing and is worth saying so
+   * about, but it loads, it is never rejected, and it changes no decision.
+   *
    * Condition handlers are registered at runtime into a process-wide registry
    * and `acl.root` discovery commonly runs during bootstrap, ahead of the
    * application code that registers them — so loading warns rather than
@@ -1051,7 +1352,14 @@ export class ACL {
     const rules = this._rules.slice();
     for (let ruleIndex = 0; ruleIndex < rules.length; ruleIndex++) {
       const rule = rules[ruleIndex];
-      for (const fault of precheckRule(rule, 'sync')) {
+      // §6.2.1 tier 2 is reachable from HERE and from nowhere else. It must not
+      // travel through `precheckRule`, which also feeds `handler_error` and the
+      // decision: a well-formed array that happens to match nothing is a
+      // diagnostic, never a denial. Re-sorted because the two sources are
+      // concatenated; a field carrying a tier-1 fault yields no tier-2 one, so
+      // the paths cannot collide.
+      const faults = [...precheckRule(rule, 'sync'), ...neverMatchingFaults(rule)].sort(byPath);
+      for (const fault of faults) {
         findings.push(
           Object.freeze({
             ruleIndex,
@@ -1370,6 +1678,19 @@ export class ACL {
     return Object.freeze({ access, approvalRequired, matchedRuleIndex: null, reason });
   }
 
+  /**
+   * Async twin of {@link ACL._matchPatterns} — a separate code path, so §6.2.1
+   * has to be honoured in both.
+   *
+   * The arity guards below are **defence in depth and nothing more** as of
+   * v1.31.0 (#112): every entry point rejects an illegal shape and
+   * {@link precheckPatternField} classifies whatever arrives around them as
+   * unevaluable *before* the rule reaches this matcher, so no illegal array can
+   * get here. They are kept rather than deleted because reading an arity fault
+   * as a non-match — which is exactly what they used to do — is the fail-open
+   * this change exists to end, and a `false` return is the safe residue if some
+   * future path did reach them.
+   */
   private _matchPatternsAsync(patterns: string[], value: string, context: Context | null): boolean {
     if (patterns.length === 0) return false;
 
@@ -1480,6 +1801,15 @@ export class ACL {
     return matchPattern(pattern, value);
   }
 
+  /**
+   * §6.2.1 — match a pattern array against one value.
+   *
+   * The array is FLAT: index 0 may carry `$or` or `$not` and every later
+   * element is a plain pattern, which is why this reads one operator and never
+   * recurses. As in {@link ACL._matchPatternsAsync}, the arity guards are
+   * defence in depth only — an illegal shape is rejected at every door and
+   * classified unevaluable by the precheck before it can reach here (#112).
+   */
   private _matchPatterns(patterns: string[], value: string, context: Context | null): boolean {
     if (patterns.length === 0) return false;
 
@@ -1675,8 +2005,9 @@ export class ACL {
    * runtime and a key can still become resolvable later, so failing would break
    * bootstrap order. A malformed rule **throws** {@link ACLRuleError}, because
    * nothing later can make it meaningful — an `effect` outside `allow` / `deny`
-   * (§6.1.5) or `approval: 'required'` on a `deny` rule (§6.1.6 rule 2). A
-   * throw leaves the rule list untouched.
+   * (§6.1.5), a `callers` / `targets` whose pattern-array shape is outside
+   * §6.2.1's closed set, or `approval: 'required'` on a `deny` rule (§6.1.6
+   * rule 2). A throw leaves the rule list untouched.
    */
   addRule(rule: ACLRule): void {
     // §6.1.5 and §6.1.6 rule 2 — both rejected before insertion, so neither a
@@ -1687,6 +2018,9 @@ export class ACL {
     // TypeScript signals an unconstructable value, the same way the constructor
     // does, so there is no fallible twin to add beside it.
     rejectInvalidEffect(rule.effect, 0);
+    // §6.2.1 (v1.31.0, #112). Index 0 is where `unshift` puts it, so the
+    // message names a real position rather than an invented one.
+    rejectMalformedPatternFields(rule, 0);
     rejectDenyWithApproval(rule, 0);
     this._rules.unshift(rule);
     // Rule indices shifted by one; drop the per-index dedupe so a §6.5 warning

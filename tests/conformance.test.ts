@@ -64,7 +64,7 @@ import type { ApprovalResult } from '../src/approval.js';
 import { resolveDependencies } from '../src/registry/dependencies.js';
 import { parseDependencies } from '../src/registry/metadata-pure.js';
 import { classNameToSegment, discoverMultiClass } from '../src/registry/multi-class.js';
-import { ModuleIdConflictError, CircuitBreakerOpenError } from '../src/errors.js';
+import { ModuleIdConflictError, CircuitBreakerOpenError, ACLRuleError } from '../src/errors.js';
 import {
   CircuitBreakerWrapper,
   CircuitState,
@@ -285,6 +285,25 @@ describe('apcore Conformance Suite (TypeScript)', () => {
           description: r.description || '',
           conditions: r.conditions || null,
         }));
+        // §6.2.1 (spec v1.31.0, apcore#112) — a pattern array whose shape is
+        // outside §6.2.1's closed set is REJECTED at every entry point, so
+        // `empty_callers_matches_none` and `empty_targets_matches_none` can no
+        // longer be constructed. They are NOT skipped: the driver asserts the
+        // rejection, which is a strictly stronger statement than the non-match
+        // the two cases describe and leaves their own `expected: false` true
+        // (an unevaluable `allow` rule does not grant either). Both cases are
+        // deleted spec-side in the pass that lands
+        // `conformance/fixtures/acl_pattern_arity.json`, which covers the shape
+        // at both layers and covers it better; this branch is dead from that
+        // point and should be removed with them.
+        const rejectedShape = rules.some(
+          (r: ACLRule) => r.callers.length === 0 || r.targets.length === 0,
+        );
+        if (rejectedShape) {
+          expect(tc.expected).toBe(false);
+          expect(() => new ACL(rules, tc.default_effect)).toThrow(ACLRuleError);
+          return;
+        }
         const acl = new ACL(rules, tc.default_effect);
 
         let ctx: Context | null = null;
