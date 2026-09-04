@@ -821,8 +821,12 @@ const APPROVAL_VALUES = new Set<string>(['required', 'not_required']);
  * Applied at every entry point that accepts rules — file loading, direct
  * construction and runtime insertion — because a rule built in code is exactly
  * as meaningless as one parsed from YAML.
+ *
+ * Takes the two fields it reads rather than a whole {@link ACLRule}, so the
+ * load path can run it in §6.2.1 point 2's order — after `effect`, before
+ * `callers` / `targets` — while the rule object is still being assembled.
  */
-function rejectDenyWithApproval(rule: ACLRule, index: number): void {
+function rejectDenyWithApproval(rule: Pick<ACLRule, 'effect' | 'approval'>, index: number): void {
   if (rule.approval !== 'required') return;
   if (rule.effect !== 'deny') return;
   throw new ACLRuleError(
@@ -883,12 +887,31 @@ export function _parseAclRule(rawRule: unknown, index: number): ACLRule {
   // was dropped in silence until #107.
   rejectUnknownRuleKeys(index, ruleObj);
 
-  // §6.1.5 — the same check `new ACL([...])` and `addRule()` run, not a second
-  // copy of it. Kept here as well as there so the load path still reports a bad
-  // `effect` ahead of a malformed `callers` / `targets`, which is the order the
-  // operator reads the rule in.
+  // §6.2.1 point 2 (v1.31.0) — the three axes are validated in ONE order at
+  // every door: `effect`, then `approval`, then `callers` / `targets`. A rule
+  // bad on more than one of them is refused for the first it fails, so the same
+  // rule produces the same error in every implementation and in every SDK.
+  // `effect` leads because `rejectDenyWithApproval` reads it to decide whether
+  // the pair is the meaningless one.
   rejectInvalidEffect(ruleObj['effect'], index);
   const effect = ruleObj['effect'] as string;
+
+  // §6.1.6: `approval` is optional and its absence means 'not_required', so
+  // every rule written before v1.28.0 keeps its meaning exactly. A value
+  // outside the two-member enumeration is rejected rather than coerced — a
+  // governance field set by truthiness is a decision made by accident.
+  const rawApproval = ruleObj['approval'];
+  let approval: ACLApproval = 'not_required';
+  if (rawApproval !== undefined && rawApproval !== null) {
+    if (typeof rawApproval !== 'string' || !APPROVAL_VALUES.has(rawApproval)) {
+      throw new ACLRuleError(
+        `Rule ${index} has invalid approval '${String(rawApproval)}', ` +
+          "must be 'required' or 'not_required'",
+      );
+    }
+    approval = rawApproval as ACLApproval;
+  }
+  rejectDenyWithApproval({ effect, approval }, index);
 
   const callers = ruleObj['callers'];
   if (!Array.isArray(callers)) {
@@ -917,23 +940,7 @@ export function _parseAclRule(rawRule: unknown, index: number): ACLRule {
     );
   }
 
-  // §6.1.6: `approval` is optional and its absence means 'not_required', so
-  // every rule written before v1.28.0 keeps its meaning exactly. A value
-  // outside the two-member enumeration is rejected rather than coerced — a
-  // governance field set by truthiness is a decision made by accident.
-  const rawApproval = ruleObj['approval'];
-  let approval: ACLApproval = 'not_required';
-  if (rawApproval !== undefined && rawApproval !== null) {
-    if (typeof rawApproval !== 'string' || !APPROVAL_VALUES.has(rawApproval)) {
-      throw new ACLRuleError(
-        `Rule ${index} has invalid approval '${String(rawApproval)}', ` +
-          "must be 'required' or 'not_required'",
-      );
-    }
-    approval = rawApproval as ACLApproval;
-  }
-
-  const rule: ACLRule = {
+  return {
     callers: callers as string[],
     targets: targets as string[],
     effect,
@@ -941,8 +948,6 @@ export function _parseAclRule(rawRule: unknown, index: number): ACLRule {
     conditions: (rawConditions as Record<string, unknown>) ?? null,
     approval,
   };
-  rejectDenyWithApproval(rule, index);
-  return rule;
 }
 
 /** True only for a plain object — excludes null, arrays and every primitive. */
@@ -1279,15 +1284,17 @@ export class ACL {
     // meaningless one: `effect: 'Deny'` with `approval: 'required'` must fail on
     // the effect rather than slip past a `!== 'deny'` early return.
     this._rules.forEach((rule, i) => rejectInvalidEffect(rule.effect, i));
-    // §6.2.1 (v1.31.0, #112) — a pattern array's SHAPE is closed at this door
-    // too. Runs after the effect check so a rule with both faults reports the
-    // effect first, which is the order `ACL.load()` reports them in and the
-    // order an operator reads the rule in.
-    this._rules.forEach(rejectMalformedPatternFields);
     // §6.1.6 rule 2 is fatal, not a warning: unlike an unregistered condition
     // key (§6.1.2 rule 1, which must not break bootstrap order) a
     // `deny` + `approval: required` rule can never become meaningful later.
     this._rules.forEach(rejectDenyWithApproval);
+    // §6.2.1 (v1.31.0, #112) — a pattern array's SHAPE is closed at this door
+    // too, and it is validated LAST: §6.2.1 point 2 fixes one order for the
+    // three axes at every door — `effect`, then `approval`, then the pattern
+    // fields — so a rule bad on more than one of them is refused for the same
+    // axis in every implementation rather than for whichever one an SDK
+    // happened to check first.
+    this._rules.forEach(rejectMalformedPatternFields);
     // §6.1.2: direct construction is an entry point that accepts rules, so it
     // is covered by load-time validation too — `ACL.load()` reaches this same
     // constructor, which is why the file path needs no separate hook.
@@ -2017,11 +2024,21 @@ export class ACL {
     // contract, which §6.1.6 rule 3 says is not an exemption — throwing is how
     // TypeScript signals an unconstructable value, the same way the constructor
     // does, so there is no fallible twin to add beside it.
+    //
+    // §6.2.1 point 2 (v1.31.0) fixes the order of the three axes at every door
+    // — `effect`, then `approval`, then `callers` / `targets`.
     rejectInvalidEffect(rule.effect, 0);
+    rejectDenyWithApproval(rule, 0);
     // §6.2.1 (v1.31.0, #112). Index 0 is where `unshift` puts it, so the
     // message names a real position rather than an invented one.
+    //
+    // This runs on the rule as it is HANDED TO US, whatever its history: a rule
+    // that was well-formed when constructed and has since had `callers` or
+    // `targets` assigned is re-validated here and rejected. §6.2.1 point 1
+    // requires exactly that and forbids relying on a construction-time check to
+    // cover this door — unlike a closed `effect`, which is never read again, a
+    // mutated pattern array IS read by the matcher on the next `check()`.
     rejectMalformedPatternFields(rule, 0);
-    rejectDenyWithApproval(rule, 0);
     this._rules.unshift(rule);
     // Rule indices shifted by one; drop the per-index dedupe so a §6.5 warning
     // is not suppressed for a different rule that inherited an old index.

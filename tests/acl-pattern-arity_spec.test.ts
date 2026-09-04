@@ -364,6 +364,137 @@ describe('§6.2.1 tier 1: a pattern array shape outside the closed set is reject
 });
 
 // ---------------------------------------------------------------------------
+// THE TWO POINTS OF ORDER — §6.2.1, "so three implementations cannot answer
+// them three ways". Neither is expressible in the conformance fixture:
+// `entry_points` deliberately carries no per-door expectation, so point 1 is
+// invisible to it, and point 2 is about WHICH refusal a rejecting door raises
+// where the fixture only asks whether it rejects. They live here instead.
+// ---------------------------------------------------------------------------
+
+describe('§6.2.1 point 1: addRule re-validates the rule it is handed', () => {
+  /**
+   * The rule offered to runtime insertion is validated AT THAT MOMENT, whatever
+   * its history. A construction-time check does not cover this door: `ACLRule`
+   * is a plain interface, so a rule that was well-formed when built can have
+   * `callers` or `targets` assigned before anyone hands it over, and unlike a
+   * closed `effect` — never read again — the matcher WILL read a pattern array
+   * on the next check(). §6.2.1 point 1 measured two of three implementations
+   * re-validating and one not; this is what keeps them from drifting apart
+   * again, since the fixture's `entry_points` cannot express the difference.
+   */
+  it('rejects a rule that was well-formed when constructed and has since been mutated', () => {
+    const rule: ACLRule = toRule({ callers: ['*'], targets: ['*'], effect: 'deny' });
+    rule.targets = [];
+    const acl = new ACL([], 'allow');
+    expect(() => acl.addRule(rule)).toThrow(ACLRuleError);
+    expect(() => acl.addRule(rule)).toThrow(/'targets' has an illegal pattern-array shape/);
+    // A throw leaves the rule list untouched — the fail-open the whole section
+    // is about is not reachable by swallowing the error.
+    expect(acl.rules.length).toBe(0);
+    expect(acl.check('api.gateway', 'cli.rm')).toBe(true); // defaultEffect, no rule
+  });
+
+  it('rejects a mutated callers too, and a mutation that survived an earlier insertion', () => {
+    // The rule was legal, WAS accepted at this door, and is offered again after
+    // a mutation. An implementation that remembered "this rule already passed"
+    // would take it.
+    const rule: ACLRule = toRule({ callers: ['api.*'], targets: ['*'], effect: 'allow' });
+    const acl = new ACL([], 'deny');
+    acl.addRule(rule);
+    expect(acl.rules.length).toBe(1);
+    rule.callers = ['$not'];
+    expect(() => acl.addRule(rule)).toThrow(ACLRuleError);
+    expect(acl.rules.length).toBe(1);
+  });
+});
+
+describe('§6.2.1 point 2: effect, then approval, then callers / targets', () => {
+  /**
+   * A rule bad on more than one axis is refused for the FIRST of the three it
+   * fails, so the same rule produces the same error in every implementation.
+   * §6.2.1 point 2 measured `{callers: [], targets: [], effect: "Allow"}`
+   * refused for its `effect` in one implementation and for its patterns in
+   * another, both conformant because nothing said otherwise.
+   */
+  function messageFrom(fn: () => unknown): string {
+    try {
+      fn();
+      return '<<accepted>>';
+    } catch (e) {
+      return e instanceof Error ? e.message : String(e);
+    }
+  }
+
+  /** The same rule offered at all three doors, since the order is per-door. */
+  function messagesAtEveryDoor(rule: ACLRule, defaultEffect: string): string[] {
+    const written = writeAclFile(
+      {
+        callers: rule.callers,
+        targets: rule.targets,
+        effect: rule.effect,
+        approval: rule.approval,
+      },
+      defaultEffect,
+    );
+    return [
+      messageFrom(() => ACL.load(written)),
+      messageFrom(() => new ACL([{ ...rule }], defaultEffect)),
+      messageFrom(() => new ACL([], defaultEffect).addRule({ ...rule })),
+    ];
+  }
+
+  it('reports the EFFECT for a rule whose effect and both pattern fields are bad', () => {
+    const rule = { ...toRule({ callers: [], targets: [], effect: 'Allow' }) };
+    for (const message of messagesAtEveryDoor(rule, 'deny')) {
+      expect(message).toMatch(/invalid effect 'Allow'/);
+      expect(message).not.toMatch(/pattern-array shape/);
+    }
+  });
+
+  it('reports the APPROVAL for a rule bad on approval and on its patterns', () => {
+    // §6.1.6 rule 2's deny-with-approval sits between the two: after `effect`,
+    // because it reads `effect` to decide whether the pair is the meaningless
+    // one, and before the pattern fields.
+    const rule = {
+      ...toRule({ callers: [], targets: ['*'], effect: 'deny', approval: 'required' }),
+    };
+    for (const message of messagesAtEveryDoor(rule, 'deny')) {
+      expect(message).toMatch(/approval: 'required' on an effect: 'deny' rule/);
+      expect(message).not.toMatch(/pattern-array shape/);
+    }
+  });
+
+  it('still reports the EFFECT when the approval pair is bad as well', () => {
+    // Three faults at once; `effect` leads all of them.
+    const rule = {
+      ...toRule({ callers: [], targets: [], effect: 'DENY', approval: 'required' }),
+    };
+    for (const message of messagesAtEveryDoor(rule, 'deny')) {
+      expect(message).toMatch(/invalid effect 'DENY'/);
+    }
+  });
+
+  it('reports the pattern fields when they are the only fault', () => {
+    // The ordering is a tie-break between faults, never a suppression: a rule
+    // whose only fault is its patterns is still refused for its patterns.
+    const rule = { ...toRule({ callers: ['*'], targets: ['$not'], effect: 'allow' }) };
+    for (const message of messagesAtEveryDoor(rule, 'deny')) {
+      expect(message).toMatch(/'targets' has an illegal pattern-array shape/);
+    }
+  });
+
+  it('reports callers before targets when both pattern fields are bad', () => {
+    // Not stated by point 2, which orders the three AXES. Within the pattern
+    // axis this is the order a reader reads the rule in, and it matches
+    // §6.1.3's lexicographic finding order for the same two paths.
+    const rule = { ...toRule({ callers: [], targets: [], effect: 'allow' }) };
+    for (const message of messagesAtEveryDoor(rule, 'deny')) {
+      expect(message).toMatch(/'callers' has an illegal pattern-array shape/);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // TIER 2 — semantic, reported by validateRules() and by nothing else
 // ---------------------------------------------------------------------------
 
