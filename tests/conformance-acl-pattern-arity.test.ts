@@ -68,7 +68,14 @@ interface Case {
   id: string;
   kind: 'closure' | 'backstop';
   note: string;
-  rule: Record<string, unknown>;
+  /** Exactly one of `rule` / `rules`; see {@link rulesOf}. */
+  rule?: Record<string, unknown>;
+  /**
+   * An ORDERED rule set, for the cross-rule half of §6.2.1 point 2. Offered at
+   * the `load` and `construct` doors only — `addRule()` takes one rule at a
+   * time and cannot express which of several bad rules is refused.
+   */
+  rules?: Record<string, unknown>[];
   default_effect: string;
   /** `closure` only — the doors the rule is offered at. */
   entry_points?: string[];
@@ -77,8 +84,19 @@ interface Case {
    * Which AXIS the refusal names (§6.2.1 point 2) — `expected_load` cannot see
    * it, since every one of these cases is bad on more than one axis and would
    * read as `reject` whichever fault an implementation happened to name.
+   *
+   * The four values mix two levels deliberately: `effect` and `approval` name
+   * axes, `callers` and `targets` name a FIELD within the single pattern axis,
+   * so either of the last two also asserts that the pattern axis is the one
+   * that fired.
    */
   expected_refused_axis?: string;
+  /**
+   * Which RULE the refusal names. The index chooses the rule and the axis order
+   * then chooses the fault inside it, so a driver asserting only the axis
+   * passes a rule set refused for the wrong rule on the right axis.
+   */
+  expected_refused_rule_index?: number;
   /** `backstop` only — one mutation or a list, applied in order. */
   mutate?: Mutation | Mutation[];
   mutation_route?: string;
@@ -118,31 +136,58 @@ function toRule(spec: Record<string, unknown>): ACLRule {
 }
 
 /**
- * Write the rule as an ACL file. YAML is a superset of JSON, so the rule is
+ * The case's rules in order, whichever shape it carries.
+ *
+ * A case declares either `rule` (one) or `rules` (an ordered list); the list
+ * form exists for the cross-rule half of §6.2.1 point 2, which one rule cannot
+ * express. Everything downstream reads this and never the raw fields, so the
+ * two shapes travel the same path through every door.
+ */
+function rulesOf(tc: Case): Record<string, unknown>[] {
+  if (tc.rules !== undefined) return tc.rules;
+  if (tc.rule !== undefined) return [tc.rule];
+  throw new Error(
+    `conformance driver: case '${tc.id}' carries neither 'rule' nor 'rules'. ` +
+      'Teach the driver, do not skip it.',
+  );
+}
+
+/**
+ * Write the rules as an ACL file. YAML is a superset of JSON, so each rule is
  * emitted as a flow mapping — which keeps an empty array an empty array rather
  * than something a hand-written block style might round-trip differently.
  */
-function writeAclFile(spec: Record<string, unknown>, defaultEffect: string): string {
+function writeAclFile(specs: readonly Record<string, unknown>[], defaultEffect: string): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'acl-arity-conf-'));
   const file = path.join(dir, 'acl.yaml');
   fs.writeFileSync(
     file,
-    `default_effect: ${defaultEffect}\nrules:\n  - ${JSON.stringify(toRule(spec))}\n`,
+    `default_effect: ${defaultEffect}\nrules:\n` +
+      specs.map((spec) => `  - ${JSON.stringify(toRule(spec))}\n`).join(''),
     'utf-8',
   );
   return file;
 }
 
-/** Push the case's rule through one door, returning the resulting ACL. */
+/** Push the case's rules through one door, returning the resulting ACL. */
 function openDoor(door: Door, tc: Case): ACL {
+  const specs = rulesOf(tc);
   switch (door) {
     case 'load':
-      return ACL.load(writeAclFile(tc.rule, tc.default_effect));
+      return ACL.load(writeAclFile(specs, tc.default_effect));
     case 'construct':
-      return new ACL([toRule(tc.rule)], tc.default_effect);
+      return new ACL(specs.map(toRule), tc.default_effect);
     case 'add_rule': {
+      // `addRule` takes one rule at a time, so the fixture never lists this
+      // door on a `rules` case — asserted rather than assumed, since silently
+      // inserting only the first rule would make a multi-rule case pass here
+      // for the wrong reason.
+      expect(
+        specs.length,
+        `case '${tc.id}' lists the add_rule door with ${specs.length} rules`,
+      ).toBe(1);
       const acl = new ACL([], tc.default_effect);
-      acl.addRule(toRule(tc.rule));
+      acl.addRule(toRule(specs[0]));
       return acl;
     }
   }
@@ -207,6 +252,22 @@ function assertRefusedAxis(caseId: string, axis: string, message: string): void 
   }
 }
 
+/**
+ * Assert that a refusal names the rule the case declares (§6.2.1 point 2).
+ *
+ * Every rejection message in this SDK opens with `Rule <index>`, so the index
+ * is read back off the message rather than inferred. The index chooses the
+ * rule and the axis order then chooses the fault inside it: a driver asserting
+ * only the axis passes a rule set refused for the wrong rule on the right axis,
+ * which is exactly the shape of the loader/constructor divergence these cases
+ * were written for.
+ */
+function assertRefusedRuleIndex(caseId: string, index: number, message: string): void {
+  const named = /Rule (\d+)/.exec(message);
+  expect(named, `${caseId}: refusal named no rule index: ${message}`).not.toBeNull();
+  expect(Number(named?.[1]), `${caseId}: refusal named the wrong rule: ${message}`).toBe(index);
+}
+
 /** The mutations a backstop case declares, as a list whatever its shape. */
 function mutations(tc: Case): Mutation[] {
   if (tc.mutate === undefined) return [];
@@ -234,13 +295,27 @@ describeIfPresent("Conformance: a pattern array's arity is closed (§6.2.1, spec
     expect(fixture.test_cases.length).toBeGreaterThan(0);
     for (const tc of fixture.test_cases) {
       expect(['closure', 'backstop'], `case '${tc.id}' declares an unknown kind`).toContain(tc.kind);
-      // An axis expectation on a case that is not refused would never be
-      // asserted — it would read as covered while nothing checked it.
-      if (tc.expected_refused_axis !== undefined) {
+      // Exactly one of the two case shapes, never both and never neither.
+      expect(
+        [tc.rule, tc.rules].filter((v) => v !== undefined).length,
+        `case '${tc.id}' must carry exactly one of 'rule' / 'rules'`,
+      ).toBe(1);
+      // `addRule` takes one rule at a time, so a rule SET has no per-rule door.
+      if (tc.rules !== undefined) {
         expect(
-          tc.expected_load,
-          `case '${tc.id}' declares an expected_refused_axis but is not a reject case`,
-        ).toBe('reject');
+          tc.entry_points ?? [],
+          `case '${tc.id}' offers a rule set at the add_rule door`,
+        ).not.toContain('add_rule');
+      }
+      // An order expectation on a case that is not refused would never be
+      // asserted — it would read as covered while nothing checked it.
+      for (const key of ['expected_refused_axis', 'expected_refused_rule_index'] as const) {
+        if (tc[key] !== undefined) {
+          expect(
+            tc.expected_load,
+            `case '${tc.id}' declares ${key} but is not a reject case`,
+          ).toBe('reject');
+        }
       }
     }
   });
@@ -273,21 +348,35 @@ describeIfPresent("Conformance: a pattern array's arity is closed (§6.2.1, spec
                 message = e instanceof Error ? e.message : String(e);
               }
               assertRefusedAxis(`${tc.id} (${door})`, tc.expected_refused_axis, message);
+              // ...and for the same RULE. Index dominates the axes, so a rule
+              // set can be refused on the right axis for the wrong rule — which
+              // is precisely what an implementation sweeping one axis across the
+              // whole list does, and what the axis assertion alone would miss.
+              if (tc.expected_refused_rule_index !== undefined) {
+                assertRefusedRuleIndex(
+                  `${tc.id} (${door})`,
+                  tc.expected_refused_rule_index,
+                  message,
+                );
+              }
             }
             // A throw leaves the rule list untouched, so a caller that
             // swallowed it cannot end up enforcing the rule anyway.
             if (door === 'add_rule') {
               const acl = new ACL([], tc.default_effect);
-              expect(() => acl.addRule(toRule(tc.rule))).toThrow(ACLRuleError);
+              expect(() => acl.addRule(toRule(rulesOf(tc)[0]))).toThrow(ACLRuleError);
               expect(acl.rules.length, `${door}: rejected rule was still inserted`).toBe(0);
             }
             continue;
           }
 
           const acl = openDoor(door, tc);
-          expect(acl.rules.length, `${door}: ${tc.note}`).toBe(1);
-          expect(acl.rules[0].callers, `${door}: ${tc.note}`).toEqual(tc.rule['callers']);
-          expect(acl.rules[0].targets, `${door}: ${tc.note}`).toEqual(tc.rule['targets']);
+          const specs = rulesOf(tc);
+          expect(acl.rules.length, `${door}: ${tc.note}`).toBe(specs.length);
+          specs.forEach((spec, i) => {
+            expect(acl.rules[i].callers, `${door}: rule ${i}: ${tc.note}`).toEqual(spec['callers']);
+            expect(acl.rules[i].targets, `${door}: rule ${i}: ${tc.note}`).toEqual(spec['targets']);
+          });
 
           // A closure case carrying finding paths is TIER 2: it MUST load, and
           // `validateRules()` MUST then report exactly those paths — reported,
@@ -320,7 +409,13 @@ describeIfPresent("Conformance: a pattern array's arity is closed (§6.2.1, spec
         `case '${tc.id}' names a mutation route this driver does not implement`,
       ).toBe('installed_rule');
 
-      const rule = toRule(tc.rule);
+      const backstopSpecs = rulesOf(tc);
+      expect(
+        backstopSpecs.length,
+        `case '${tc.id}' is a backstop with ${backstopSpecs.length} rules; the mutation and the ` +
+          'decision are both stated about one rule',
+      ).toBe(1);
+      const rule = toRule(backstopSpecs[0]);
       const entries: AuditEntry[] = [];
       const acl = new ACL([rule], tc.default_effect, (e) => entries.push(e));
       for (const m of mutations(tc)) rule[m.field] = [...m.value];

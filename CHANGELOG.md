@@ -31,7 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   `_matchPatterns()` and `_matchPatternsAsync()` keep their `false` returns for the illegal shapes as defence in depth; the precheck runs first and the rule never reaches either.
 
-  Verified against `conformance/fixtures/acl_pattern_arity.json` (44 cases, all passing) by `tests/conformance-acl-pattern-arity.test.ts`, including the three cases carrying `expected_refused_axis`, where the driver asserts which axis the refusal names rather than only that it refuses. `acl_evaluation.json` lost `empty_callers_matches_none` and `empty_targets_matches_none` in the same spec change — the shapes they described are no longer constructible — so its driver drops the transitional branch that asserted this SDK's rejection of them and runs against the 19-case fixture unchanged.
+  Verified against `conformance/fixtures/acl_pattern_arity.json` (49 cases, all passing) by `tests/conformance-acl-pattern-arity.test.ts`. Seven of those carry `expected_refused_axis` and four of them `expected_refused_rule_index` as well, so the driver asserts which axis and which rule the refusal names rather than only that it refuses — `expected_load` sees neither. Five cases carry a `rules` list rather than one `rule`, offered at the `load` and `construct` doors only, and they are what pins the cross-rule half across the three SDKs rather than in this repo alone. `acl_evaluation.json` lost `empty_callers_matches_none` and `empty_targets_matches_none` in the same spec change — the shapes they described are no longer constructible — so its driver drops the transitional branch that asserted this SDK's rejection of them and runs against the 19-case fixture unchanged.
 
 ---
 
