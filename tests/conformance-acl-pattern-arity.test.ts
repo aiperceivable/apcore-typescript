@@ -153,20 +153,59 @@ function rulesOf(tc: Case): Record<string, unknown>[] {
 }
 
 /**
- * Write the rules as an ACL file. YAML is a superset of JSON, so each rule is
- * emitted as a flow mapping — which keeps an empty array an empty array rather
- * than something a hand-written block style might round-trip differently.
+ * Write the rules as an ACL file, VERBATIM.
+ *
+ * YAML is a superset of JSON, so each rule is emitted as a flow mapping — which
+ * keeps an empty array an empty array rather than something a hand-written
+ * block style might round-trip differently. The spec is written as the fixture
+ * states it and never through {@link toRule}: a typed rule silently drops a key
+ * outside the closed set, so `lowest_indexed_bad_rule_wins_over_a_loader_only_axis`
+ * would lose the `priority` that makes rule 1 bad and pass for the wrong reason.
+ * `default_effect` is written as given too, since one case declares an illegal
+ * one.
  */
 function writeAclFile(specs: readonly Record<string, unknown>[], defaultEffect: string): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'acl-arity-conf-'));
   const file = path.join(dir, 'acl.yaml');
   fs.writeFileSync(
     file,
-    `default_effect: ${defaultEffect}\nrules:\n` +
-      specs.map((spec) => `  - ${JSON.stringify(toRule(spec))}\n`).join(''),
+    `default_effect: ${JSON.stringify(defaultEffect)}\nrules:\n` +
+      specs.map((spec) => `  - ${JSON.stringify(spec)}\n`).join(''),
     'utf-8',
   );
   return file;
+}
+
+/**
+ * The rule keys a typed `ACLRule` can carry (§6.1's closed set).
+ *
+ * A spec carrying anything else is representable in a file and not in the type,
+ * so offering it at a typed door would drop the key and test something the
+ * fixture did not write.
+ */
+const TYPED_RULE_KEYS: ReadonlySet<string> = new Set([
+  'callers',
+  'targets',
+  'effect',
+  'description',
+  'conditions',
+  'approval',
+]);
+
+/**
+ * Assert a spec is representable in a typed rule before a typed door takes it.
+ *
+ * Without this, a case whose rule carries a key outside §6.1's closed set is
+ * silently stripped by {@link toRule} and the door accepts a rule the fixture
+ * never wrote — a false pass that looks like conformance.
+ */
+function assertTypedRepresentable(caseId: string, door: Door, spec: Record<string, unknown>): void {
+  const outside = Object.keys(spec).filter((k) => !TYPED_RULE_KEYS.has(k));
+  expect(
+    outside,
+    `case '${caseId}' offers a rule carrying ${outside.join(', ')} at the ${door} door, ` +
+      'where a typed rule cannot represent it. Teach the driver, do not drop the key.',
+  ).toEqual([]);
 }
 
 /** Push the case's rules through one door, returning the resulting ACL. */
@@ -176,6 +215,7 @@ function openDoor(door: Door, tc: Case): ACL {
     case 'load':
       return ACL.load(writeAclFile(specs, tc.default_effect));
     case 'construct':
+      for (const spec of specs) assertTypedRepresentable(tc.id, door, spec);
       return new ACL(specs.map(toRule), tc.default_effect);
     case 'add_rule': {
       // `addRule` takes one rule at a time, so the fixture never lists this
@@ -186,6 +226,7 @@ function openDoor(door: Door, tc: Case): ACL {
         specs.length,
         `case '${tc.id}' lists the add_rule door with ${specs.length} rules`,
       ).toBe(1);
+      assertTypedRepresentable(tc.id, door, specs[0]);
       const acl = new ACL([], tc.default_effect);
       acl.addRule(toRule(specs[0]));
       return acl;
@@ -217,6 +258,16 @@ function handlerErrorPaths(message: string | null): string[] {
  */
 function assertRefusedAxis(caseId: string, axis: string, message: string): void {
   switch (axis) {
+    case 'default_effect':
+      // Not a rule and carrying no index, so §6.2.1's rule ordering does not
+      // reach it; it is judged first instead. `Rule N` must not appear at all —
+      // its presence would mean a rule was judged ahead of the file's own
+      // effect, which is the divergence this axis was added to close.
+      expect(message, `${caseId}: refusal did not name default_effect: ${message}`).toMatch(
+        /Invalid default_effect/,
+      );
+      expect(message, `${caseId}: a rule was judged first: ${message}`).not.toMatch(/Rule \d+/);
+      return;
     case 'effect':
       expect(message, `${caseId}: refusal did not name the effect: ${message}`).toMatch(
         /invalid effect/,

@@ -587,6 +587,44 @@ describe('§6.2.1 point 2: rule index dominates effect -> approval -> patterns',
       expect(message).not.toMatch(/Rule 1/);
     }
   });
+
+  it('judges default_effect FIRST, before any rule, at both doors', () => {
+    // `default_effect` is not a rule and has no index, so the rule ordering
+    // never reaches it — yet a file wrong in both is exactly the
+    // one-file-one-error case. Measured here before the fix: `ACL.load()`
+    // parsed every rule on its way to the constructor, so this named rule 0's
+    // patterns through the file door and `default_effect` through the other.
+    const rules: readonly ACLRule[] = [toRule({ callers: [], targets: ['*'], effect: 'allow' })];
+    const messages = [
+      messageFrom(() => ACL.load(writeRawAclFile(rules, 'Allow'))),
+      messageFrom(() => new ACL([...rules], 'Allow')),
+    ];
+    for (const message of messages) {
+      expect(message).toMatch(/Invalid default_effect 'Allow'/);
+      expect(message).not.toMatch(/Rule \d+/);
+    }
+  });
+
+  it('does not let a LOADER-ONLY axis preempt a lower-indexed rule', () => {
+    // A loader has per-rule axes the other doors cannot have — #107's rule-key
+    // closure, the missing-key check, the value-type checks — and the sweep
+    // prohibition binds those too. Rule 0 is bad on `effect`; rule 1 carries an
+    // unknown key. Closing the key set across the whole file before reading any
+    // rule's `effect` would name rule 1. This is what caught apcore-rust; this
+    // SDK runs every per-rule check inside `_parseAclRule`, which an in-order
+    // `map` calls one rule at a time, and the test is what keeps it that way.
+    const file = writeRawAclFile(
+      [
+        { callers: ['*'], targets: ['*'], effect: 'Allow' },
+        { callers: ['*'], targets: ['*'], effect: 'allow', priority: 3 },
+      ],
+      'deny',
+    );
+    const message = messageFrom(() => ACL.load(file));
+    expect(message).toMatch(/Rule 0 has invalid effect 'Allow'/);
+    expect(message).not.toMatch(/Rule 1/);
+    expect(message).not.toMatch(/priority/);
+  });
 });
 
 // ---------------------------------------------------------------------------

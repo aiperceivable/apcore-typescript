@@ -748,6 +748,26 @@ function rejectInvalidEffect(effect: unknown, index: number): void {
 }
 
 /**
+ * §6.1.5 / §6.2.1 point 2 — `default_effect` is closed too, and it is judged
+ * **first, before any rule, at every door** (v1.31.0, #112).
+ *
+ * It is not a rule and has no index, so §6.2.1's rule ordering never reaches
+ * it — yet a file wrong in both `default_effect` and a rule is exactly the
+ * one-file-one-error case that ordering exists for. Placing it ahead of every
+ * rule is what stops `ACL.load()` naming rule 0 while `new ACL([...], 'Allow')`
+ * names `default_effect` for the same content.
+ *
+ * @internal — exported for `./acl-file.ts`, which must run it *before* parsing
+ *   any rule. The constructor runs it too, so the check exists once.
+ */
+export function _rejectInvalidDefaultEffect(defaultEffect: unknown): void {
+  if (typeof defaultEffect === 'string' && EFFECT_VALUES.has(defaultEffect)) return;
+  throw new ACLRuleError(
+    `Invalid default_effect '${String(defaultEffect)}', must be 'allow' or 'deny'`,
+  );
+}
+
+/**
  * §6.2.1 (v1.31.0, #112) — reject a `callers` / `targets` whose pattern-array
  * shape is outside the closed set {@link describePatternArrayShape} states.
  *
@@ -1267,14 +1287,14 @@ export class ACL {
   debug: boolean = false;
 
   constructor(rules: ACLRule[], defaultEffect: string = 'deny', auditLogger?: AuditLogger | null) {
-    // §6.1.5 closes `default_effect` on the same terms as a rule's `effect`.
-    // This check has always been here and `ACL.load()` reaches it too, so both
-    // of its doors were covered — which is exactly what made a rule's `effect`
-    // guarding only the file path an INTERNAL inconsistency and not merely a
-    // cross-language one (#111).
-    if (!EFFECT_VALUES.has(defaultEffect)) {
-      throw new ACLRuleError(`Invalid default_effect '${defaultEffect}', must be 'allow' or 'deny'`);
-    }
+    // §6.1.5 closes `default_effect` on the same terms as a rule's `effect`,
+    // and §6.2.1 point 2 places it: judged FIRST, before any rule, at every
+    // door. It is first here by position; `ACL.load()` runs the same function
+    // before it parses a single rule, because reaching this constructor would
+    // otherwise mean every rule had already been parsed and a file wrong in
+    // both would name rule 0 through one door and `default_effect` through the
+    // other (#111, #112).
+    _rejectInvalidDefaultEffect(defaultEffect);
     this._rules = [...rules];
     this._defaultEffect = defaultEffect;
     this._auditLogger = auditLogger ?? null;

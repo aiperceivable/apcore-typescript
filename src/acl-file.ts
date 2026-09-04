@@ -12,7 +12,13 @@
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import yaml from 'js-yaml';
-import { ACL, _parseAclRule, _setAclFileLoader, _setAclDiscoverer } from './acl.js';
+import {
+  ACL,
+  _parseAclRule,
+  _rejectInvalidDefaultEffect,
+  _setAclFileLoader,
+  _setAclDiscoverer,
+} from './acl.js';
 import type { AclConfigLike } from './acl.js';
 import { getDefault } from './config-defaults.js';
 import { ACLRuleError, ConfigNotFoundError } from './errors.js';
@@ -36,6 +42,16 @@ _setAclFileLoader((yamlPath: string): ACL => {
   }
 
   const dataObj = data as Record<string, unknown>;
+
+  // §6.2.1 point 2 (v1.31.0, #112) — `default_effect` is judged FIRST, before
+  // any rule. It is not a rule and has no index, so the rule ordering never
+  // reaches it, and a file wrong in both was refused for its rule here and for
+  // `default_effect` at the constructor door, because the rules were all parsed
+  // on the way to it. The same function runs at both doors, so there is one
+  // check and one message.
+  const defaultEffect = (dataObj['default_effect'] as string) ?? 'deny';
+  _rejectInvalidDefaultEffect(defaultEffect);
+
   if (!('rules' in dataObj)) {
     throw new ACLRuleError("ACL config missing required 'rules' key");
   }
@@ -45,7 +61,11 @@ _setAclFileLoader((yamlPath: string): ACL => {
     throw new ACLRuleError(`'rules' must be a list, got ${typeof rawRules}`);
   }
 
-  const defaultEffect = (dataObj['default_effect'] as string) ?? 'deny';
+  // One pass, in file order, and every per-rule check lives inside
+  // `_parseAclRule` — the rule-key closure (#107) included, which is a
+  // loader-only axis and therefore exactly the kind §6.2.1 point 2's sweep
+  // prohibition binds. Sweeping any one of them across the file first would
+  // refuse a later rule for a fault a lower-indexed rule already had.
   const rules = rawRules.map((raw, i) => _parseAclRule(raw, i));
 
   const acl = new ACL(rules, defaultEffect);
