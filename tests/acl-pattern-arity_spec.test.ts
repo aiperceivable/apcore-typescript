@@ -601,7 +601,12 @@ describe('§6.2.1 point 2: rule index dominates effect -> approval -> patterns',
     ];
     for (const message of messages) {
       expect(message).toMatch(/Invalid default_effect 'Allow'/);
-      expect(message).not.toMatch(/Rule \d+/);
+      // No rule index in ANY spelling: its presence would mean a rule was
+      // judged ahead of the file's own effect. Case-insensitive because the
+      // check is about whether a rule was reached, not about this SDK's
+      // capitalisation — the two axis families are raised from different code
+      // paths and need not word the index identically.
+      expect(message).not.toMatch(/\brules?\s+\d+\b/i);
     }
   });
 
@@ -622,8 +627,26 @@ describe('§6.2.1 point 2: rule index dominates effect -> approval -> patterns',
     );
     const message = messageFrom(() => ACL.load(file));
     expect(message).toMatch(/Rule 0 has invalid effect 'Allow'/);
-    expect(message).not.toMatch(/Rule 1/);
+    expect(message).not.toMatch(/\brules?\s+1\b/i);
     expect(message).not.toMatch(/priority/);
+  });
+
+  it('words the rule index the same way on the loader-only axis', () => {
+    // The two axis families are raised from different code paths — the
+    // rule-key closure (#107, loader-only) and the per-rule validator — and an
+    // implementation whose spellings differ makes a driver reading the index
+    // off the message miss one of them entirely. Here both say `Rule N`, and
+    // this is the test that notices if one of them stops.
+    const unknownKey = messageFrom(() =>
+      ACL.load(
+        writeRawAclFile([{ callers: ['*'], targets: ['*'], effect: 'allow', priority: 3 }], 'deny'),
+      ),
+    );
+    expect(unknownKey).toMatch(/^Rule 0 carries 'priority'/);
+    const badEffect = messageFrom(() =>
+      ACL.load(writeRawAclFile([{ callers: ['*'], targets: ['*'], effect: 'Allow' }], 'deny')),
+    );
+    expect(badEffect).toMatch(/^Rule 0 has invalid effect/);
   });
 });
 

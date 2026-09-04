@@ -266,7 +266,14 @@ function assertRefusedAxis(caseId: string, axis: string, message: string): void 
       expect(message, `${caseId}: refusal did not name default_effect: ${message}`).toMatch(
         /Invalid default_effect/,
       );
-      expect(message, `${caseId}: a rule was judged first: ${message}`).not.toMatch(/Rule \d+/);
+      // No rule index, in ANY spelling — its presence would mean a rule was
+      // judged ahead of the file's own effect. Asserted as an empty set rather
+      // than as a failed match, so a wording this driver does not recognise
+      // cannot read as "no index present".
+      expect(
+        ruleIndicesNamed(message),
+        `${caseId}: a rule was judged before default_effect: ${message}`,
+      ).toEqual([]);
       return;
     case 'effect':
       expect(message, `${caseId}: refusal did not name the effect: ${message}`).toMatch(
@@ -304,19 +311,40 @@ function assertRefusedAxis(caseId: string, axis: string, message: string): void 
 }
 
 /**
- * Assert that a refusal names the rule the case declares (§6.2.1 point 2).
+ * Every rule index a refusal names, in any spelling a door might use.
  *
- * Every rejection message in this SDK opens with `Rule <index>`, so the index
- * is read back off the message rather than inferred. The index chooses the
- * rule and the axis order then chooses the fault inside it: a driver asserting
- * only the axis passes a rule set refused for the wrong rule on the right axis,
- * which is exactly the shape of the loader/constructor divergence these cases
- * were written for.
+ * Deliberately case-insensitive and tolerant of a prefix: the axis families are
+ * raised from different code paths and need not word the index identically —
+ * this SDK's per-rule validator says `Rule 0 has invalid effect`, while another
+ * implementation's loader-only key axis says `ACL rule 1 in '<file>' carries
+ * 'priority' unrecognised`. A matcher pinned to one spelling reads the other as
+ * naming NO rule, which is a silent pass on exactly the case built to catch a
+ * real bug (measured in apcore-rust on
+ * `lowest_indexed_bad_rule_wins_over_a_loader_only_axis`).
+ *
+ * A digit must follow the word, so the prose in this SDK's own pattern-shape
+ * message — "makes the rule inert", "an inert deny rule under…" — is not a hit.
+ */
+function ruleIndicesNamed(message: string): number[] {
+  return [...message.matchAll(/\brules?\s+(\d+)\b/gi)].map((m) => Number(m[1]));
+}
+
+/**
+ * Assert that a refusal names the rule the case declares, and only that rule
+ * (§6.2.1 point 2).
+ *
+ * The index chooses the rule and the axis order then chooses the fault inside
+ * it, so a driver asserting only the axis passes a rule set refused for the
+ * WRONG rule on the right axis — the shape of the loader/constructor divergence
+ * these cases were written for. Asserting the whole set rather than the first
+ * match also catches a message naming no rule at all and one naming two.
  */
 function assertRefusedRuleIndex(caseId: string, index: number, message: string): void {
-  const named = /Rule (\d+)/.exec(message);
-  expect(named, `${caseId}: refusal named no rule index: ${message}`).not.toBeNull();
-  expect(Number(named?.[1]), `${caseId}: refusal named the wrong rule: ${message}`).toBe(index);
+  const named = new Set(ruleIndicesNamed(message));
+  expect(
+    [...named],
+    `${caseId}: refusal should name rule ${index} and no other: ${message}`,
+  ).toEqual([index]);
 }
 
 /** The mutations a backstop case declares, as a list whatever its shape. */
@@ -337,6 +365,23 @@ describeIfPresent("Conformance: a pattern array's arity is closed (§6.2.1, spec
         door,
       );
     }
+  });
+
+  it('reads a rule index in every spelling a door might use', () => {
+    // The driver's own guard. The axis families are raised from different code
+    // paths and need not word the index the same way; a matcher pinned to one
+    // spelling reads the others as naming NO rule, which is a silent pass on
+    // the very cases that pin the ordering. This is the shape that bit
+    // apcore-rust, whose loader-only key axis says `ACL rule 1 in '<file>'`.
+    expect(ruleIndicesNamed("Rule 0 has invalid effect 'Allow'")).toEqual([0]);
+    expect(ruleIndicesNamed("ACL rule 1 in '/tmp/acl.yaml' carries 'priority'")).toEqual([1]);
+    expect(ruleIndicesNamed('rules 2 and Rule 3')).toEqual([2, 3]);
+    expect(ruleIndicesNamed("Invalid default_effect 'Allow', must be 'allow' or 'deny'")).toEqual(
+      [],
+    );
+    // Prose about "the rule" is not an index, or every pattern-shape message in
+    // this SDK — "makes the rule inert" — would read as naming one.
+    expect(ruleIndicesNamed('a shape that can never match makes the rule inert')).toEqual([]);
   });
 
   it('exercises every case the fixture declares', () => {
