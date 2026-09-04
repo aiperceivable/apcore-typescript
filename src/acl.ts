@@ -1278,23 +1278,27 @@ export class ACL {
     this._rules = [...rules];
     this._defaultEffect = defaultEffect;
     this._auditLogger = auditLogger ?? null;
-    // §6.1.5 (v1.30.0) — `effect` is a closed value set at THIS door too, not
-    // only at `ACL.load()`. Runs before the approval check because
-    // `rejectDenyWithApproval` reads `effect` to decide whether the pair is the
-    // meaningless one: `effect: 'Deny'` with `approval: 'required'` must fail on
-    // the effect rather than slip past a `!== 'deny'` early return.
-    this._rules.forEach((rule, i) => rejectInvalidEffect(rule.effect, i));
-    // §6.1.6 rule 2 is fatal, not a warning: unlike an unregistered condition
-    // key (§6.1.2 rule 1, which must not break bootstrap order) a
-    // `deny` + `approval: required` rule can never become meaningful later.
-    this._rules.forEach(rejectDenyWithApproval);
-    // §6.2.1 (v1.31.0, #112) — a pattern array's SHAPE is closed at this door
-    // too, and it is validated LAST: §6.2.1 point 2 fixes one order for the
-    // three axes at every door — `effect`, then `approval`, then the pattern
-    // fields — so a rule bad on more than one of them is refused for the same
-    // axis in every implementation rather than for whichever one an SDK
-    // happened to check first.
-    this._rules.forEach(rejectMalformedPatternFields);
+    // §6.2.1 point 2 (v1.31.0, #112) — RULE INDEX DOMINATES THE AXES, so this
+    // is one pass per rule and not three passes over the list. Sweeping an axis
+    // across every rule before looking at the next axis is forbidden: it makes
+    // a rule set with two bad rules report the higher-indexed one, and this
+    // door then names a different fault than `ACL.load()` does for the same
+    // file, which validates rule by rule. Within a rule the order is `effect`,
+    // then `approval`, then the pattern fields — `effect` first because
+    // `rejectDenyWithApproval` reads it to decide whether the pair is the
+    // meaningless one, so `effect: 'Deny'` with `approval: 'required'` fails on
+    // the effect rather than slipping past a `!== 'deny'` early return.
+    //
+    // §6.1.5 (v1.30.0) closes `effect` at THIS door, not only at `ACL.load()`;
+    // §6.1.6 rule 2 is fatal rather than a warning, because unlike an
+    // unregistered condition key (§6.1.2 rule 1, which must not break bootstrap
+    // order) a `deny` + `approval: required` rule can never become meaningful
+    // later; §6.2.1 closes the pattern-array shape.
+    this._rules.forEach((rule, i) => {
+      rejectInvalidEffect(rule.effect, i);
+      rejectDenyWithApproval(rule, i);
+      rejectMalformedPatternFields(rule, i);
+    });
     // §6.1.2: direct construction is an entry point that accepts rules, so it
     // is covered by load-time validation too — `ACL.load()` reaches this same
     // constructor, which is why the file path needs no separate hook.

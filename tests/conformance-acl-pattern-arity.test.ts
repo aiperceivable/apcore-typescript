@@ -73,6 +73,12 @@ interface Case {
   /** `closure` only — the doors the rule is offered at. */
   entry_points?: string[];
   expected_load?: 'ok' | 'reject';
+  /**
+   * Which AXIS the refusal names (§6.2.1 point 2) — `expected_load` cannot see
+   * it, since every one of these cases is bad on more than one axis and would
+   * read as `reject` whichever fault an implementation happened to name.
+   */
+  expected_refused_axis?: string;
   /** `backstop` only — one mutation or a list, applied in order. */
   mutate?: Mutation | Mutation[];
   mutation_route?: string;
@@ -155,6 +161,52 @@ function handlerErrorPaths(message: string | null): string[] {
   });
 }
 
+/**
+ * Assert that a refusal names the axis the case declares (§6.2.1 point 2).
+ *
+ * The axis names are the fixture's vocabulary, not this SDK's message text, so
+ * each is matched against the message this implementation raises for that axis.
+ * An axis the driver does not recognise is a hard failure naming the case and
+ * the unknown value — teach the driver, never skip the assertion, or a fixture
+ * that grows a fourth axis reads as covered when nothing checks it.
+ */
+function assertRefusedAxis(caseId: string, axis: string, message: string): void {
+  switch (axis) {
+    case 'effect':
+      expect(message, `${caseId}: refusal did not name the effect: ${message}`).toMatch(
+        /invalid effect/,
+      );
+      expect(message, `${caseId}: refusal named a later axis: ${message}`).not.toMatch(
+        /pattern-array shape|must be a list|approval: 'required'/,
+      );
+      return;
+    case 'approval':
+      expect(message, `${caseId}: refusal did not name the approval pair: ${message}`).toMatch(
+        /approval: 'required' on an effect: 'deny' rule/,
+      );
+      expect(message, `${caseId}: refusal named a later axis: ${message}`).not.toMatch(
+        /pattern-array shape|must be a list/,
+      );
+      return;
+    case 'callers':
+    case 'targets': {
+      const other = axis === 'callers' ? 'targets' : 'callers';
+      expect(message, `${caseId}: refusal did not name '${axis}': ${message}`).toMatch(
+        new RegExp(`'${axis}' (has an illegal pattern-array shape|must be a list)`),
+      );
+      expect(message, `${caseId}: refusal named '${other}' instead: ${message}`).not.toContain(
+        `'${other}'`,
+      );
+      return;
+    }
+    default:
+      throw new Error(
+        `conformance driver: case '${caseId}' declares expected_refused_axis ` +
+          `'${axis}', which the driver does not recognise. Teach the driver, do not skip it.`,
+      );
+  }
+}
+
 /** The mutations a backstop case declares, as a list whatever its shape. */
 function mutations(tc: Case): Mutation[] {
   if (tc.mutate === undefined) return [];
@@ -182,6 +234,14 @@ describeIfPresent("Conformance: a pattern array's arity is closed (§6.2.1, spec
     expect(fixture.test_cases.length).toBeGreaterThan(0);
     for (const tc of fixture.test_cases) {
       expect(['closure', 'backstop'], `case '${tc.id}' declares an unknown kind`).toContain(tc.kind);
+      // An axis expectation on a case that is not refused would never be
+      // asserted — it would read as covered while nothing checked it.
+      if (tc.expected_refused_axis !== undefined) {
+        expect(
+          tc.expected_load,
+          `case '${tc.id}' declares an expected_refused_axis but is not a reject case`,
+        ).toBe('reject');
+      }
     }
   });
 
@@ -200,6 +260,20 @@ describeIfPresent("Conformance: a pattern array's arity is closed (§6.2.1, spec
           if (tc.expected_load === 'reject') {
             // §6.1.6 rule 3 — rejected at EVERY door, with the typed error.
             expect(() => openDoor(door, tc), `${door}: ${tc.note}`).toThrow(ACLRuleError);
+            // §6.2.1 point 2 — and for the same axis at every door. A rule bad
+            // on several axes is refused for the first one it fails, so which
+            // fault the message names is the assertion; `expected_load` alone
+            // reads as covered whichever axis an implementation happened to
+            // check first, which is how three SDKs answered this three ways.
+            if (tc.expected_refused_axis !== undefined) {
+              let message = '';
+              try {
+                openDoor(door, tc);
+              } catch (e) {
+                message = e instanceof Error ? e.message : String(e);
+              }
+              assertRefusedAxis(`${tc.id} (${door})`, tc.expected_refused_axis, message);
+            }
             // A throw leaves the rule list untouched, so a caller that
             // swallowed it cannot end up enforcing the rule anyway.
             if (door === 'add_rule') {

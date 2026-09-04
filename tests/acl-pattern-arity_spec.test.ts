@@ -365,10 +365,11 @@ describe('§6.2.1 tier 1: a pattern array shape outside the closed set is reject
 
 // ---------------------------------------------------------------------------
 // THE TWO POINTS OF ORDER — §6.2.1, "so three implementations cannot answer
-// them three ways". Neither is expressible in the conformance fixture:
-// `entry_points` deliberately carries no per-door expectation, so point 1 is
-// invisible to it, and point 2 is about WHICH refusal a rejecting door raises
-// where the fixture only asks whether it rejects. They live here instead.
+// them three ways". Point 1 is not expressible in the conformance fixture at
+// all: `entry_points` deliberately carries no per-door expectation. Point 2 is
+// only partly expressible — the fixture's `expected_refused_axis` pins which
+// AXIS a rejection names, and the cases below add what it cannot reach: the
+// rule-index half, which needs a rule set rather than one rule.
 // ---------------------------------------------------------------------------
 
 describe('§6.2.1 point 1: addRule re-validates the rule it is handed', () => {
@@ -408,13 +409,18 @@ describe('§6.2.1 point 1: addRule re-validates the rule it is handed', () => {
   });
 });
 
-describe('§6.2.1 point 2: effect, then approval, then callers / targets', () => {
+describe('§6.2.1 point 2: rule index dominates effect -> approval -> patterns', () => {
   /**
-   * A rule bad on more than one axis is refused for the FIRST of the three it
-   * fails, so the same rule produces the same error in every implementation.
-   * §6.2.1 point 2 measured `{callers: [], targets: [], effect: "Allow"}`
-   * refused for its `effect` in one implementation and for its patterns in
-   * another, both conformant because nothing said otherwise.
+   * A rule bad on more than one axis is refused for the FIRST axis it fails,
+   * and a rule set with more than one bad rule is refused for the LOWEST-INDEXED
+   * bad rule. §6.2.1 point 2 measured `{callers: [], targets: [], effect:
+   * "Allow"}` refused for its `effect` in one implementation and for its
+   * patterns in another, and a third running effect -> patterns -> approval —
+   * every one of them conformant because nothing said otherwise.
+   *
+   * The ordering is stated in §6.2.1 for the first time. §6.1.6 rule 2 *implies*
+   * that `effect` is read before `approval`, since judging "`deny` plus
+   * `approval: required`" requires knowing the effect, but it states no order.
    */
   function messageFrom(fn: () => unknown): string {
     try {
@@ -425,17 +431,27 @@ describe('§6.2.1 point 2: effect, then approval, then callers / targets', () =>
     }
   }
 
+  /**
+   * Write rules verbatim, without going through {@link toRule}.
+   *
+   * The ordering cases carry values `toRule` cannot copy — `callers: 3` has no
+   * spread — and they need to reach the loader exactly as written, since a
+   * type fault is precisely what one of them is about.
+   */
+  function writeRawAclFile(rules: readonly unknown[], defaultEffect: string): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'acl-arity-order-'));
+    const file = path.join(dir, 'acl.yaml');
+    const body =
+      `default_effect: ${defaultEffect}\n` +
+      'rules:\n' +
+      rules.map((r) => `  - ${JSON.stringify(r)}\n`).join('');
+    fs.writeFileSync(file, body, 'utf-8');
+    return file;
+  }
+
   /** The same rule offered at all three doors, since the order is per-door. */
   function messagesAtEveryDoor(rule: ACLRule, defaultEffect: string): string[] {
-    const written = writeAclFile(
-      {
-        callers: rule.callers,
-        targets: rule.targets,
-        effect: rule.effect,
-        approval: rule.approval,
-      },
-      defaultEffect,
-    );
+    const written = writeRawAclFile([rule], defaultEffect);
     return [
       messageFrom(() => ACL.load(written)),
       messageFrom(() => new ACL([{ ...rule }], defaultEffect)),
@@ -452,9 +468,10 @@ describe('§6.2.1 point 2: effect, then approval, then callers / targets', () =>
   });
 
   it('reports the APPROVAL for a rule bad on approval and on its patterns', () => {
-    // §6.1.6 rule 2's deny-with-approval sits between the two: after `effect`,
-    // because it reads `effect` to decide whether the pair is the meaningless
-    // one, and before the pattern fields.
+    // §6.1.6 rule 2's deny-with-approval is the middle axis: after `effect`,
+    // which it reads to decide whether the pair is the meaningless one, and
+    // before the pattern fields. This is the pair that caught this SDK, whose
+    // order was effect -> patterns -> approval.
     const rule = {
       ...toRule({ callers: [], targets: ['*'], effect: 'deny', approval: 'required' }),
     };
@@ -462,6 +479,35 @@ describe('§6.2.1 point 2: effect, then approval, then callers / targets', () =>
       expect(message).toMatch(/approval: 'required' on an effect: 'deny' rule/);
       expect(message).not.toMatch(/pattern-array shape/);
     }
+  });
+
+  it('reports the APPROVAL ahead of a pattern field that is not even a list', () => {
+    // The pattern fields are ONE axis covering §6.1.4.1's TYPE fault and
+    // §6.2.1's shape closure together, and the whole axis comes after
+    // `approval`. Nothing covered this before: the type fault is a rejection
+    // only at the load door — at the other two it is left to §6.1.4.1's
+    // precheck, which is why the assertion below is about which fault is named
+    // and not about how many doors reject.
+    const rule = {
+      ...toRule({ callers: ['*'], targets: ['*'], effect: 'deny', approval: 'required' }),
+      callers: 'admin.*' as never,
+    };
+    for (const message of messagesAtEveryDoor(rule, 'deny')) {
+      expect(message).toMatch(/approval: 'required' on an effect: 'deny' rule/);
+      expect(message).not.toMatch(/must be a list/);
+    }
+  });
+
+  it('reports the TYPE fault before the shape fault within the pattern axis', () => {
+    // Within the one pattern axis a value must be a list of strings before its
+    // arity means anything, so `callers: 3` is named ahead of `targets: []`.
+    // The load door is the only one that rejects a type fault; the others leave
+    // it to the precheck, so this is asserted where it is a rejection.
+    const file = writeRawAclFile(
+      [{ callers: 3, targets: [], effect: 'deny', description: '', conditions: null }],
+      'deny',
+    );
+    expect(messageFrom(() => ACL.load(file))).toMatch(/'callers' must be a list/);
   });
 
   it('still reports the EFFECT when the approval pair is bad as well', () => {
@@ -484,12 +530,61 @@ describe('§6.2.1 point 2: effect, then approval, then callers / targets', () =>
   });
 
   it('reports callers before targets when both pattern fields are bad', () => {
-    // Not stated by point 2, which orders the three AXES. Within the pattern
-    // axis this is the order a reader reads the rule in, and it matches
-    // §6.1.3's lexicographic finding order for the same two paths.
+    // Within the one pattern axis, `callers` before `targets` — the order a
+    // reader reads the rule in, and the one §6.1.3's lexicographic finding
+    // order already puts those two paths in.
     const rule = { ...toRule({ callers: [], targets: [], effect: 'allow' }) };
     for (const message of messagesAtEveryDoor(rule, 'deny')) {
       expect(message).toMatch(/'callers' has an illegal pattern-array shape/);
+    }
+  });
+
+  // --- rule index dominates the axes --------------------------------------
+
+  /**
+   * The half of point 2 the fixture cannot express, because every case there
+   * carries exactly one rule.
+   *
+   * Rule 0 is bad on the LAST axis and rule 1 on the FIRST. Sweeping an axis
+   * across the list — effect over every rule, then approval, then patterns —
+   * reports rule 1; validating rule by rule reports rule 0, which is what
+   * §6.2.1 point 2 requires. Measured in this SDK before the fix: `ACL.load()`
+   * validated rule by rule and named rule 0, the constructor swept axis by axis
+   * and named rule 1, so one file produced two different errors depending on
+   * which door it arrived through.
+   */
+  const INDEX_PAIR: readonly ACLRule[] = [
+    toRule({ callers: [], targets: ['*'], effect: 'allow' }),
+    toRule({ callers: ['*'], targets: ['*'], effect: 'Allow' }),
+  ];
+
+  it('refuses the LOWEST-INDEXED bad rule at the construct door', () => {
+    const message = messageFrom(() => new ACL([...INDEX_PAIR], 'deny'));
+    expect(message).toMatch(/Rule 0 'callers' has an illegal pattern-array shape/);
+    expect(message).not.toMatch(/Rule 1/);
+  });
+
+  it('refuses the same rule at the load door — one file, one error', () => {
+    const message = messageFrom(() => ACL.load(writeRawAclFile(INDEX_PAIR, 'deny')));
+    expect(message).toMatch(/Rule 0 'callers' has an illegal pattern-array shape/);
+    expect(message).not.toMatch(/Rule 1/);
+  });
+
+  it('keeps the axis order inside the lowest-indexed bad rule', () => {
+    // Rule 0 is bad on two axes and rule 1 on one. The index picks the rule,
+    // and only then does the axis order pick the fault within it.
+    const rules: readonly ACLRule[] = [
+      { ...toRule({ callers: [], targets: [], effect: 'deny', approval: 'required' }) },
+      toRule({ callers: ['*'], targets: ['*'], effect: 'Deny' }),
+    ];
+    const messages = [
+      messageFrom(() => ACL.load(writeRawAclFile(rules, 'deny'))),
+      messageFrom(() => new ACL([...rules], 'deny')),
+    ];
+    for (const message of messages) {
+      expect(message).toMatch(/Rule 0 carries approval: 'required'/);
+      expect(message).not.toMatch(/pattern-array shape/);
+      expect(message).not.toMatch(/Rule 1/);
     }
   });
 });
