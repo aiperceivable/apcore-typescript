@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+---
+
+## [0.29.0] - 2026-09-05
+
 ### Added
 
 - **`ApprovalRequest.callerId` and `ApprovalRequest.action` (decision log 2026-05 D-03).** `docs/features/approval-system.md`'s Contract block already required a request to carry `module_id`, `caller_id` and `action`; this SDK's `ApprovalRequest` (`src/approval.ts`) carried neither of the last two, so a handler — a Slack approver, an audit log — had to traverse `context.identity` and treat `moduleId` as double duty for "the thing being approved" instead of reading one flat record. `BuiltinApprovalGate` (`src/builtin-steps.ts`) now populates both at the one call site that constructs a real request: `callerId: ctx.context.callerId`, `action: ctx.moduleId`. `callerId` is read straight off `Context.callerId` with no substitution — `null` on a top-level call, exactly as `Context.callerId` itself is, never the `"@external"` sentinel ACL evaluation substitutes internally; `action` always equals the invoked module's id. Both fields are additive on `createApprovalRequest`'s options bag (`callerId` defaults to `null`, `action` to `moduleId`), so every existing call site keeps compiling and gets the right value without being touched.

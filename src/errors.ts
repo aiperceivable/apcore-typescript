@@ -655,8 +655,13 @@ export class BindingSchemaInferenceFailedError extends ModuleError {
 /**
  * Deprecated alias for {@link BindingSchemaInferenceFailedError}.
  * Per DECLARATIVE_CONFIG_SPEC.md §7.1, the canonical name is
- * BindingSchemaInferenceFailedError. Scheduled for removal in 0.20.0;
- * emits a one-shot deprecation warning on first construction.
+ * BindingSchemaInferenceFailedError. Emits a one-shot deprecation warning on
+ * first construction.
+ *
+ * The removal target is **1.0.0**. An earlier revision of this comment also
+ * named 0.20.0 in its prose while the `@deprecated` tag said 1.0.0; 0.20.0
+ * shipped in May 2026 with the alias still present, so the prose deadline was
+ * both contradictory and already lapsed. 1.0.0 is the operative one.
  *
  * @deprecated Will be removed in 1.0.0. Use {@link BindingSchemaInferenceFailedError} instead.
  */
