@@ -21,7 +21,7 @@ import {
 import { jsonSchemaToTypeBox } from './schema/loader-pure.js';
 import { SchemaValidator } from './schema/validator.js';
 import { DEFAULTS, getDefault } from './config-defaults.js';
-import { collectUndeclaredFrameworkKeys } from './config-key-surface.js';
+import { collectUndeclaredFrameworkKeys, PATH_TYPED_CONFIG_KEYS } from './config-key-surface.js';
 
 // Re-exported so existing `import { DEFAULTS, getDefault } from './config.js'`
 // paths keep working unchanged.
@@ -591,6 +591,25 @@ export class Config {
    */
   static isBrowser(): boolean {
     return typeof process === 'undefined' || !process.versions?.node;
+  }
+
+  /**
+   * The closed set of path-typed configuration keys (PROTOCOL_SPEC §9.2.1).
+   *
+   * A path-typed key is one whose value is a filesystem path. The set is
+   * declared canonically by `"x-apcore-path": true` in
+   * `schemas/apcore-config.schema.json`; this returns that projection, sorted.
+   *
+   * `extensions.roots` is reported as `extensions.roots[]` because it is
+   * list-valued and every element carries a path.
+   *
+   * Note what this does NOT tell you: what a *relative* value in one of these
+   * keys resolves against. That base is unspecified as of spec v1.34.0 and
+   * currently differs between keys — `acl.root` resolves against the config
+   * file's directory, `schema.root` against the process CWD.
+   */
+  static pathTypedKeys(): readonly string[] {
+    return PATH_TYPED_CONFIG_KEYS;
   }
 
   /**

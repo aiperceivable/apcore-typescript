@@ -209,6 +209,39 @@ function walk(
  * @param apcoreData The `apcore` namespace tree — the whole document in legacy
  *   mode, `data.apcore` in namespace mode.
  */
+/**
+ * The closed set of **path-typed** configuration keys — those whose value is a
+ * filesystem path (PROTOCOL_SPEC §9.2.1). Declared canonically by
+ * `"x-apcore-path": true` in `schemas/apcore-config.schema.json`; this array is
+ * that projection, on the same terms as `FRAMEWORK_CONFIG_KEYS` above.
+ *
+ * It exists for consumers outside this SDK. Anything forwarding apcore
+ * configuration across a process boundary — a CLI spawning a worker, a
+ * supervisor building a container environment — has to know which `APCORE_*`
+ * variables carry paths, because a relative value silently re-roots wherever the
+ * working directory differs. Without a published set, each such consumer builds
+ * its own and drifts from the others.
+ *
+ * Two exclusions are deliberate, being the mistakes an implementer would
+ * otherwise make. `bindings.pattern` is a glob matched against filenames *within*
+ * `bindings.dir`, never resolved as a path itself. `id_map.overrides` holds
+ * module IDs.
+ *
+ * `extensions.roots` is list-valued and every element carries a path, in both the
+ * bare-string and the `{ root, namespace }` form — hence the element key
+ * `extensions.roots[]`.
+ *
+ * This set says *which* keys carry paths. It says nothing about what a relative
+ * value resolves against; that base is unspecified as of spec v1.34.0.
+ */
+export const PATH_TYPED_CONFIG_KEYS: readonly string[] = [
+  "acl.root",
+  "bindings.dir",
+  "extensions.root",
+  "extensions.roots[]",
+  "schema.root",
+];
+
 export function collectUndeclaredFrameworkKeys(apcoreData: Record<string, unknown>): string[] {
   const out: string[] = [];
   for (const [section, node] of SURFACE_TRIE) {

@@ -440,3 +440,48 @@ describe('Config legacy-mode global env map (A-D-04)', () => {
     }
   });
 });
+
+describe('path-typed configuration keys (PROTOCOL_SPEC §9.2.1)', () => {
+  const EXPECTED = [
+    'acl.root',
+    'bindings.dir',
+    'extensions.root',
+    'extensions.roots[]',
+    'schema.root',
+  ];
+
+  it('accessor matches the declared set in both directions', () => {
+    const actual = new Set(Config.pathTypedKeys());
+    const expected = new Set(EXPECTED);
+    const invented = [...actual].filter((k) => !expected.has(k));
+    const missing = [...expected].filter((k) => !actual.has(k));
+    expect(invented).toEqual([]);
+    expect(missing).toEqual([]);
+  });
+
+  it('bindings.pattern is not path-typed', () => {
+    // Discriminating case. It sits in the same section as `bindings.dir` and its
+    // default (`*.binding.yaml`) looks like a filename, so an implementation that
+    // classifies by section sweeps it in. It is a glob matched WITHIN
+    // `bindings.dir`, never resolved as a path itself.
+    expect(Config.pathTypedKeys()).not.toContain('bindings.pattern');
+  });
+
+  it('non-path string keys are not path-typed', () => {
+    // An implementation that marks every string key as path-typed passes any
+    // presence-only assertion and fails here.
+    for (const key of [
+      'acl.default_effect',
+      'schema.strategy',
+      'logging.level',
+      'observability.tracing.exporter',
+      'project.name',
+    ]) {
+      expect(Config.pathTypedKeys()).not.toContain(key);
+    }
+  });
+
+  it('is a property of the spec, not of a loaded document', () => {
+    expect(Config.pathTypedKeys()).toEqual(EXPECTED);
+  });
+});
