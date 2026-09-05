@@ -43,6 +43,8 @@ describe('ApprovalRequest', () => {
     };
     const req = createApprovalRequest({
       moduleId: 'test.module',
+      callerId: 'test.caller',
+      action: 'test.module',
       arguments: { key: 'value' },
       context: ctx,
       annotations: ann,
@@ -50,6 +52,8 @@ describe('ApprovalRequest', () => {
       tags: ['admin'],
     });
     expect(req.moduleId).toBe('test.module');
+    expect(req.callerId).toBe('test.caller');
+    expect(req.action).toBe('test.module');
     expect(req.arguments).toEqual({ key: 'value' });
     expect(req.context).toBe(ctx);
     expect(req.annotations).toBe(ann);
@@ -80,6 +84,12 @@ describe('ApprovalRequest', () => {
     });
     expect(req.description).toBeNull();
     expect(req.tags).toEqual([]);
+    // D-03: an omitted callerId defaults to null (a top-level call) and an
+    // omitted action defaults to moduleId, the populating rule BuiltinApprovalGate
+    // uses (`action = module_id`) — so a caller predating both fields still
+    // gets the right value rather than an empty one.
+    expect(req.callerId).toBeNull();
+    expect(req.action).toBe('m');
   });
 
   it('is frozen', () => {

@@ -11,9 +11,20 @@ import type { ModuleAnnotations } from './module.js';
 
 /**
  * Carries invocation context to the approval handler.
+ *
+ * `callerId` and `action` (spec v2026-05 D-03) let a handler — a Slack
+ * approver, an audit log — read who is calling and what is being invoked off
+ * this one flat record, without traversing `context` or treating `moduleId`
+ * as double duty for "the thing being approved". `callerId` is read straight
+ * off `Context.callerId` with no substitution: it is `null` for a top-level
+ * call, exactly as `Context.callerId` is, never the `"@external"` sentinel
+ * ACL evaluation substitutes internally. `action` always equals the invoked
+ * module's ID.
  */
 export interface ApprovalRequest {
   readonly moduleId: string;
+  readonly callerId: string | null;
+  readonly action: string;
   readonly arguments: Record<string, unknown>;
   readonly context: Context;
   readonly annotations: ModuleAnnotations;
@@ -23,6 +34,13 @@ export interface ApprovalRequest {
 
 /**
  * Create a frozen ApprovalRequest.
+ *
+ * `callerId` defaults to `null` (a top-level call) and `action` to
+ * `moduleId` (D-03's populating rule, `action = module_id`) so existing
+ * callers that predate both fields keep compiling and get the right value
+ * for free. `BuiltinApprovalGate` (`src/builtin-steps.ts`) is the one
+ * production call site and passes both explicitly from the call's own
+ * `Context` and module ID rather than relying on the default.
  */
 export function createApprovalRequest(options: {
   moduleId: string;
@@ -31,9 +49,13 @@ export function createApprovalRequest(options: {
   annotations: ModuleAnnotations;
   description?: string | null;
   tags?: string[];
+  callerId?: string | null;
+  action?: string;
 }): ApprovalRequest {
   return Object.freeze({
     moduleId: options.moduleId,
+    callerId: options.callerId ?? null,
+    action: options.action ?? options.moduleId,
     arguments: options.arguments,
     context: options.context,
     annotations: options.annotations,

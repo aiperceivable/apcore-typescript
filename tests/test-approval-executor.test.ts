@@ -295,6 +295,34 @@ describe('ApprovalGate call()', () => {
     expect(req.description).toBe('Destructive operation');
     expect(req.tags).toEqual(['admin']);
     expect(req.context.traceId).toBeDefined();
+    // D-03 (spec v2026-05): a top-level call (no supplied Context, hence no
+    // caller module) carries a null callerId — never the "@external"
+    // sentinel ACL evaluation substitutes internally — and action always
+    // equals the invoked module's id.
+    expect(req.callerId).toBeNull();
+    expect(req.action).toBe('test.approval_required');
+  });
+
+  it('D-03: carries the calling module as callerId on a nested call', async () => {
+    const registry = createTestRegistry();
+    const capturedRequests: ApprovalRequest[] = [];
+    const handler = new CallbackApprovalHandler(async (request: ApprovalRequest) => {
+      capturedRequests.push(request);
+      return createApprovalResult({ status: 'approved', approvedBy: 'test' });
+    });
+    const executor = new Executor({ registry, approvalHandler: handler });
+
+    // A Context whose call chain already names 'test.caller' — Context.child()
+    // makes the LAST entry of the supplied context's call chain the new
+    // child's callerId, so this simulates 'test.caller' invoking
+    // 'test.approval_required' rather than a top-level call.
+    const callerCtx = Context.create().child('test.caller');
+    await executor.call('test.approval_required', { key: 'val' }, callerCtx);
+
+    expect(capturedRequests).toHaveLength(1);
+    const req = capturedRequests[0];
+    expect(req.callerId).toBe('test.caller');
+    expect(req.action).toBe('test.approval_required');
   });
 
   it('strips _approval_token and calls checkApproval without mutating caller inputs', async () => {

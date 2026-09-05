@@ -49,7 +49,18 @@ _setAclFileLoader((yamlPath: string): ACL => {
   // `default_effect` at the constructor door, because the rules were all parsed
   // on the way to it. The same function runs at both doors, so there is one
   // check and one message.
-  const defaultEffect = (dataObj['default_effect'] as string) ?? 'deny';
+  //
+  // `?? 'deny'` alone would coerce an ABSENT key and an explicit
+  // `default_effect: null` to the same fallback — `??` treats a `null` read
+  // off the object identically to an `undefined` one, so it cannot tell
+  // "key absent" from "key present with value null" apart. Only the absent
+  // case is a real default; an explicit `null` is a value the operator
+  // wrote, and `schemas/acl-config.schema.json` declares `default_effect` as a
+  // plain string enum, not nullable, so it is exactly as invalid as `"block"`
+  // and must reach `_rejectInvalidDefaultEffect` unchanged rather than being
+  // silently normalized away before that check ever sees it.
+  const hasDefaultEffectKey = 'default_effect' in dataObj;
+  const defaultEffect = hasDefaultEffectKey ? (dataObj['default_effect'] as string) : 'deny';
   _rejectInvalidDefaultEffect(defaultEffect);
 
   if (!('rules' in dataObj)) {

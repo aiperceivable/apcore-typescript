@@ -273,6 +273,26 @@ rules: []
     expect(acl.check('any.caller', 'any.target')).toBe(true);
   });
 
+  it('throws ACLRuleError for an explicit default_effect: null in YAML', () => {
+    // An ABSENT `default_effect` key defaults to 'deny' (see the test above's
+    // sibling with no key at all, and the "missing required 'rules' key" test
+    // for a file with `default_effect` and no `rules`). An explicit `null` is
+    // a different thing: the operator wrote a value, and `null` is not in the
+    // 'allow' / 'deny' enum `schemas/acl-config.schema.json` declares — so it
+    // must be rejected exactly like `default_effect: block`, not silently
+    // normalized to 'deny' by a `?? 'deny'` fallback that cannot tell "absent"
+    // from "present and null" apart.
+    const yamlContent = `
+default_effect: null
+rules: []
+`;
+    const filePath = join(tmpDir, 'acl.yaml');
+    writeFileSync(filePath, yamlContent, 'utf-8');
+
+    expect(() => ACL.load(filePath)).toThrow(ACLRuleError);
+    expect(() => ACL.load(filePath)).toThrow(/Invalid default_effect 'null'/);
+  });
+
   it('throws ConfigNotFoundError for missing file', () => {
     const missingPath = join(tmpDir, 'nonexistent.yaml');
     expect(() => ACL.load(missingPath)).toThrow(ConfigNotFoundError);
@@ -397,6 +417,15 @@ describe('ACL constructor validation', () => {
 
   it('throws ACLRuleError for empty string defaultEffect', () => {
     expect(() => new ACL([], '')).toThrow(ACLRuleError);
+  });
+
+  it('throws ACLRuleError for an explicit null defaultEffect', () => {
+    // A default *parameter* only substitutes for `undefined`, never for an
+    // explicitly passed `null` — so `new ACL([], null as unknown as string)`
+    // must reach `_rejectInvalidDefaultEffect(null)` unchanged, the same way
+    // `ACL.load()` must for `default_effect: null` in a YAML file.
+    expect(() => new ACL([], null as unknown as string)).toThrow(ACLRuleError);
+    expect(() => new ACL([], null as unknown as string)).toThrow(/Invalid default_effect 'null'/);
   });
 });
 

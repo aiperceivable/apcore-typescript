@@ -2776,7 +2776,7 @@ describe('apcore Conformance Suite (TypeScript)', () => {
       const stableNow = tc.now_timestamp as number;
       vi.setSystemTime(stableNow * 1000);
 
-      const handle = manager.startReaper({
+      const handle = await manager.startReaper({
         ttlSeconds: reaperConfig.ttl_seconds,
         sweepIntervalMs: reaperConfig.sweep_interval_ms,
       });
@@ -2814,7 +2814,7 @@ describe('apcore Conformance Suite (TypeScript)', () => {
       const reaperConfig = tc.config.reaper;
       vi.setSystemTime(tc.now_timestamp * 1000);
 
-      const handle = manager.startReaper({
+      const handle = await manager.startReaper({
         ttlSeconds: reaperConfig.ttl_seconds,
         sweepIntervalMs: reaperConfig.sweep_interval_ms,
       });

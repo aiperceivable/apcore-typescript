@@ -49,6 +49,17 @@ export class CancelToken {
   }
 
   /**
+   * Spec `docs/features/cancellation.md` "Contract: CancelToken.raise_if_cancelled"
+   * names this method (idiomatic TS casing: `raiseIfCancelled`). Identical
+   * behavior to {@link check} — this is the canonical spec name, `check()` is
+   * kept as-is (not deprecated) since it is already used internally
+   * (`src/builtin-steps.ts`) and may be used by external callers.
+   */
+  raiseIfCancelled(): void {
+    this.check();
+  }
+
+  /**
    * Reset the token by installing a fresh `AbortController`. Listeners
    * attached to the previous `signal` remain bound to the aborted signal
    * — they will not see a fresh non-aborted state. New `signal` reads

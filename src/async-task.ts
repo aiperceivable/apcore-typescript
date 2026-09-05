@@ -357,8 +357,25 @@ export class AsyncTaskManager {
    * Start a background reaper that periodically deletes expired terminal tasks.
    *
    * Returns a handle to stop the reaper. Throws if a reaper is already running.
+   *
+   * Spec `docs/features/async-tasks.md` "Contract: AsyncTaskManager.start_reaper"
+   * (decision D-11) names `await manager.startReaper(...) -> Promise<ReaperHandle>`
+   * as the canonical TypeScript signature, uniform with Python's `await
+   * manager.start_reaper(...)` and Rust's `.start_reaper(...).await`. There is
+   * no async setup this manager needs to perform before the reaper is ready
+   * today — the sweep loop's own `await`s (`this._store.listExpired(...)`,
+   * `this._store.delete(...)`) already happen inside the scheduled `sweep()`
+   * closure, never before the handle is returned — so this method is
+   * deliberately NOT declared `async`; it stays synchronous end to end and
+   * wraps only the returned handle in `Promise.resolve(...)`. That preserves
+   * the existing idempotency guard below as a genuine SYNCHRONOUS throw
+   * (a caller doing `manager.startReaper()` a second time while one is
+   * running still throws immediately, rather than the throw being swallowed
+   * into a rejected Promise the caller may never await) while still handing
+   * back a real `Promise<ReaperHandle>` for a future implementation that
+   * *does* need to await something first.
    */
-  startReaper(opts: { ttlSeconds?: number; sweepIntervalMs?: number } = {}): ReaperHandle {
+  startReaper(opts: { ttlSeconds?: number; sweepIntervalMs?: number } = {}): Promise<ReaperHandle> {
     if (this._reaper !== null) {
       throw new Error('[apcore:async-task] Reaper already running; call stop() before starting again');
     }
@@ -404,7 +421,7 @@ export class AsyncTaskManager {
     };
 
     this._reaper = handle;
-    return handle;
+    return Promise.resolve(handle);
   }
 
   private _acquireSlot(): Promise<void> {

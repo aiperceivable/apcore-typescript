@@ -561,6 +561,12 @@ export class BuiltinApprovalGate implements Step {
 
       const request = createApprovalRequest({
         moduleId: ctx.moduleId,
+        // D-03 (spec v2026-05): populated straight off this call's own
+        // Context and module ID — `callerId` is `null` for a top-level call
+        // (Context.callerId carries no "@external" substitution) and
+        // `action` always equals the module being invoked.
+        callerId: ctx.context.callerId,
+        action: ctx.moduleId,
         arguments: ctx.inputs,
         context: ctx.context,
         annotations: ann,

@@ -484,11 +484,11 @@ describe('AsyncTaskManager.shutdown', () => {
 describe('AsyncTaskManager.startReaper', () => {
   it('async_tasks.start_reaper.property.async: startReaper returns a ReaperHandle whose stop() is awaitable', async () => {
     const { manager } = createManager();
-    // DIVERGENCE: TS startReaper is SYNC and returns ReaperHandle directly
-    // (Python returns the handle synchronously too; the background sweep loop
-    // is the async effect). There is no is_running() on the TS ReaperHandle —
-    // only stop(). We assert stop() is awaitable.
-    const handle = manager.startReaper({ ttlSeconds: 3600, sweepIntervalMs: 300000 });
+    // Spec D-11: startReaper() -> Promise<ReaperHandle>, uniform with Python's
+    // `await manager.start_reaper(...)` and Rust's `.start_reaper(...).await`.
+    // There is no is_running() on the TS ReaperHandle — only stop(). We assert
+    // stop() is awaitable.
+    const handle = await manager.startReaper({ ttlSeconds: 3600, sweepIntervalMs: 300000 });
     expect(typeof handle.stop).toBe('function');
     const stopP = handle.stop();
     expect(stopP).toBeInstanceOf(Promise);
@@ -498,7 +498,11 @@ describe('AsyncTaskManager.startReaper', () => {
 
   it('async_tasks.start_reaper.property.idempotent_false: starting a second reaper while one runs throws', async () => {
     const { manager } = createManager();
-    const handle = manager.startReaper({ ttlSeconds: 3600, sweepIntervalMs: 300000 });
+    const handle = await manager.startReaper({ ttlSeconds: 3600, sweepIntervalMs: 300000 });
+    // The idempotency guard still throws SYNCHRONOUSLY (before any Promise is
+    // created) — startReaper() is not declared `async`, precisely so this
+    // guard is not silently turned into an unhandled rejection for a caller
+    // who does not await the second call.
     expect(() => manager.startReaper({ ttlSeconds: 3600, sweepIntervalMs: 300000 })).toThrow();
     await handle.stop();
     await manager.shutdown();

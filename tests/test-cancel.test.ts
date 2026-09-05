@@ -37,6 +37,20 @@ describe('CancelToken', () => {
     expect(token.isCancelled).toBe(false);
     expect(() => token.check()).not.toThrow();
   });
+
+  // docs/features/cancellation.md "Contract: CancelToken.raise_if_cancelled" —
+  // the spec's canonical method name (idiomatic TS casing). Identical
+  // behavior to check(), which is kept as-is for existing callers.
+  it('raiseIfCancelled() does nothing when not cancelled', () => {
+    const token = new CancelToken();
+    expect(() => token.raiseIfCancelled()).not.toThrow();
+  });
+
+  it('raiseIfCancelled() throws ExecutionCancelledError when cancelled', () => {
+    const token = new CancelToken();
+    token.cancel();
+    expect(() => token.raiseIfCancelled()).toThrow(ExecutionCancelledError);
+  });
 });
 
 describe('CancelToken D-18 — real abort via AbortSignal', () => {
