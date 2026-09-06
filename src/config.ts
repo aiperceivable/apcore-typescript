@@ -591,21 +591,21 @@ export function userLevelConfigPaths(): string[] {
 // ---------------------------------------------------------------------------
 
 /**
- * Whether the apcore#113 project-root deprecation notice has been emitted.
- * Warn once per process, like the other deprecations in this SDK — a config is
- * typically loaded once, but `reload()` and multi-tenant hosts can load many.
- */
-let _projectRootDeprecationWarned = false;
-
-/**
- * Reset the once-per-process project-root deprecation flag.
+ * NOTE ON CADENCE — there is deliberately no `_projectRootDeprecationWarned`
+ * flag here, and no test hook to reset one.
  *
- * @internal — test hook only. Mirrors
- * `_resetMultiClassEnabledDeprecationWarned` in `./registry/registry.ts`.
+ * PROTOCOL_SPEC §9.2.2 requirement 2 fixes the cadence at **once per
+ * configuration load, never once per process**, and says implementations
+ * **MUST NOT** suppress the notice with process-global state. This SDK had
+ * exactly that flag. It made emission order-dependent: in a process that loads
+ * several configurations, whichever load ran first consumed the warning, so a
+ * later affected document was silent and the operator could not tell which one
+ * triggered it. The same global was a test-isolation hazard — one test consumed
+ * the warning another test needed — which is why the hook below it existed at
+ * all. De-duplication for log volume is the host logging layer's job.
+ *
+ * See {@link Config._warnProjectRootDeprecation}.
  */
-export function _resetProjectRootDeprecationWarned(): void {
-  _projectRootDeprecationWarned = false;
-}
 
 /**
  * Whether `value` is a path-typed value that a change of resolution base would
@@ -1159,7 +1159,8 @@ export class Config {
   }
 
   /**
-   * Emit the §13.2 deprecation notice for apcore#113, once per process.
+   * Emit the §13.2 deprecation notice for apcore#113, **once per configuration
+   * load** (PROTOCOL_SPEC §9.2.2 requirement 2).
    *
    * Deliberately narrow: it fires only when {@link Config.projectRoot} differs
    * from the CWD *and* this configuration actually carries a relative
@@ -1167,10 +1168,15 @@ export class Config {
    * to move anything, and a blanket warning on every load would train everyone
    * to ignore it. In the ordinary tier 2-5 project the first condition is
    * false and nothing is printed.
+   *
+   * The cadence is the load, not the process. The notice is a property of *the
+   * document being loaded*, so every load that satisfies both conditions emits
+   * it and a load that does not emits nothing — including a `reload()` that
+   * re-reads an edited file. §9.2.2 forbids the process-global suppression this
+   * method used to carry, because it made the warning order-dependent: the
+   * first affected load consumed it and every later one was silent.
    */
   private _warnProjectRootDeprecation(): void {
-    if (_projectRootDeprecationWarned) return;
-
     const root = this.projectRoot;
     const cwd = process.cwd();
     if (resolve(root) === resolve(cwd)) return;
@@ -1178,7 +1184,6 @@ export class Config {
     const affected = this._relativePathTypedKeys();
     if (affected.length === 0) return;
 
-    _projectRootDeprecationWarned = true;
     console.warn(
       '[apcore:config] DEPRECATION: this configuration resolves from ' +
         `'${this._yamlPath}', whose project root ('${root}') is not the ` +

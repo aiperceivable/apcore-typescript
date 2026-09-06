@@ -40,7 +40,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
-import { Config, _resetProjectRootDeprecationWarned } from '../src/config.js';
+import { Config } from '../src/config.js';
 import { findFixturesRoot, findSchemasRoot } from './spec-repo.js';
 
 // ---------------------------------------------------------------------------
@@ -182,13 +182,11 @@ describe('Conformance: the closed set of path-typed configuration keys (§9.2.1)
     // blanked — an empty string is itself a §9.2 override.
     vi.stubEnv('APCORE_EXTENSIONS_ROOTS', undefined);
     vi.stubEnv('APCORE_CONFIG_FILE', undefined);
-    _resetProjectRootDeprecationWarned();
   });
 
   afterEach(() => {
     vi.unstubAllEnvs();
     vi.restoreAllMocks();
-    _resetProjectRootDeprecationWarned();
   });
 
   it('declared_set_matches_schemas: the fixture is the schemas projection', () => {

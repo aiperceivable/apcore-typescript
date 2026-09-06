@@ -14,7 +14,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { BindingLoader } from '../src/bindings.js';
-import { Config, _resetProjectRootDeprecationWarned } from '../src/config.js';
+import { Config } from '../src/config.js';
 import { BindingFileInvalidError } from '../src/errors.js';
 import { Registry } from '../src/registry/registry.js';
 
@@ -28,7 +28,6 @@ beforeEach(() => {
   originalCwd = process.cwd();
   loader = new BindingLoader();
   registry = new Registry();
-  _resetProjectRootDeprecationWarned();
   // Neither variable may leak in from the ambient environment: this suite is
   // about which tier a value arrives through. Deleted rather than blanked —
   // `APCORE_BINDINGS_DIR=''` is itself a §9.2 override and would blank the

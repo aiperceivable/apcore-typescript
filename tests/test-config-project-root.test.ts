@@ -14,12 +14,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import {
-  Config,
-  _resetProjectRootDeprecationWarned,
-  discoverConfigFile,
-  userLevelConfigPaths,
-} from '../src/config.js';
+import { Config, discoverConfigFile, userLevelConfigPaths } from '../src/config.js';
 
 const MINIMAL_YAML = 'version: "0.29.0"\nproject:\n  name: project-root-test\n';
 
@@ -38,7 +33,6 @@ beforeEach(() => {
   mkdirSync(elsewhereDir);
   mkdirSync(fakeHome);
   originalCwd = process.cwd();
-  _resetProjectRootDeprecationWarned();
   vi.stubEnv('APCORE_CONFIG_FILE', undefined);
   vi.stubEnv('HOME', fakeHome);
 });
@@ -48,7 +42,6 @@ afterEach(() => {
   rmSync(tmpDir, { recursive: true, force: true });
   vi.unstubAllEnvs();
   vi.restoreAllMocks();
-  _resetProjectRootDeprecationWarned();
 });
 
 function write(filePath: string, body = MINIMAL_YAML): string {
@@ -260,18 +253,54 @@ describe('the §13.2 project-root deprecation notice', () => {
     expect(notices[0]).toContain('bindings.dir');
   });
 
-  it('warns once per process, and the reset hook restores it', () => {
+  it('fires once per LOAD, not once per process — a reload warns again', () => {
+    // PROTOCOL_SPEC §9.2.2 requirement 2: "once per configuration load, not
+    // once per process ... implementations MUST NOT suppress it with
+    // process-global state". This SDK used to carry exactly that flag.
     const configPath = write(join(elsewhereDir, 'custom.yaml'));
     process.chdir(projectDir);
     const warn = spyOnWarn();
 
     Config.load(configPath);
     Config.load(configPath);
-    expect(noticesFrom(warn)).toHaveLength(1);
-
-    _resetProjectRootDeprecationWarned();
     Config.load(configPath);
-    expect(noticesFrom(warn)).toHaveLength(2);
+
+    expect(noticesFrom(warn)).toHaveLength(3);
+  });
+
+  it('warns for BOTH of two different affected configurations in one process', () => {
+    // The case the once-per-process flag made impossible, and the reason
+    // §9.2.2 forbids it: whichever load ran first consumed the warning, so the
+    // second affected document was silent and the operator could not tell which
+    // one triggered it. Each document leaves a DIFFERENT single key relative,
+    // so the two notices are told apart by content, not by count alone.
+    // (`acl.root` is unusable as a discriminator: the notice's own prose names
+    // it when explaining today's inconsistent bases.)
+    const first = write(
+      join(elsewhereDir, 'first.yaml'),
+      `${MINIMAL_YAML}extensions:\n  root: "${join(tmpDir, 'ext')}"\nschema:\n  root: "./schemas-first"\nacl:\n  root: "${join(tmpDir, 'acl')}"\nbindings:\n  dir: "${join(tmpDir, 'bnd')}"\n`,
+    );
+    const secondDir = join(tmpDir, 'second-elsewhere');
+    const second = write(
+      join(secondDir, 'second.yaml'),
+      `${MINIMAL_YAML}extensions:\n  root: "./ext-second"\nschema:\n  root: "${join(tmpDir, 'sch')}"\nacl:\n  root: "${join(tmpDir, 'acl')}"\nbindings:\n  dir: "${join(tmpDir, 'bnd')}"\n`,
+    );
+    process.chdir(projectDir);
+    const warn = spyOnWarn();
+
+    Config.load(first, { validate: false });
+    Config.load(second, { validate: false });
+
+    const notices = noticesFrom(warn);
+    expect(notices).toHaveLength(2);
+    // The FIRST document's notice names its own key and its own directory...
+    expect(notices[0]).toContain('schema.root');
+    expect(notices[0]).not.toContain('extensions.root');
+    expect(notices[0]).toContain(elsewhereDir);
+    // ...and so does the SECOND's. Under the old flag this notice never existed.
+    expect(notices[1]).toContain('extensions.root');
+    expect(notices[1]).not.toContain('schema.root');
+    expect(notices[1]).toContain(secondDir);
   });
 
   it('says nothing for a config that never touched the filesystem', () => {
