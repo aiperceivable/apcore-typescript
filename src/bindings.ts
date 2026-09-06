@@ -71,6 +71,32 @@ function parseAnnotations(raw: Record<string, unknown>): ModuleAnnotations {
   };
 }
 
+/** §9.1.1 default for `bindings.dir`. */
+const DEFAULT_BINDING_DIR = './bindings';
+
+/** §9.1.1 default for `bindings.pattern`. */
+const DEFAULT_BINDING_PATTERN = '*.binding.yaml';
+
+/**
+ * The slice of {@link Config} {@link BindingLoader.loadBindingDir} needs.
+ *
+ * Structural rather than a `Config` import so a caller can supply any
+ * configuration source, and so `bindings.ts` keeps no runtime dependency on
+ * `config.ts`. Same shape and motive as `AclConfigLike` in `./acl.ts`.
+ */
+export interface BindingConfigLike {
+  get(key: string, defaultValue?: unknown): unknown;
+}
+
+/**
+ * A configured value usable as a path or pattern, or `null` so `??` falls
+ * through. An unset key reads as `undefined`, and an empty string is not a
+ * directory anybody meant.
+ */
+function asConfiguredString(value: unknown): string | null {
+  return typeof value === 'string' && value !== '' ? value : null;
+}
+
 export interface BindingLoaderOptions {
   /**
    * Optional allowlist of module-path prefixes. When set, `resolveTarget`
@@ -155,18 +181,39 @@ export class BindingLoader {
     return results;
   }
 
+  /**
+   * Scan a directory for binding files and register everything they declare
+   * (PROTOCOL_SPEC §5.12.6).
+   *
+   * The directory resolves as **explicit argument > `bindings.dir` > the
+   * `'./bindings'` default**, and `pattern` resolves the same way against
+   * `bindings.pattern` with the `'*.binding.yaml'` default. `config` is the
+   * §9.2 merge — environment variable > configuration file > default — so
+   * `APCORE_BINDINGS_DIR` still reaches this loader, but through
+   * `applyEnvOverrides` like every other `APCORE_*` variable rather than a
+   * second, competing reader.
+   *
+   * §5.12.6 forbids reading `APCORE_BINDINGS_DIR` directly here, and that is
+   * why: until apcore-typescript#36 this method read `process.env` at the
+   * consumption site, so one variable had two readers that could disagree —
+   * `bindings.dir` written in `apcore.yaml` was returned by `Config.get` and
+   * ignored here, and the `'./bindings'` default never applied because the
+   * method threw instead.
+   *
+   * Nothing in this SDK calls this method: loading bindings is an action the
+   * application takes. §5.12.6 clause 3 forbids scanning automatically during
+   * client or framework initialisation.
+   */
   async loadBindingDir(
     dirPath: string | undefined,
     registry: Registry,
-    pattern: string = '*.binding.yaml',
+    pattern?: string,
+    config?: BindingConfigLike | null,
   ): Promise<FunctionModule[]> {
-    const actualPath = dirPath ?? process.env.APCORE_BINDINGS_DIR;
-    if (!actualPath) {
-      throw new BindingFileInvalidError(
-        '',
-        'No directory provided and APCORE_BINDINGS_DIR environment variable is not set',
-      );
-    }
+    const actualPath =
+      dirPath ?? asConfiguredString(config?.get('bindings.dir')) ?? DEFAULT_BINDING_DIR;
+    const actualPattern =
+      pattern ?? asConfiguredString(config?.get('bindings.pattern')) ?? DEFAULT_BINDING_PATTERN;
 
     if (!existsSync(actualPath) || !statSync(actualPath).isDirectory()) {
       throw new BindingFileInvalidError(actualPath, 'Directory does not exist');
@@ -175,7 +222,7 @@ export class BindingLoader {
     const files = readdirSync(actualPath)
       .filter((f) => {
         // Simple glob matching for *.binding.yaml
-        const suffix = pattern.replace('*', '');
+        const suffix = actualPattern.replace('*', '');
         return f.endsWith(suffix);
       })
       .sort();

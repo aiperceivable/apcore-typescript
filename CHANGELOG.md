@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`loadBindingDir` re-read `APCORE_BINDINGS_DIR` instead of the `Config` that had already resolved it, so `bindings.dir` in `apcore.yaml` was ignored and the `./bindings` default threw ([#36](https://github.com/aiperceivable/apcore-typescript/issues/36), [apcore#114](https://github.com/aiperceivable/apcore/issues/114), spec §5.12.6).** This SDK asserted in one place that `APCORE_BINDINGS_DIR` is a §9.2 configuration override — `applyEnvOverrides` lowers it into the declared key `bindings.dir`, pinned by `tests/test-config-discovery.test.ts` and stated in the 0.24.0 entry below — and read the raw variable in another, at `src/bindings.ts`. One variable, two readers, free to disagree: a `bindings.dir` written in a config file was returned by `Config.get` and ignored by the only code path that scans a binding directory, the §9.1.1 `./bindings` default never applied because the method threw `BindingFileInvalidError` instead, and precedence was effectively inverted — `Config` implements env > file > default correctly and then the sole consumer honoured the env tier alone.
+
+  **`loadBindingDir` now takes an optional `Config`**, added as a fourth parameter after `pattern`, and resolves the directory as **explicit argument > `config.get('bindings.dir')` > `'./bindings'`**. `pattern` resolves the same way against `bindings.pattern` with the `'*.binding.yaml'` default, so it is no longer a value that exists only in the loader signature. The raw `process.env.APCORE_BINDINGS_DIR` read is **deleted**: §5.12.6 clause 2 states that an implementation MUST NOT read the variable at the loader, precisely so that one precedence chain governs the key. The parameter is typed `BindingConfigLike` — the `get` method and nothing else, structural like `AclConfigLike` — and is exported.
+
+  **`APCORE_BINDINGS_DIR` keeps working**, because the environment tier now arrives through `applyEnvOverrides` like every other `APCORE_*` variable; the loader has to be handed the `Config` to see it. Every existing call site passes an explicit directory and is unaffected. **There is no automatic scan at client or framework initialisation**, which §5.12.6 clause 3 forbids: loading bindings stays an action the application takes.
+
+  The pre-existing `loadBindingDir` tests all pass an explicit directory, the one path that behaves identically before and after, so they could not have caught this. `tests/test-bindings-config-dir.test.ts` adds the discriminating cases — a directory declared in a config *file* with `APCORE_BINDINGS_DIR` unset, the `./bindings` default, and a set `APCORE_BINDINGS_DIR` that must *not* reach a loader given no `Config` — plus the environment-tier back-compat guarantee end to end.
+
 ---
 
 ## [0.29.0] - 2026-09-05

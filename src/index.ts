@@ -274,7 +274,11 @@ export {
 export type { TaskInfo, TaskStore, ReaperHandle } from './async-task.js';
 
 // Bindings
-export { BindingLoader, type BindingLoaderOptions } from './bindings.js';
+export {
+  BindingLoader,
+  type BindingConfigLike,
+  type BindingLoaderOptions,
+} from './bindings.js';
 
 // Utils
 export { matchPattern, calculateSpecificity } from './utils/pattern.js';
