@@ -86,12 +86,27 @@ describe('TestInputs', () => {
     expect(req.moduleId).toBe('present.id');
   });
 
-  it.skip('approval_system.request_approval.input.request.caller_id_action_required: missing symbol ApprovalRequest.callerId/action (contract gap)', () => {
-    // The spec Inputs clause requires the request to contain `caller_id` and
-    // `action`, but the TS ApprovalRequest interface exposes neither field
-    // (it carries moduleId, arguments, context, annotations, description, tags).
-    // Caller identity lives on request.context, not on the request itself.
-    expect.fail('unreachable: skipped contract gap');
+  it('approval_system.request_approval.input.request.caller_id_action_required: request carries callerId and action', () => {
+    // Was skipped as a contract gap: the Inputs clause required `caller_id` and
+    // `action` and the interface exposed neither, so caller identity lived on
+    // request.context alone. Spec decision D-03 (spec v1.32.0 §7.3.1) closed
+    // that gap and this SDK carries both fields — `callerId` is null on a
+    // top-level call (never the "@external" sentinel, which is ACL-internal)
+    // and `action` always names the module being invoked.
+    const topLevel = _makeRequest('test.mod');
+    expect(topLevel.callerId).toBeNull();
+    expect(topLevel.action).toBe('test.mod');
+
+    const nested = createApprovalRequest({
+      moduleId: 'test.mod',
+      arguments: {},
+      context: Context.create().child('test.caller'),
+      annotations: _annotations(),
+      callerId: 'test.caller',
+      action: 'test.mod',
+    });
+    expect(nested.callerId).toBe('test.caller');
+    expect(nested.action).toBe('test.mod');
   });
 });
 
