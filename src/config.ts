@@ -257,6 +257,47 @@ function coerceEnvValue(value: string): unknown {
   return value;
 }
 
+/**
+ * The §9.2.1 path-typed key set, spelled the way an environment override can
+ * reach it: `extensions.roots[]`'s element marker is notation for "every
+ * element of this list", never part of a dot-path a variable produces.
+ */
+const PATH_TYPED_DOT_PATHS: ReadonlySet<string> = new Set(
+  PATH_TYPED_CONFIG_KEYS.map((key) => (key.endsWith('[]') ? key.slice(0, -'[]'.length) : key)),
+);
+
+/**
+ * PROTOCOL_SPEC §9.2.1 requirement 5 — **an empty string is not a path.**
+ *
+ * §9.2's override rule and shell ergonomics collide here. `export
+ * APCORE_ACL_ROOT=` and a variable inherited empty from a container spec are
+ * both *set* as far as the tooling is concerned, so an unguarded
+ * implementation lets `''` win the top precedence tier and silently **blank
+ * out** a directory the configuration file correctly declared — and `''` then
+ * resolves against the working directory, which is the working directory
+ * itself. It is a legal relative path to every filesystem API and never the
+ * one an operator meant. The value is discarded and resolution falls through
+ * to the next tier, exactly as if the variable had been unset.
+ *
+ * This lives at the point the override is APPLIED, not at each consumer, so a
+ * key added to §9.2.1 later is covered without anyone remembering to guard it.
+ * The same shape is already handled one line below for `APCORE_CONFIG_FILE`,
+ * where an empty value injected a phantom `config.file` key (apcore#88).
+ *
+ * The warning is §9.2.1's MAY: dropping an override the operator believes they
+ * set is exactly the class of silent failure this requirement exists to end.
+ */
+function discardsEmptyPathValue(dotPath: string, value: unknown, envKey: string): boolean {
+  if (value !== '' || !PATH_TYPED_DOT_PATHS.has(dotPath)) return false;
+  console.warn(
+    `[apcore:config] ${envKey} is set but empty, and '${dotPath}' is a path-typed ` +
+      'key (PROTOCOL_SPEC §9.2.1): an empty string is not a path, so the override ' +
+      'is discarded and the value falls through to the configuration file or the ' +
+      'default. Unset the variable to silence this, or give it a real directory.',
+  );
+  return true;
+}
+
 export function applyEnvOverrides(data: Record<string, unknown>): Record<string, unknown> {
   const result = JSON.parse(JSON.stringify(data)) as Record<string, unknown>;
   const env = process.env;
@@ -266,7 +307,9 @@ export function applyEnvOverrides(data: Record<string, unknown>): Record<string,
   for (const [envVar, configKey] of _globalEnvMap.entries()) {
     const envValue = env[envVar];
     if (envValue === undefined) continue;
-    setNested(result, configKey, coerceEnvValue(envValue));
+    const coerced = coerceEnvValue(envValue);
+    if (discardsEmptyPathValue(configKey, coerced, envVar)) continue;
+    setNested(result, configKey, coerced);
   }
   for (const [envKey, envValue] of Object.entries(env)) {
     if (!envKey.startsWith(ENV_PREFIX) || envValue === undefined) continue;
@@ -282,7 +325,9 @@ export function applyEnvOverrides(data: Record<string, unknown>): Record<string,
       .replace(/__/g, '\x00')
       .replace(/_/g, '.')
       .replace(/\x00/g, '_');
-    setNested(result, dotPath, coerceEnvValue(envValue));
+    const coerced = coerceEnvValue(envValue);
+    if (discardsEmptyPathValue(dotPath, coerced, envKey)) continue;
+    setNested(result, dotPath, coerced);
   }
   return result;
 }

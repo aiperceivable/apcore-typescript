@@ -65,6 +65,17 @@ export const DEFAULTS: Record<string, unknown> = {
   stream: {
     max_merge_depth: 32,
   },
+  // PROTOCOL_SPEC §5.12.6 / §9.1.1, via `defaults.schema.json`'s `bindings`
+  // section (spec v1.36.0). Until that section existed the `'./bindings'`
+  // default was unreachable from the mechanism meant to serve it: every
+  // consumer had to carry its own literal, and `config.get('bindings.dir')`
+  // answered `undefined` for a key the spec gives a canonical default.
+  // `dir` is path-typed (§9.2.1); `pattern` is a glob matched against
+  // filenames inside `dir` and is deliberately NOT.
+  bindings: {
+    dir: './bindings',
+    pattern: '*.binding.yaml',
+  },
 };
 
 /**

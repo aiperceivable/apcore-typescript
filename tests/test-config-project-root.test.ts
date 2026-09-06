@@ -210,9 +210,13 @@ describe('the §13.2 project-root deprecation notice', () => {
     // The second half of the condition, on its own. Without it this would be a
     // blanket warning on every out-of-tree config, which apcore#113 explicitly
     // rules out.
+    // EVERY §9.2.1 key has to be spelled absolutely, `bindings.dir` included:
+    // the DEFAULTS table now supplies `./bindings` (spec v1.36.0), so leaving
+    // it unstated leaves a relative value standing and the notice correctly
+    // fires.
     write(
       join(elsewhereDir, 'custom.yaml'),
-      `${MINIMAL_YAML}extensions:\n  root: "${join(tmpDir, 'ext')}"\nschema:\n  root: "${join(tmpDir, 'sch')}"\nacl:\n  root: "${join(tmpDir, 'acl')}"\n`,
+      `${MINIMAL_YAML}extensions:\n  root: "${join(tmpDir, 'ext')}"\nschema:\n  root: "${join(tmpDir, 'sch')}"\nacl:\n  root: "${join(tmpDir, 'acl')}"\nbindings:\n  dir: "${join(tmpDir, 'bnd')}"\n`,
     );
     process.chdir(projectDir);
     const warn = spyOnWarn();
@@ -228,7 +232,7 @@ describe('the §13.2 project-root deprecation notice', () => {
     // either accepted form is enough.
     write(
       join(elsewhereDir, 'custom.yaml'),
-      `${MINIMAL_YAML}extensions:\n  root: "${join(tmpDir, 'ext')}"\n  roots:\n    - root: "./plugins"\n      namespace: "plugins"\nschema:\n  root: "${join(tmpDir, 'sch')}"\nacl:\n  root: "${join(tmpDir, 'acl')}"\n`,
+      `${MINIMAL_YAML}extensions:\n  root: "${join(tmpDir, 'ext')}"\n  roots:\n    - root: "./plugins"\n      namespace: "plugins"\nschema:\n  root: "${join(tmpDir, 'sch')}"\nacl:\n  root: "${join(tmpDir, 'acl')}"\nbindings:\n  dir: "${join(tmpDir, 'bnd')}"\n`,
     );
     process.chdir(projectDir);
     const warn = spyOnWarn();
