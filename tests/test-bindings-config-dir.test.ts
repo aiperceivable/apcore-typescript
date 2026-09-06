@@ -263,3 +263,49 @@ describe('loadBindingDir resolves the pattern from bindings.pattern', () => {
     expect(registry.has('patdef.kept')).toBe(true);
   });
 });
+
+describe('a missing resolved directory raises, naming it (§5.12.6 clause 5)', () => {
+  // Clause 5 (spec v1.36.0) holds for all three provenances of the resolved
+  // directory — "whether the directory came from an explicit argument, from
+  // `bindings.dir`, or from the `./bindings` default" — and requires the
+  // message to NAME the directory, so an operator can see which one was
+  // resolved. The default provenance is pinned above; these are the other two.
+  // Contrast ACL.discover (D-64), where a missing `acl.root` attaches nothing:
+  // discovery is automatic, binding loading is user-invoked.
+
+  it('names the directory when it came from an explicit argument', async () => {
+    const missing = join(tmpDir, 'no-such-explicit-dir');
+
+    const err = await loader.loadBindingDir(missing, registry).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(BindingFileInvalidError);
+    expect((err as BindingFileInvalidError).code).toBe('BINDING_FILE_INVALID');
+    expect(String((err as BindingFileInvalidError).message)).toContain(missing);
+    expect(registry.list()).toHaveLength(0);
+  });
+
+  it('names the directory when it came from bindings.dir', async () => {
+    const missing = join(tmpDir, 'no-such-configured-dir');
+    const configPath = writeConfig(tmpDir, 'apcore.yaml', `bindings:\n  dir: "${missing}"\n`);
+    const config = Config.load(configPath);
+
+    const err = await loader
+      .loadBindingDir(undefined, registry, undefined, config)
+      .catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(BindingFileInvalidError);
+    expect((err as BindingFileInvalidError).code).toBe('BINDING_FILE_INVALID');
+    expect(String((err as BindingFileInvalidError).message)).toContain(missing);
+    expect(registry.list()).toHaveLength(0);
+  });
+
+  it('does NOT return an empty result — the absence is an error, not a no-op', async () => {
+    // The half clause 5 exists to forbid: returning zero modules silently
+    // reproduces the "configuration key that quietly does nothing" defect
+    // §5.12.6 was rewritten to remove.
+    process.chdir(tmpDir);
+    await expect(loader.loadBindingDir(undefined, registry)).rejects.toBeInstanceOf(
+      BindingFileInvalidError,
+    );
+  });
+});

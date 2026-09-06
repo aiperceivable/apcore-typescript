@@ -11,7 +11,9 @@
  * loader invoked WITHOUT an explicit directory resolves it from `bindings.dir`
  * under §9.2 precedence (env > file > default `./bindings`), matches on
  * `bindings.pattern` through the same chain, lets an explicit argument win, and
- * MUST NOT scan at client initialisation.
+ * MUST NOT scan at client initialisation. v1.36.0 adds clause 5: a resolved
+ * directory that does not exist MUST raise, naming that directory, rather than
+ * returning an empty result.
  *
  * WHAT THE `driver_contract` DEMANDS, AND WHERE EACH DEMAND LANDS
  * ---------------------------------------------------------------
@@ -27,47 +29,39 @@
  *   the one path that works under BOTH the old and the corrected behaviour.
  * - `env_isolation`: `APCORE_BINDINGS_DIR` and `APCORE_BINDINGS_PATTERN` are
  *   DELETED (not blanked) for every case that does not list them. An empty
- *   string is itself a valid §9.2 override and would blank the config file's
- *   value — the same hazard `APCORE_CONFIG_FILE` posed (CHANGELOG.md:321).
+ *   string is itself a §9.2 override; §9.2.1 requirement 5 now makes this SDK
+ *   discard it, but a driver that relied on that would be asserting the guard
+ *   rather than the precedence chain.
+ * - `fs_values_name_a_descriptor`: every `fs` value names a key in the
+ *   fixture's `binding_files` map, and that descriptor is written verbatim
+ *   apart from the target rewrite below. Module IDs come from the descriptor —
+ *   they are distinct on purpose, so the IDs the loader returns identify the
+ *   directory it enumerated.
+ * - `env_set_after_config_load`: those variables are stubbed AFTER
+ *   `Config.discover()` returns and BEFORE the loader runs. That ordering is
+ *   the whole clause-2 case: it separates a loader reading the merged `Config`
+ *   from one reading the raw environment.
  * - `scan_observation`: `scanned_dir` is read back from the loader's RESULT
  *   against the case's filesystem layout, never from the config value this
- *   driver supplied. Every candidate directory in a case holds a binding file
- *   with a distinct module ID, so the IDs the loader returns identify the
- *   directory it actually enumerated.
- * - `no_startup_scan`: the init case constructs a real `APCore` over a config
- *   whose `bindings.dir` holds a well-formed binding file, and asserts the
- *   module ID is absent from the registry.
+ *   driver supplied.
  *
- * TWO FIXTURE READINGS THIS DRIVER TAKES (reported, not silently assumed)
- * -----------------------------------------------------------------------
- * 1. MODULE ID COMES FROM THE FILE STEM. The fixture's `binding_file` block is
- *    a single descriptor with `module_id: greet`, yet cases place it under
- *    several names in several directories and expect `loaded_module_ids` to
- *    distinguish them — `env_overrides_config_file_dir` writes
- *    `from_file/file_side.binding.yaml` and `from_env/greet.binding.yaml` and
- *    expects `["greet"]`. That is only discriminating if each file declares the
- *    module ID of its own stem, so this driver derives `module_id` from the
- *    file name and keeps the rest of the descriptor as the fixture states it.
- *    Read the other way, both directories would yield `greet` and the case
- *    would pass on an SDK that ignores the environment tier entirely.
- * 2. `target_id` IS SPELLED `target`. The fixture's descriptor uses
- *    `target_id: "fixture_targets:greet"`, but the canonical
- *    `schemas/binding.schema.json` requires `module_id` + `target` (the
- *    `target_id` spelling appears only in PROTOCOL_SPEC §5.12 prose), and this
- *    SDK — like the canonical `binding_yaml_canonical.yaml` fixture — reads
- *    `target`. The target is also resolved by dynamic import, so it must name a
- *    real ESM module rather than the placeholder `fixture_targets`. The
- *    callable name `greet` is kept.
+ * THE ONE FIXTURE REWRITE (reported, not silently assumed)
+ * --------------------------------------------------------
+ * Each descriptor's `target` is `fixture_targets:greet` — a placeholder module
+ * path, and this SDK resolves a target by dynamic import, so it must name a
+ * real ESM module. The driver writes one target module PER BINDING FILE whose
+ * `greet` returns that file's own layout path, and rewrites only the module
+ * half of the target. Two consequences, both wanted: the descriptor's
+ * `module_id` is used exactly as the fixture declares it, and executing a
+ * loaded module reports WHICH FILE it came from. The pattern cases need that
+ * second observation — `custom_bindings/greet.bind.yaml` and
+ * `custom_bindings/decoy.binding.yaml` both name the `greet` descriptor, so
+ * module ID alone cannot tell a configured pattern from the default one.
  *
- * KNOWN DIVERGENCE (case `missing_configured_dir_is_not_an_error`)
- * ----------------------------------------------------------------
- * The fixture requires a configured-but-absent directory to yield an empty
- * result with no error. This SDK throws `BindingFileInvalidError` instead, a
- * behaviour three existing suites pin (tests/test-bindings.test.ts,
- * tests/test-bindings-config-dir.test.ts, tests/decorator-bindings_spec.test.ts).
- * The case is driven under `it.fails` rather than skipped: it stays visible, and
- * it turns red the moment the divergence closes. Today's behaviour is pinned
- * alongside it so the throw cannot change unnoticed either.
+ * NO `it.fails` REMAINS IN THIS FILE. v1.35.0's
+ * `missing_configured_dir_is_not_an_error` wanted an empty result where this
+ * SDK raises; v1.36.0 clause 5 replaced it with `missing_configured_dir_raises`,
+ * which is this SDK's behaviour, so the divergence and its pin are both gone.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -80,8 +74,10 @@ import yaml from 'js-yaml';
 
 import { BindingLoader } from '../src/bindings.js';
 import { APCore } from '../src/client.js';
-import { Config, _resetProjectRootDeprecationWarned } from '../src/config.js';
+import { Config } from '../src/config.js';
+import type { Context } from '../src/context.js';
 import { BindingFileInvalidError } from '../src/errors.js';
+import type { FunctionModule } from '../src/decorator.js';
 import { Registry } from '../src/registry/registry.js';
 import { findFixturesRoot } from './spec-repo.js';
 
@@ -89,25 +85,30 @@ import { findFixturesRoot } from './spec-repo.js';
 // Fixture loading
 // ---------------------------------------------------------------------------
 
+type JsonRecord = Record<string, unknown>;
+
 interface BindingsDirCase {
   readonly id: string;
   readonly comment?: string;
-  readonly config_file?: { readonly path: string; readonly content: Record<string, unknown> };
+  readonly config_file?: { readonly path: string; readonly content: JsonRecord };
   readonly env?: Record<string, string>;
+  readonly env_set_after_config_load?: Record<string, string>;
   readonly explicit_dir?: string | null;
   readonly invoke_loader?: boolean;
   readonly fs?: Record<string, string>;
-  readonly expected: Record<string, unknown>;
+  readonly expected: JsonRecord;
+}
+
+interface BindingDescriptor {
+  readonly bindings: readonly JsonRecord[];
 }
 
 interface BindingsDirFixture {
   readonly description: string;
   readonly driver_contract: Record<string, string>;
-  readonly binding_file: { readonly comment?: string; readonly bindings: readonly JsonRecord[] };
+  readonly binding_files: Record<string, BindingDescriptor & { readonly comment?: string }>;
   readonly test_cases: readonly BindingsDirCase[];
 }
-
-type JsonRecord = Record<string, unknown>;
 
 const fixture: BindingsDirFixture = JSON.parse(
   fs.readFileSync(path.join(findFixturesRoot(), 'bindings_dir_resolution.json'), 'utf-8'),
@@ -116,6 +117,15 @@ const fixture: BindingsDirFixture = JSON.parse(
 function caseFor(id: string): BindingsDirCase {
   const found = fixture.test_cases.find((c) => c.id === id);
   if (!found) throw new Error(`Fixture case '${id}' not found in bindings_dir_resolution.json`);
+  return found;
+}
+
+/** The named descriptor an `fs` value points at (`fs_values_name_a_descriptor`). */
+function descriptorFor(name: string): BindingDescriptor {
+  const found = fixture.binding_files[name];
+  if (!found?.bindings) {
+    throw new Error(`bindings_dir_resolution.json has no binding_files descriptor '${name}'`);
+  }
   return found;
 }
 
@@ -128,42 +138,21 @@ let originalCwd: string;
 let loader: BindingLoader;
 let registry: Registry;
 
-/** The importable ESM module every binding descriptor targets. */
-let targetModule: string;
-
 beforeEach(() => {
   tmpDir = realpathSync(mkdtempSync(join(tmpdir(), 'apcore-bindings-dir-')));
   originalCwd = process.cwd();
   loader = new BindingLoader();
   registry = new Registry();
-  _resetProjectRootDeprecationWarned();
 
-  // `env_isolation`: DELETED, never set to ''. An empty APCORE_BINDINGS_DIR is
-  // a valid §9.2 override that would blank whatever the config file declares,
-  // silently converting the discriminating case into the trivial one.
+  // `env_isolation`: DELETED, never set to ''.
   vi.stubEnv('APCORE_BINDINGS_DIR', undefined);
   vi.stubEnv('APCORE_BINDINGS_PATTERN', undefined);
   vi.stubEnv('APCORE_CONFIG_FILE', undefined);
   // The user-level §9.14 tiers must not reach the real home directory.
   vi.stubEnv('HOME', join(tmpDir, 'nonexistent-home'));
 
-  // The fixture's descriptor carries `auto_schema: true`, and in TypeScript
-  // types are erased at run time: the loader infers from a module's
-  // `inputSchema` / `outputSchema` exports (src/schema/extractor.ts), which the
-  // plain-JSON-Schema adapter accepts. Without them, explicit `auto_schema`
-  // raises BINDING_SCHEMA_INFERENCE_FAILED and every case would fail for a
-  // reason that has nothing to do with directory resolution.
-  targetModule = join(tmpDir, 'fixture_targets.mjs');
-  writeFileSync(
-    targetModule,
-    "export const inputSchema = { type: 'object', properties: {} };\n" +
-      "export const outputSchema = { type: 'object', properties: {} };\n" +
-      "export function greet() { return { ok: 'greet' }; }\n",
-    'utf-8',
-  );
-
   // `loadBindings` warns once per file about the absent `spec_version` (the
-  // fixture's descriptor does not carry one) and that noise is not under test.
+  // fixture's descriptors do not carry one) and that noise is not under test.
   vi.spyOn(console, 'warn').mockImplementation(() => {});
 });
 
@@ -172,44 +161,53 @@ afterEach(() => {
   rmSync(tmpDir, { recursive: true, force: true });
   vi.unstubAllEnvs();
   vi.restoreAllMocks();
-  _resetProjectRootDeprecationWarned();
 });
 
 /**
- * The module ID a binding file declares: its own stem.
+ * Write the ESM module a binding file's targets resolve to.
  *
- * See reading 1 in the header — `greet.binding.yaml` declares `greet`,
- * `file_side.binding.yaml` declares `file_side`, so the IDs the loader returns
- * name the directory it enumerated.
+ * One per binding FILE, and its `greet` returns that file's layout path, so a
+ * loaded module can be asked which file declared it. `inputSchema` /
+ * `outputSchema` are exported because the descriptors carry `auto_schema: true`
+ * and TypeScript erases types at run time: without them the loader raises
+ * BINDING_SCHEMA_INFERENCE_FAILED and every case fails for a reason that has
+ * nothing to do with directory resolution.
  */
-function moduleIdFor(fileName: string): string {
-  return (fileName.split('/').pop() as string).split('.')[0] as string;
+function writeTargetModule(relPath: string, callable: string): string {
+  const modulePath = join(tmpDir, '__targets__', `${relPath.replace(/[^a-zA-Z0-9]/g, '_')}.mjs`);
+  mkdirSync(dirname(modulePath), { recursive: true });
+  writeFileSync(
+    modulePath,
+    "export const inputSchema = { type: 'object', properties: {} };\n" +
+      "export const outputSchema = { type: 'object', properties: {} };\n" +
+      `export function ${callable}() { return { source_file: ${JSON.stringify(relPath)} }; }\n`,
+    'utf-8',
+  );
+  return modulePath;
 }
 
-/** Write the fixture's binding descriptor into `relPath` under the layout. */
-function writeBindingFile(relPath: string): void {
+/** Write the named descriptor into `relPath`, rewriting only the target's module half. */
+function writeBindingFile(relPath: string, descriptorName: string): void {
   const absPath = join(tmpDir, relPath);
   mkdirSync(dirname(absPath), { recursive: true });
-  const descriptor = fixture.binding_file.bindings.map((entry) => {
-    const { module_id: _ignoredId, target_id: targetId, ...rest } = entry;
-    return {
-      ...rest,
-      module_id: moduleIdFor(relPath),
-      // Reading 2: the canonical binding schema's key is `target`, and it must
-      // name an importable module. The callable half of the fixture's
-      // `fixture_targets:greet` is preserved.
-      target: `${targetModule}:${String(targetId ?? 'fixture_targets:greet').split(':')[1]}`,
-    };
+  const entries = descriptorFor(descriptorName).bindings.map((entry) => {
+    const callable = String(entry['target']).split(':')[1] ?? 'greet';
+    return { ...entry, target: `${writeTargetModule(relPath, callable)}:${callable}` };
   });
-  writeFileSync(absPath, yaml.dump({ bindings: descriptor }), 'utf-8');
+  writeFileSync(absPath, yaml.dump({ bindings: entries }), 'utf-8');
 }
 
-/** Materialise a case's `fs` block. Every value is the fixture's binding file. */
+/** Materialise a case's `fs` block; each value names a `binding_files` key. */
 function writeLayout(testCase: BindingsDirCase): void {
-  for (const [relPath, kind] of Object.entries(testCase.fs ?? {})) {
-    if (kind !== 'binding_file') throw new Error(`Unknown fs payload '${kind}' in ${testCase.id}`);
-    writeBindingFile(relPath);
+  for (const [relPath, descriptorName] of Object.entries(testCase.fs ?? {})) {
+    writeBindingFile(relPath, descriptorName);
   }
+}
+
+/** The module IDs the file at `relPath` declares, per its named descriptor. */
+function moduleIdsIn(testCase: BindingsDirCase, relPath: string): string[] {
+  const descriptorName = (testCase.fs ?? {})[relPath] as string;
+  return descriptorFor(descriptorName).bindings.map((b) => String(b['module_id']));
 }
 
 /**
@@ -225,8 +223,9 @@ function loadConfig(testCase: BindingsDirCase): Config {
   if (!block) throw new Error(`Case ${testCase.id} has no config_file block`);
   writeFileSync(join(tmpDir, block.path), yaml.dump(block.content ?? {}), 'utf-8');
   const config = Config.discover({ validate: false });
-  expect(config.sourcePath, `${testCase.id}: discovery did not find the case's config file`)
-    .toBe(block.path);
+  expect(config.sourcePath, `${testCase.id}: discovery did not find the case's config file`).toBe(
+    block.path,
+  );
   return config;
 }
 
@@ -245,29 +244,57 @@ function applyEnv(testCase: BindingsDirCase): void {
  * this driver wrote.
  */
 function directoryOf(testCase: BindingsDirCase, moduleId: string): string {
-  const entry = Object.keys(testCase.fs ?? {}).find((p) => moduleIdFor(p) === moduleId);
+  const entry = Object.keys(testCase.fs ?? {}).find((p) =>
+    moduleIdsIn(testCase, p).includes(moduleId),
+  );
   if (!entry) throw new Error(`${testCase.id}: no layout file declares module '${moduleId}'`);
   return dirname(entry);
+}
+
+/** Which layout file a loaded module came from — see "THE ONE FIXTURE REWRITE". */
+async function sourceFileOf(module: FunctionModule): Promise<string> {
+  const result = await module.execute({}, undefined as unknown as Context);
+  return String(result['source_file']);
 }
 
 /** Run one `explicit_dir: null | "..."` case end to end. */
 async function runCase(testCase: BindingsDirCase): Promise<{
   scannedDir: string | null;
   loadedModuleIds: string[];
+  sourceFiles: string[];
 }> {
   writeLayout(testCase);
   applyEnv(testCase);
   process.chdir(tmpDir);
   const config = loadConfig(testCase);
 
+  // `env_set_after_config_load`: the merged Config already holds the FILE
+  // value; a loader that reads the raw variable would now see something else.
+  for (const [name, value] of Object.entries(testCase.env_set_after_config_load ?? {})) {
+    vi.stubEnv(name, value);
+  }
+
   // `no_explicit_argument`: genuinely absent, not a directory computed here.
   const explicit = testCase.explicit_dir ?? undefined;
   const modules = await loader.loadBindingDir(explicit, registry, undefined, config);
 
   const loadedModuleIds = modules.map((m) => m.moduleId ?? '').sort();
+  const sourceFiles = (await Promise.all(modules.map(sourceFileOf))).sort();
   const dirs = new Set(loadedModuleIds.map((id) => directoryOf(testCase, id)));
   if (dirs.size > 1) throw new Error(`${testCase.id}: loader spanned directories ${[...dirs]}`);
-  return { scannedDir: dirs.size === 1 ? ([...dirs][0] as string) : null, loadedModuleIds };
+  return { scannedDir: dirs.size === 1 ? ([...dirs][0] as string) : null, loadedModuleIds, sourceFiles };
+}
+
+/** The `{scanned, scanned_dir, loaded_module_ids}` triple the fixture states. */
+function assertScan(
+  testCase: BindingsDirCase,
+  observed: { scannedDir: string | null; loadedModuleIds: string[] },
+): void {
+  expect({
+    scanned: true,
+    scanned_dir: observed.scannedDir,
+    loaded_module_ids: observed.loadedModuleIds,
+  }).toEqual(testCase.expected);
 }
 
 // ---------------------------------------------------------------------------
@@ -279,121 +306,103 @@ describe('Conformance: binding-directory resolution (§5.12.6)', () => {
     // this before v1.35.0, and TypeScript's deleted raw `process.env` read
     // covered only the environment tier.
     const testCase = caseFor('config_file_dir_is_scanned_with_env_unset');
-    const observed = await runCase(testCase);
-
-    expect({
-      scanned: true,
-      scanned_dir: observed.scannedDir,
-      loaded_module_ids: observed.loadedModuleIds,
-    }).toEqual(testCase.expected);
+    assertScan(testCase, await runCase(testCase));
     expect(registry.has('greet')).toBe(true);
   });
 
   it('default_dir_when_key_absent', async () => {
     // No `bindings.dir` anywhere and no argument: the §9.1.1 default ./bindings.
     const testCase = caseFor('default_dir_when_key_absent');
-    const observed = await runCase(testCase);
-
-    expect({
-      scanned: true,
-      scanned_dir: observed.scannedDir,
-      loaded_module_ids: observed.loadedModuleIds,
-    }).toEqual(testCase.expected);
+    assertScan(testCase, await runCase(testCase));
   });
 
   it('env_overrides_config_file_dir', async () => {
-    // §9.2 precedence, top tier. BOTH directories exist and both hold a binding
-    // file, so exactly one answer passes — a layout where only the env
-    // directory existed would pass on an SDK that ignores the env tier and
-    // simply finds nothing.
+    // §9.2 precedence, top tier. BOTH candidate directories exist, both hold a
+    // binding file, and the two descriptors carry DISTINCT module IDs — with a
+    // shared ID this case passed whichever directory the implementation
+    // scanned, which is the discriminating-power gap v1.36.0 repaired.
     const testCase = caseFor('env_overrides_config_file_dir');
+    assertScan(testCase, await runCase(testCase));
+    expect(registry.has('from_file_side'), 'the config-file directory was scanned instead').toBe(
+      false,
+    );
+  });
+
+  it('env_var_must_not_be_read_directly_at_the_loader', async () => {
+    // §5.12.6 clause 2, and the coverage v1.35.0's fixture lacked entirely: the
+    // environment tier reaches the loader through §9.2's ordinary override
+    // mechanism, never through a read at the loader. APCORE_BINDINGS_DIR is set
+    // AFTER the Config is built, so the merged `bindings.dir` is still the file
+    // value. A conforming loader scans from_file; one that reads the raw
+    // variable scans from_env — and satisfies every other case in this fixture.
+    const testCase = caseFor('env_var_must_not_be_read_directly_at_the_loader');
     const observed = await runCase(testCase);
 
-    expect({
-      scanned: true,
-      scanned_dir: observed.scannedDir,
-      loaded_module_ids: observed.loadedModuleIds,
-    }).toEqual(testCase.expected);
-    expect(registry.has('file_side'), 'the config-file directory was scanned instead').toBe(false);
+    assertScan(testCase, observed);
+    expect(process.env['APCORE_BINDINGS_DIR'], 'the variable must really be set').toBe(
+      './from_env',
+    );
+    expect(registry.has('from_env_side'), 'the loader read the raw environment').toBe(false);
   });
 
   it('explicit_argument_wins_over_config', async () => {
     // explicit > env > file > default. All three candidates exist and hold a file.
     const testCase = caseFor('explicit_argument_wins_over_config');
-    const observed = await runCase(testCase);
-
-    expect({
-      scanned: true,
-      scanned_dir: observed.scannedDir,
-      loaded_module_ids: observed.loadedModuleIds,
-    }).toEqual(testCase.expected);
-    expect(registry.has('file_side')).toBe(false);
-    expect(registry.has('env_side')).toBe(false);
+    assertScan(testCase, await runCase(testCase));
+    expect(registry.has('from_file_side')).toBe(false);
+    expect(registry.has('from_env_side')).toBe(false);
   });
 
   it('config_file_pattern_is_honoured', async () => {
     // `bindings.pattern` comes from the same precedence chain as the directory,
     // not from a loader-signature default. The decoy matches the DEFAULT
     // pattern, so an SDK that keeps the pattern in its signature loads the
-    // wrong file rather than none.
+    // wrong file rather than none. Both files name the same descriptor, so the
+    // discriminator is the FILE the loaded module came from.
     const testCase = caseFor('config_file_pattern_is_honoured');
     const observed = await runCase(testCase);
 
-    expect({
-      scanned: true,
-      scanned_dir: observed.scannedDir,
-      loaded_module_ids: observed.loadedModuleIds,
-    }).toEqual(testCase.expected);
-    expect(registry.has('decoy'), 'the *.binding.yaml default was used instead').toBe(false);
+    assertScan(testCase, observed);
+    expect(observed.sourceFiles, 'the *.binding.yaml default was used instead').toEqual([
+      'custom_bindings/greet.bind.yaml',
+    ]);
   });
 
   it('default_pattern_when_key_absent', async () => {
+    // No pattern configured: `*.binding.yaml` applies and the sibling that does
+    // not match it stays unloaded.
     const testCase = caseFor('default_pattern_when_key_absent');
     const observed = await runCase(testCase);
 
-    expect({
-      scanned: true,
-      scanned_dir: observed.scannedDir,
-      loaded_module_ids: observed.loadedModuleIds,
-    }).toEqual(testCase.expected);
-    expect(registry.has('notes')).toBe(false);
+    assertScan(testCase, observed);
+    expect(observed.sourceFiles).toEqual(['custom_bindings/greet.binding.yaml']);
   });
 
-  it.fails(
-    'missing_configured_dir_is_not_an_error — KNOWN DIVERGENCE, see the header',
-    async () => {
-      // The fixture: an absent `bindings.dir` yields an empty result, not an
-      // error, because discovery is opportunistic and the key carries a default
-      // most projects never create. This SDK throws instead. Driven under
-      // `it.fails` so the case stays visible and goes red once the gap closes.
-      const testCase = caseFor('missing_configured_dir_is_not_an_error');
-      const observed = await runCase(testCase);
-
-      expect({
-        scanned: true,
-        scanned_dir: observed.scannedDir,
-        loaded_module_ids: observed.loadedModuleIds,
-        error: null,
-      }).toEqual(testCase.expected);
-    },
-  );
-
-  it("today's behaviour for a missing configured dir: it throws, naming the resolved path", async () => {
-    // The other half of the divergence: pinned so the throw cannot change
-    // unnoticed either, and so the resolved path stays observable.
-    const testCase = caseFor('missing_configured_dir_is_not_an_error');
+  it('missing_configured_dir_raises', async () => {
+    // §5.12.6 clause 5 (v1.36.0). A resolved directory that does not exist is
+    // an error naming that directory, not an empty result. Contrast
+    // ACL.discover (D-64): discovery is automatic and silent, binding loading
+    // is user-invoked, so an absent directory there is a mistake.
+    const testCase = caseFor('missing_configured_dir_raises');
+    writeLayout(testCase);
     applyEnv(testCase);
     process.chdir(tmpDir);
     const config = loadConfig(testCase);
 
-    const error = await loader.loadBindingDir(undefined, registry, undefined, config).catch(
-      (e: unknown) => e,
-    );
+    const error = await loader
+      .loadBindingDir(undefined, registry, undefined, config)
+      .catch((e: unknown) => e);
 
     expect(error).toBeInstanceOf(BindingFileInvalidError);
-    expect(String((error as BindingFileInvalidError).message)).toContain(
-      testCase.expected['scanned_dir'] as string,
-    );
+    const resolvedDir = testCase.expected['scanned_dir'] as string;
+    expect({
+      scanned: true,
+      scanned_dir: resolvedDir,
+      error_code: (error as BindingFileInvalidError).code,
+      error_message_names_resolved_dir: (error as BindingFileInvalidError).message.includes(
+        resolvedDir,
+      ),
+    }).toEqual(testCase.expected);
     expect(registry.list().length).toBe(0);
   });
 
@@ -433,15 +442,17 @@ describe('Conformance: binding-directory resolution (§5.12.6)', () => {
       'config_file_dir_is_scanned_with_env_unset',
       'default_dir_when_key_absent',
       'env_overrides_config_file_dir',
+      'env_var_must_not_be_read_directly_at_the_loader',
       'explicit_argument_wins_over_config',
       'config_file_pattern_is_honoured',
       'default_pattern_when_key_absent',
-      'missing_configured_dir_is_not_an_error',
+      'missing_configured_dir_raises',
       'no_auto_scan_at_init',
     ]);
     expect(
       [...driven].filter((id) => !covered.has(id)),
       'bindings_dir_resolution.json gained cases this driver ignores',
     ).toEqual([]);
+    expect(fixture.test_cases.length, 'the fixture is 9 cases as of spec v1.36.0').toBe(9);
   });
 });

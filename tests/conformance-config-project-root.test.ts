@@ -35,37 +35,32 @@
  *   channel, filtered to the notice's own `PROTOCOL_SPEC §9.2.2` marker.
  *   Presence only — the text is not normative.
  *
- * THE TIER 6 PATH IS PLATFORM-DEPENDENT
- * --------------------------------------
- * The fixture spells tier 6 `fakehome/.config/apcore/config.yaml`. §9.14 itself
- * says tier 6 is "XDG on Linux, ~/Library/Application Support on macOS", so on
- * darwin this SDK looks in `~/Library/Application Support/apcore/`. The layout
- * mapper below writes the file where the running platform's tier 6 actually is,
- * spelled out here rather than imported from `userLevelConfigPaths()` so the
- * assertion cannot agree with the code by construction. The load-bearing
- * assertions are relational — `project_root == CWD` while the config's source
- * directory is somewhere else — and hold on either platform.
+ * - `home_relative_tokens`: `<tier6_config>` / `<tier7_config>` in `fs` and
+ *   `<tier6_dir>` / `<tier7_dir>` in `expected` are TOKENS, not paths. §9.14
+ *   makes tier 6 platform-varying — XDG on Linux, `~/Library/Application
+ *   Support/apcore/` on macOS — so the fixture names the TIER and the mapper
+ *   below materialises it at the running platform's location, spelled out here
+ *   rather than imported from `userLevelConfigPaths()` so the assertion cannot
+ *   agree with the code by construction. `layout.home` names the directory HOME
+ *   is redirected to. The load-bearing assertions stay relational —
+ *   `project_root == CWD` while the config's source directory is elsewhere —
+ *   and hold on either platform.
  *
  * WARNING CADENCE
  * ---------------
- * This SDK emits the notice once per process, guarded by a module-level flag
- * with a documented test hook. The fixture states a CONDITION, not a cadence,
- * so the flag is reset before every case: each case is a fresh process as far
- * as requirement 2 is concerned. Two cases expect the warning and two expect
- * silence, and without the reset the second expecting case would observe the
- * first case's suppression rather than its own condition.
+ * §9.2.2 requirement 2 fixes it at ONCE PER CONFIGURATION LOAD and forbids
+ * process-global suppression, so there is nothing for this driver to reset
+ * between cases: each load either satisfies both narrowing conditions and warns
+ * or does not and is silent. This SDK's previous module-level flag made the
+ * two positive cases order-dependent — whichever ran first consumed the notice
+ * — which is precisely the hazard the requirement now rules out.
  *
- * KNOWN DIVERGENCE (case `no_warning_when_all_path_values_absolute`)
- * ------------------------------------------------------------------
- * The case's config makes `schema.root` and `acl.root` absolute and expects no
- * warning. It leaves `extensions.root` unstated — and §9.1.1 gives it the
- * RELATIVE default `./extensions`, which §9.2.2's target semantics clause 2
- * says re-roots exactly as a written value does. This SDK reads the MERGED
- * configuration, as requirement 2 words it ("at least one path-typed value in
- * the merged configuration is relative"), so it warns. The case is driven under
- * `it.fails` — visible, and red the moment the divergence closes — with the
- * case's actual INTENT (every path-typed value absolute => silence) driven
- * green beside it.
+ * NO `it.fails` REMAINS IN THIS FILE. v1.35.0's
+ * `no_warning_when_all_path_values_absolute` spelled only `schema.root` and
+ * `acl.root` absolutely and was unsatisfiable for that reason: §9.2.2 counts
+ * the §9.1.1 DEFAULTS too, so the relative `./extensions` (and, since spec
+ * v1.36.0, `./bindings`) left a relative value standing. v1.36.0 spells every
+ * §9.2.1 key absolutely and the case is now driven green.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -77,7 +72,7 @@ import * as path from 'node:path';
 import yaml from 'js-yaml';
 
 import { ACL } from '../src/acl.js';
-import { Config, _resetProjectRootDeprecationWarned, discoverConfigFile } from '../src/config.js';
+import { Config, discoverConfigFile } from '../src/config.js';
 import { SchemaLoader } from '../src/schema/loader.js';
 import { findFixturesRoot } from './spec-repo.js';
 
@@ -99,7 +94,11 @@ interface ProjectRootCase {
 interface ProjectRootFixture {
   readonly description: string;
   readonly driver_contract: Record<string, string>;
-  readonly layout: { readonly cwd: string; readonly dirs: readonly string[] };
+  readonly layout: {
+    readonly cwd: string;
+    readonly dirs: readonly string[];
+    readonly home: string;
+  };
   readonly test_cases: readonly ProjectRootCase[];
 }
 
@@ -120,8 +119,8 @@ function caseFor(id: string): ProjectRootCase {
 let root: string;
 let originalCwd: string;
 
-/** The fixture's `fakehome` prefix, redirected onto HOME. */
-const FAKE_HOME = 'fakehome';
+/** The directory `layout.home` names, redirected onto HOME. */
+const FAKE_HOME = fixture.layout.home;
 
 /** §9.14 tier 6, spelled out per platform rather than read from the SDK. */
 function xdgConfigRelative(): string {
@@ -130,21 +129,28 @@ function xdgConfigRelative(): string {
     : `${FAKE_HOME}/.config/apcore/config.yaml`;
 }
 
+/** §9.14 tier 7 — HOME-relative, but not platform-varying. */
+function legacyConfigRelative(): string {
+  return `${FAKE_HOME}/.apcore/config.yaml`;
+}
+
 /**
- * Map a fixture-relative layout path onto an absolute path in the temp tree.
+ * The fixture's `home_relative_tokens`, resolved to this platform's locations.
  *
- * The one rewrite is tier 6: the fixture writes the POSIX XDG spelling and this
- * platform may use another (see the header). Everything else passes through.
+ * The fixture names the TIER; where that tier lives is §9.14's business and
+ * differs by platform. A fixture that hardcoded the POSIX spelling made every
+ * driver fail on macOS while asserting nothing extra on Linux.
  */
+const HOME_TOKENS: Record<string, string> = {
+  '<tier6_config>': xdgConfigRelative(),
+  '<tier6_dir>': dirname(xdgConfigRelative()),
+  '<tier7_config>': legacyConfigRelative(),
+  '<tier7_dir>': dirname(legacyConfigRelative()),
+};
+
+/** Map a fixture layout label — path or token — onto the temp tree. */
 function layoutPath(relative: string): string {
-  const rewritten =
-    relative === `${FAKE_HOME}/.config/apcore/config.yaml` ||
-    relative === `${FAKE_HOME}/.config/apcore`
-      ? relative.endsWith('config.yaml')
-        ? xdgConfigRelative()
-        : dirname(xdgConfigRelative())
-      : relative;
-  return join(root, rewritten);
+  return join(root, HOME_TOKENS[relative] ?? relative);
 }
 
 beforeEach(() => {
@@ -165,10 +171,8 @@ beforeEach(() => {
   vi.stubEnv('APCORE_ACL_ROOT', undefined);
   vi.stubEnv('APCORE_SCHEMA_ROOT', undefined);
   vi.stubEnv('APCORE_EXTENSIONS_ROOT', undefined);
-  // `home_isolation`.
+  // `home_isolation`: `layout.home` names the directory, never the real one.
   vi.stubEnv('HOME', join(root, FAKE_HOME));
-
-  _resetProjectRootDeprecationWarned();
 });
 
 afterEach(() => {
@@ -176,7 +180,6 @@ afterEach(() => {
   rmSync(root, { recursive: true, force: true });
   vi.unstubAllEnvs();
   vi.restoreAllMocks();
-  _resetProjectRootDeprecationWarned();
 });
 
 /** Materialise a case's `fs` block verbatim. */
@@ -319,7 +322,8 @@ describe('Conformance: the project root, one case per §9.14 discovery tier', ()
 
     // BOTH halves, per the case's own comment: asserting only the source
     // directory passes an implementation that never applies the tier split.
-    expect(observed.config_source_dir).toBe(dirname(layoutPath(xdgConfigRelative())));
+    // `<tier6_dir>` resolves through HOME_TOKENS to this platform's location.
+    expect(observed.config_source_dir).toBe(layoutPath('<tier6_dir>'));
     expect(observed.project_root).toBe(layoutPath('project'));
     expect(observed.project_root_equals_cwd).toBe(true);
     expect(observed.project_root).not.toBe(observed.config_source_dir);
@@ -329,7 +333,7 @@ describe('Conformance: the project root, one case per §9.14 discovery tier', ()
     const testCase = caseFor('tier_7_legacy_user_level');
     const observed = observe(testCase);
 
-    expect(observed.config_source_dir).toBe(layoutPath('fakehome/.apcore'));
+    expect(observed.config_source_dir).toBe(layoutPath('<tier7_dir>'));
     expect(observed.project_root).toBe(layoutPath('project'));
     expect(observed.project_root_equals_cwd).toBe(true);
     expect(observed.project_root).not.toBe(observed.config_source_dir);
@@ -403,45 +407,22 @@ describe('Conformance: the §9.2.2 deprecation warning condition (requirement 2)
     });
   });
 
-  it.fails(
-    'no_warning_when_all_path_values_absolute — KNOWN DIVERGENCE, see the header',
-    () => {
-      // The fixture leaves `extensions.root` unstated, and §9.1.1's default for
-      // it is the RELATIVE `./extensions`. Requirement 2 asks about the MERGED
-      // configuration, so this SDK counts that default and warns.
-      const testCase = caseFor('no_warning_when_all_path_values_absolute');
-      writeLayout(testCase);
-      applyEnv(testCase);
-      enterCwd(testCase);
-      const warn = spyOnWarn();
-
-      const config = Config.discover({ validate: false });
-
-      expect(config.projectRoot).toBe(layoutPath('elsewhere'));
-      expect(noticesFrom(warn).length > 0).toBe(testCase.expected['deprecation_warning']);
-    },
-  );
-
-  it('the intent of no_warning_when_all_path_values_absolute: no relative value, no notice', () => {
-    // The substantive half of requirement 2's second negative, driven green.
-    // BOTH conditions are required: a driver that asserts only the
+  it('no_warning_when_all_path_values_absolute', () => {
+    // Requirement 2's SECOND condition in isolation: the project root differs
+    // from the CWD, yet nothing is emitted because no path-typed value is
+    // relative. BOTH conditions are required — a driver that asserts only the
     // root-equals-CWD negative passes an implementation that warns on the
     // project-root difference alone.
+    //
+    // The case is driven VERBATIM. Until spec v1.36.0 it spelled only
+    // `schema.root` and `acl.root` absolutely and was unsatisfiable: §9.2.2
+    // counts the §9.1.1 DEFAULTS as well as declared values, so the relative
+    // `./extensions` — and `./bindings`, since the defaults table gained the
+    // `bindings` section — left a relative value standing and the notice
+    // correctly fired. It now spells every §9.2.1 key absolutely.
     const testCase = caseFor('no_warning_when_all_path_values_absolute');
+    writeLayout(testCase);
     applyEnv(testCase);
-    // Every §9.2.1 key absolute, including the three §9.1.1 relative defaults.
-    writeFileSync(
-      layoutPath('elsewhere/apcore.yaml'),
-      [
-        'project: {name: fixture}',
-        `schema: {root: ${join(root, 'abs-schemas')}}`,
-        `acl: {root: ${join(root, 'abs-acl')}}`,
-        `extensions: {root: ${join(root, 'abs-extensions')}}`,
-        `bindings: {dir: ${join(root, 'abs-bindings')}}`,
-        '',
-      ].join('\n'),
-      'utf-8',
-    );
     enterCwd(testCase);
     const warn = spyOnWarn();
 
@@ -449,7 +430,21 @@ describe('Conformance: the §9.2.2 deprecation warning condition (requirement 2)
 
     expect(config.projectRoot).toBe(layoutPath('elsewhere'));
     expect(resolve(config.projectRoot) === resolve(process.cwd())).toBe(false);
-    expect(noticesFrom(warn)).toEqual([]);
+    // Every key in §9.2.1's closed set really is absolute in the MERGED view,
+    // defaults included — otherwise silence would prove nothing.
+    for (const key of Config.pathTypedKeys().filter((k) => !k.endsWith('[]'))) {
+      expect(isAbsolute(String(config.get(key))), `${key} is not absolute`).toBe(true);
+    }
+    expect({
+      project_root_equals_cwd: false,
+      relative_path_typed_values_present: false,
+      deprecation_warning: noticesFrom(warn).length > 0,
+    }).toEqual({
+      project_root_equals_cwd: testCase.expected['project_root_equals_cwd'],
+      relative_path_typed_values_present:
+        testCase.expected['relative_path_typed_values_present'],
+      deprecation_warning: testCase.expected['deprecation_warning'],
+    });
   });
 
   it('env_sourced_relative_value_counts_toward_the_warning', () => {
@@ -578,5 +573,6 @@ describe('Conformance: fixture coverage', () => {
       fixture.test_cases.map((c) => c.id).filter((id) => !covered.has(id)),
       'config_project_root.json gained cases this driver ignores',
     ).toEqual([]);
+    expect(fixture.test_cases.length, 'the fixture is 14 cases as of spec v1.36.0').toBe(14);
   });
 });
