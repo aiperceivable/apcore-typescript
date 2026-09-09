@@ -643,6 +643,36 @@ function extractRootPath(element: unknown): unknown {
  *
  * Backward compatible: `new Config(data)` still works for in-memory configuration.
  */
+/**
+ * Report every `obs.redaction.regex_patterns` entry that does not compile.
+ *
+ * PROTOCOL_SPEC §9.2.3 requirement 6d. All three SDKs previously handled an
+ * unusable pattern the same way — skip it and carry on — so the divergence was
+ * never in the failure *policy* but in what counts as a failure: JavaScript
+ * rejects an inline `(?i)`, the Rust `regex` crate refuses lookaround and
+ * backreferences by design. Each SDK reports what ITS engine cannot compile,
+ * which is what makes an engine-specific rejection visible at deploy rather
+ * than never.
+ */
+function uncompilableRegexPatternErrors(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const out: string[] = [];
+  value.forEach((pattern, index) => {
+    if (typeof pattern !== 'string' || pattern === '') return;
+    try {
+      new RegExp(pattern, 'i');
+    } catch (err) {
+      out.push(
+        `obs.redaction.regex_patterns[${index}] does not compile and would redact nothing: ` +
+          `${JSON.stringify(pattern)} (${String(err)}). Patterns should stay inside the ` +
+          `portable subset — no lookaround, no backreferences, no inline (?i) flags ` +
+          `(PROTOCOL_SPEC 9.2.3 requirement 6).`,
+      );
+    }
+  });
+  return out;
+}
+
 export class Config {
   private _data: Record<string, unknown>;
   /**
@@ -1342,6 +1372,16 @@ export class Config {
     //    namespace — the closedness of the schema sections does not depend on
     //    which of the two file layouts the operator picked.
     errors.push(...this._undeclaredFrameworkKeyErrors(this._data));
+
+    // 4. PROTOCOL_SPEC §9.2.3 requirement 6d / §10.6.1: an
+    //    `obs.redaction.regex_patterns` entry the engine cannot compile MUST be
+    //    reported here, not skipped at the first log record. A redaction rule
+    //    that redacts nothing is indistinguishable, from the outside, from one
+    //    that works — and on this surface the difference is credentials in
+    //    plaintext. JavaScript is the engine that rejects the inline `(?i)`
+    //    flag the other two accept, so this fires on portable-LOOKING patterns
+    //    and not only on malformed ones.
+    errors.push(...uncompilableRegexPatternErrors(this.get('obs.redaction.regex_patterns')));
 
     if (errors.length > 0) {
       throw new ConfigError(
