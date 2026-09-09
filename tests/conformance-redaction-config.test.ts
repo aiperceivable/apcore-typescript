@@ -326,17 +326,27 @@ describe('Conformance: redaction configuration (redaction_config.json)', () => {
   // -------------------------------------------------------------------------
   behaviourCases.forEach((tc) => {
     const expected = expectedFields(tc.expected);
+    // `apply` is a documented SINGLE-LEVEL helper over a flat field map (the
+    // `extra` dict at log emission); `redact` is the recursive one. A case
+    // whose expectation depends on descending into a container is therefore a
+    // case about `redact` only, and asserting `apply` on it would pin the flat
+    // helper to a contract it does not have.
+    //
+    // The distinction is driven off the case's own DATA rather than an ID
+    // allowlist: a future nested case is then covered correctly the day it
+    // lands, instead of the day someone remembers to add its id here.
+    const flat = Object.values(tc.input).every((v) => v === null || typeof v !== 'object');
 
     it(`${tc.id} — via obs.redaction.* config keys`, () => {
       const rc = RedactionConfig.fromConfig(configFor(tc));
       expect(rc.replacement).toBe(tc.redaction_config!.replacement);
-      expect(rc.apply({ ...tc.input })).toEqual(expected);
+      if (flat) expect(rc.apply({ ...tc.input })).toEqual(expected);
       expect(rc.redact({ ...tc.input })).toEqual(expected);
     });
 
     it(`${tc.id} — via RedactionConfig constructor`, () => {
       const rc = constructedFor(tc);
-      expect(rc.apply({ ...tc.input })).toEqual(expected);
+      if (flat) expect(rc.apply({ ...tc.input })).toEqual(expected);
       expect(rc.redact({ ...tc.input })).toEqual(expected);
     });
   });
@@ -453,6 +463,9 @@ describe('Conformance: redaction configuration (redaction_config.json)', () => {
       'sensitive_keys_bracket_is_a_literal_never_a_character_class',
       'sensitive_keys_glob_entry_is_anchored_to_the_whole_name',
       'regex_patterns_are_an_unanchored_search',
+      // String values only — PROTOCOL_SPEC 10.6.1 requirement 2 (spec v1.40.0).
+      'regex_patterns_do_not_test_non_string_values',
+      'regex_patterns_still_reach_a_string_inside_a_container',
     ]);
 
     // Every case belongs to exactly one shape. A case carrying neither a
@@ -467,6 +480,9 @@ describe('Conformance: redaction configuration (redaction_config.json)', () => {
       'sensitive_keys_bracket_is_a_literal_never_a_character_class',
       'sensitive_keys_glob_entry_is_anchored_to_the_whole_name',
       'regex_patterns_are_an_unanchored_search',
+      // String values only — PROTOCOL_SPEC 10.6.1 requirement 2 (spec v1.40.0).
+      'regex_patterns_do_not_test_non_string_values',
+      'regex_patterns_still_reach_a_string_inside_a_container',
     ]);
     expect(configKeyCases.map((c) => c.id)).toEqual([
       'canonical_config_key_is_read',

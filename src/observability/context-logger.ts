@@ -106,40 +106,57 @@ function _compactKeyForMatch(s: string): string {
 // Use `matchGlob` (Algorithm A25) from utils/pattern.
 
 /**
- * Patterns already reported by {@link compileValuePattern}, so an entry that
- * cannot compile is named once rather than on every log record.
- */
-const _reportedBadRegexes = new Set<string>();
-
-/**
- * Compile one `obs.redaction.regex_patterns` entry, or report it.
+ * Compile `obs.redaction.regex_patterns` once, reporting the entries that will not.
  *
- * PROTOCOL_SPEC §9.2.3 requirement 6d and §10.6.1: a pattern the engine cannot
- * compile **MUST NOT** be discarded in silence. It was — the previous code
- * substituted `/(?!)/`, a regular expression that can never match, and said
- * nothing, so an operator-authored redaction rule that redacts nothing looked
- * exactly like one that works. On this surface that difference is credentials
- * in plaintext (#117 §2). JavaScript is the engine that rejects the inline
- * `(?i)` flag, which the other two accept, so this fires on portable-looking
- * patterns rather than only on malformed ones.
+ * PROTOCOL_SPEC §10.6.1 requirement 4: a pattern the engine cannot compile
+ * **MUST NOT** be discarded in silence. It was — the original code substituted
+ * `/(?!)/`, a regular expression that can never match, and said nothing, so an
+ * operator-authored redaction rule that redacts nothing looked exactly like one
+ * that works. On this surface that difference is credentials in plaintext
+ * (#117 §2). JavaScript is the engine that rejects the inline `(?i)` flag,
+ * which the other two accept, so this fires on portable-looking patterns rather
+ * than only on malformed ones.
  *
- * @returns The compiled pattern, or null after warning once.
+ * Requirement 5 is why this is a batch function holding no module state.
+ * Compilation belongs at the point the *configuration* is read, and the
+ * de-duplication that keeps the diagnostic to one line **MUST NOT outlive that
+ * configuration**. The `Set` this replaced was module-level and never cleared,
+ * so the SECOND configuration carrying the same broken pattern was told
+ * nothing: the reload case and the multi-tenant case, which are the two where
+ * an operator most needs telling.
+ *
+ * Already-compiled patterns pass through, so nothing is recompiled per record.
+ *
+ * @returns The compiled patterns, and `[pattern, message]` for each rejected one.
  */
-function compileValuePattern(pattern: string): RegExp | null {
-  try {
-    return new RegExp(pattern, 'i');
-  } catch (err) {
-    if (!_reportedBadRegexes.has(pattern)) {
-      _reportedBadRegexes.add(pattern);
-      console.warn(
-        `[apcore] obs.redaction.regex_patterns entry ${JSON.stringify(pattern)} does not ` +
-          `compile and will redact nothing: ${String(err)}. Patterns should stay inside the ` +
-          `portable subset (no lookaround, no backreferences, no inline (?i) flags) — see ` +
-          `PROTOCOL_SPEC 9.2.3 requirement 6.`,
-      );
+function compileValuePatterns(
+  patterns: readonly (RegExp | string)[],
+): { compiled: RegExp[]; invalid: [string, string][] } {
+  const compiled: RegExp[] = [];
+  const invalid: [string, string][] = [];
+  const reported = new Set<string>();
+  for (const pattern of patterns) {
+    if (pattern instanceof RegExp) {
+      compiled.push(pattern);
+      continue;
     }
-    return null;
+    if (!pattern) continue;
+    try {
+      compiled.push(new RegExp(pattern, 'i'));
+    } catch (err) {
+      invalid.push([pattern, String(err)]);
+      if (!reported.has(pattern)) {
+        reported.add(pattern);
+        console.warn(
+          `[apcore] obs.redaction.regex_patterns entry ${JSON.stringify(pattern)} does not ` +
+            `compile and will redact nothing: ${String(err)}. Patterns should stay inside the ` +
+            `portable subset (no lookaround, no backreferences, no inline (?i) flags) — see ` +
+            `PROTOCOL_SPEC 9.2.3 requirement 6.`,
+        );
+      }
+    }
   }
+  return { compiled, invalid };
 }
 
 /**
@@ -148,7 +165,20 @@ function compileValuePattern(pattern: string): RegExp | null {
  */
 export class RedactionConfig {
   readonly fieldPatterns: readonly string[];
-  readonly valuePatterns: readonly (RegExp | string)[];
+
+  /**
+   * `regex_patterns`, compiled ONCE at construction (§10.6.1 requirement 5).
+   *
+   * String entries passed to the constructor are compiled here, so this is
+   * always `RegExp[]` however the patterns arrived. Compiling per record was
+   * the previous behaviour on the programmatic path, and it is what made the
+   * requirement-4 diagnostic need a process-global set to stay quiet.
+   */
+  readonly valuePatterns: readonly RegExp[];
+
+  /** `[pattern, engine message]` for every entry that did not compile. */
+  readonly invalidValuePatterns: readonly (readonly [string, string])[];
+
   readonly replacement: string;
 
   constructor(
@@ -159,7 +189,9 @@ export class RedactionConfig {
     } = {},
   ) {
     this.fieldPatterns = options.fieldPatterns ?? [];
-    this.valuePatterns = options.valuePatterns ?? [];
+    const { compiled, invalid } = compileValuePatterns(options.valuePatterns ?? []);
+    this.valuePatterns = compiled;
+    this.invalidValuePatterns = invalid;
     this.replacement = options.replacement ?? '***REDACTED***';
   }
 
@@ -240,13 +272,11 @@ export class RedactionConfig {
     const valueStrings = Array.isArray(rawValues)
       ? (rawValues as unknown[]).filter((p): p is string => typeof p === 'string')
       : [];
-    const valuePatterns: (RegExp | string)[] = valueStrings
-      .map((p) => compileValuePattern(p))
-      .filter((re): re is RegExp => re !== null);
-
     return new RedactionConfig({
       fieldPatterns,
-      valuePatterns,
+      // Compiled by the constructor — one compile site, one place the
+      // requirement-4 diagnostic can fire.
+      valuePatterns: valueStrings,
       replacement: typeof replacement === 'string' ? replacement : undefined,
     });
   }
@@ -281,7 +311,21 @@ export class RedactionConfig {
   redact(value: unknown, depth: number = 0): unknown {
     if (depth > MAX_REDACTION_DEPTH) return value;
     if (Array.isArray(value)) {
-      return value.map((item) => this.redact(item, depth + 1));
+      return value.map((item) =>
+        // A string ELEMENT is matched against `regex_patterns` at its own
+        // position. It used to be handed straight back to `redact`, which only
+        // ever consults the value rule from inside `_shouldRedact` — and that
+        // needs a field name an array element does not have. So a secret in a
+        // list was returned in plaintext here while apcore-python
+        // (`_redact_in_list`) and apcore-rust (`redact_inner(item, None)`)
+        // both replaced it. Found by the fixture case added for §10.6.1
+        // requirement 2, which is the requirement's other half: containers are
+        // descended into, so declining to STRINGIFY a container must not turn
+        // into skipping what is inside it.
+        typeof item === 'string' && this._valueMatches(item)
+          ? this.replacement
+          : this.redact(item, depth + 1),
+      );
     }
     if (value !== null && typeof value === 'object') {
       const result: Record<string, unknown> = {};
@@ -323,17 +367,31 @@ export class RedactionConfig {
       }
     }
 
-    if (typeof value === 'string') {
-      // PROTOCOL_SPEC 9.2.3 requirement 6a: an UNANCHORED, case-insensitive
-      // search over the value. A string supplied programmatically is compiled
-      // through the same path as a configured one, so the `i` flag no longer
-      // depends on which door the pattern arrived through.
-      for (const pattern of this.valuePatterns) {
-        const re = pattern instanceof RegExp ? pattern : compileValuePattern(pattern);
-        if (re !== null && re.test(value)) return true;
-      }
-    }
+    return typeof value === 'string' && this._valueMatches(value);
+  }
 
+  /**
+   * The `regex_patterns` rule, for a value already known to be a string.
+   *
+   * PROTOCOL_SPEC §10.6.1 requirement 2: the rule applies to STRING values
+   * only, and a non-string value **MUST NOT** be converted to a string in
+   * order to test it — the three host languages render one non-string value
+   * three different ways, so a rule defined over the rendering is three rules.
+   * apcore-python's log-emission path did convert, and answered
+   * `***REDACTED***` for `amount: 42` where its own capture path answered `42`.
+   *
+   * Separate from `_shouldRedact` because it is reached from two places: a
+   * named field, and an array ELEMENT, which has no name to check against
+   * `sensitive_keys` but is still a value.
+   *
+   * §9.2.3 requirement 6a: an UNANCHORED, case-insensitive search. The
+   * patterns are compiled at construction (§10.6.1 requirement 5), so this
+   * costs no compile per record.
+   */
+  private _valueMatches(value: string): boolean {
+    for (const re of this.valuePatterns) {
+      if (re.test(value)) return true;
+    }
     return false;
   }
 }
