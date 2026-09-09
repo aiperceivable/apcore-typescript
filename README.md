@@ -286,7 +286,7 @@ Two prefix conventions are supported:
 | Convention | Applies to | Example |
 |------------|------------|---------|
 | `APCORE_` + `KEY_PATH` | Legacy flat keys | `APCORE_EXECUTOR_DEFAULT__TIMEOUT=5000` |
-| `APCORE_` + namespace prefix | apcore sub-package namespaces | `APCORE_OBSERVABILITY_TRACING_ENABLED=true` |
+| `APCORE_` + namespace prefix | apcore sub-package namespaces | `APCORE_OBS_REDACTION_REPLACEMENT='[hidden]'` |
 
 Within the suffix, a single `_` maps to `.` (a path separator) and `__` maps to a
 literal `_`. So `APCORE_EXECUTOR_DEFAULT__TIMEOUT` sets `executor.default_timeout`
@@ -333,15 +333,69 @@ apcore:
 _config:
   strict: true
 
-observability:
-  tracing:
-    enabled: true
-    samplingRate: 1.0
+obs:
+  redaction:
+    sensitive_keys: ["*password*", "*token*"]
+    replacement: "***REDACTED***"
 
 myPlugin:
   timeout: 10000
   retries: 5
 ```
+
+### Configuration keys that do nothing
+
+Ten declared keys reach no consumer in any SDK. They parse, they validate, they pass strict
+mode — and setting them has **no effect**. They are deprecated as of spec v1.39.0 and are
+removed no earlier than v2.0; loading a configuration that declares one of them now warns and
+names it.
+
+```yaml
+# None of the following does anything today. Shown so you can recognise it.
+logging:
+  level: "info"              # inert — configure your host application's logger
+  format: "json"             # inert
+
+observability:
+  tracing:
+    enabled: true            # inert — construct and install TracingMiddleware yourself
+    sampling_rate: 0.1       # inert, and the sharpest case: sampling is decided by
+                             # `new TracingMiddleware(exporter, samplingRate,
+                             # samplingStrategy)`, constructor arguments no configuration
+                             # key feeds, defaulting to 1.0 / 'full'. Ask for 10% here
+                             # and you still get 100%.
+    exporter: "stdout"       # inert — an exporter is an object, not a name
+  metrics:
+    enabled: true            # inert
+    exporter: "prometheus"   # inert
+
+acl:
+  audit:
+    enabled: true            # inert — pass an audit logger to the ACL constructor
+    include_denied: true     # inert
+    log_level: "info"        # inert
+```
+
+The same three audit settings are *also* accepted as an `audit:` block at the root of an ACL
+YAML file, and are equally inert there — no SDK has ever read it. Loading such a file now warns
+too. Only the `audit:` block is called out: every other unrecognised root key in an ACL file is
+still ignored in silence, exactly as before.
+
+Observability and audit logging **do** work — they are wired programmatically, with
+`TracingMiddleware` (see **API Overview**), `PrometheusExporter` (see **System Modules**) and the
+`ACL` constructor's audit logger. Tracking:
+[apcore#118](https://github.com/aiperceivable/apcore/issues/118), PROTOCOL_SPEC
+§9.2.4 / §9.2.4.1.
+
+There is a second, opposite trap. These keys are **not declared anywhere and read by nothing**,
+so a configuration carrying them is *rejected* under `_config.strict: true` rather than merely
+ignored:
+
+| Not a key | Notes |
+|-----------|-------|
+| `observability.prometheus.*` | The Prometheus exporter's port and paths are constructor arguments — see the `PrometheusExporter` example under **System Modules**. Measured: `Unknown key 'observability.prometheus' (strict mode enabled)`. |
+| `observability.health.*` | `/healthz` and `/readyz` are served by that same exporter, not configured in YAML. |
+| `observability.redaction.*` | The **legacy** spelling. This SDK still reads `field_patterns` / `value_patterns` / `replacement` under it as a fallback, with a deprecation warning — but the key is undeclared, so strict mode rejects the document before the fallback can run. Write the canonical `obs.redaction.sensitive_keys` / `regex_patterns` / `replacement` instead; apcore-python does not honour the legacy spelling at all. |
 
 ### System Modules
 
