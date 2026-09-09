@@ -158,12 +158,38 @@ function redactSecretPrefixInList(items: unknown[]): void {
 
 const MAX_MERGE_DEPTH = 32;
 
+/**
+ * Resolve `stream.max_merge_depth` (PROTOCOL_SPEC §5; canonical default 32).
+ *
+ * §5 calls 32 the *canonical default*, which implies an override — and until
+ * now there was none: the key was declared, schema-documented and read by no
+ * code path (apcore#118), so the constant WAS the contract.
+ *
+ * A non-positive or non-integer value falls back to the canonical default
+ * rather than disabling the cap. The cap exists to prevent stack exhaustion
+ * from adversarial chunk shapes, so a misconfiguration must not remove it.
+ */
+export function resolveMergeDepth(config: Config | null | undefined): number {
+  if (config == null) return MAX_MERGE_DEPTH;
+  let value: unknown;
+  try {
+    value = config.get('stream.max_merge_depth');
+  } catch {
+    return MAX_MERGE_DEPTH;
+  }
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1) {
+    return MAX_MERGE_DEPTH;
+  }
+  return value;
+}
+
 export function deepMergeChunk(
   base: Record<string, unknown>,
   overlay: Record<string, unknown>,
   depth = 0,
+  maxDepth: number = MAX_MERGE_DEPTH,
 ): void {
-  if (depth >= MAX_MERGE_DEPTH) {
+  if (depth >= maxDepth) {
     // At the depth cap, replace rather than recurse to avoid stack overflow.
     // Spec mandates right-value-wins, so shallow-assign each overlay key onto base.
     for (const [key, value] of Object.entries(overlay)) {
@@ -185,6 +211,7 @@ export function deepMergeChunk(
         base[key] as Record<string, unknown>,
         value as Record<string, unknown>,
         depth + 1,
+        maxDepth,
       );
     } else {
       base[key] = value;
@@ -833,7 +860,7 @@ export class Executor {
             },
           );
         }
-        deepMergeChunk(accumulated, chunk);
+        deepMergeChunk(accumulated, chunk, 0, resolveMergeDepth(this._config));
         yield chunk;
         chunkIndex += 1;
       }
