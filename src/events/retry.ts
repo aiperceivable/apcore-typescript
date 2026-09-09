@@ -2,6 +2,8 @@
  * Retry configuration types and helpers for event delivery.
  */
 
+import { matchGlob } from '../utils/pattern.js';
+
 export interface RetryConfig {
   maxAttempts?: number;
   initialBackoffMs?: number;
@@ -43,23 +45,19 @@ export function resolveRetry(config?: RetryConfig): ResolvedRetryConfig {
   return { ...DEFAULT_RETRY, ...config };
 }
 
-const _patternCache = new Map<string, RegExp>();
-
-/** Glob pattern matching supporting * (any chars) and ? (single char). Cached per pattern. */
+/**
+ * Event-type pattern matching (PROTOCOL_SPEC §9.16.3, Algorithm A25).
+ *
+ * Kept as a named export for the call sites that already use it, but the
+ * implementation is now the one shared matcher rather than a local
+ * glob-to-RegExp translation. The translation happened to agree with A25 on
+ * `*` and `?` and to escape `[`, so this SDK was the closest of the three —
+ * but "closest" is not a contract, and the argument order (text, pattern) is
+ * the reverse of A25's, which is exactly the kind of local convention that
+ * makes two implementations look identical and behave differently.
+ */
 export function fnmatch(text: string, pattern: string): boolean {
-  let regex = _patternCache.get(pattern);
-  if (regex === undefined) {
-    const regexStr = Array.from(pattern)
-      .map((c) => {
-        if (c === '*') return '.*';
-        if (c === '?') return '.';
-        return c.replace(/[$()*+.?[\]^{|}-]/g, '\\$&');
-      })
-      .join('');
-    regex = new RegExp(`^${regexStr}$`);
-    _patternCache.set(pattern, regex);
-  }
-  return regex.test(text);
+  return matchGlob(pattern, text);
 }
 
 /** Exponential-backoff delay for attempt `attempt` (0-based, clamped to ≥ 0). */

@@ -14,7 +14,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import * as yaml from 'js-yaml';
 import { normalizeToCanonicalId } from '../src/utils/normalize.js';
-import { matchPattern, calculateSpecificity } from '../src/utils/pattern.js';
+import { matchPattern, matchGlob, calculateSpecificity } from '../src/utils/pattern.js';
 import {
   ExecutionStrategy,
   PipelineEngine,
@@ -255,11 +255,38 @@ describe('apcore Conformance Suite (TypeScript)', () => {
 
   // --- 2. Pattern Matching (A09) ---
   const patternFixture = loadFixture('pattern_matching');
-  describe('Pattern Matching (Algorithm A09)', () => {
+  describe('Module-ID Pattern Matching (Algorithm A08)', () => {
     patternFixture.test_cases.forEach((tc: any) => {
       it(tc.id, () => {
         expect(matchPattern(tc.pattern, tc.value)).toBe(tc.expected);
       });
+    });
+  });
+
+  // --- 2b. Glob Matching (A25) — PROTOCOL_SPEC 9.2.3 (#116, #117) ---
+  //
+  // The matcher for every glob-dialect pattern-valued value EXCEPT module-ID
+  // matching: `bindings.pattern`, `obs.redaction.sensitive_keys` glob entries,
+  // event patterns, and `path_filter`. Kept in its own fixture rather than
+  // folded into `pattern_matching` on purpose — 9.2.3 requirement 5 states why
+  // the two algorithms are separate, and one shared fixture would hide it.
+  const globFixture = loadFixture('glob_matching');
+  describe('Glob Matching (Algorithm A25)', () => {
+    globFixture.test_cases.forEach((tc: any) => {
+      it(tc.id, () => {
+        expect(matchGlob(tc.pattern, tc.value)).toBe(tc.expected);
+      });
+    });
+
+    // 9.2.3 requirement 2: every string is a valid pattern, so there is no
+    // parse phase. Pinned separately because the failure it guards is a THROW,
+    // not a wrong boolean — `glob::Pattern` rejects `a[b` and `a**b`.
+    it('never throws, whatever the pattern', () => {
+      for (const pattern of ['a[b', 'a**b', '[!', '{a,b}', '\\', '***', '[]', '?']) {
+        for (const value of ['', 'a', 'a[b', 'executor.email.send']) {
+          expect(() => matchGlob(pattern, value)).not.toThrow();
+        }
+      }
     });
   });
 
@@ -1741,6 +1768,54 @@ describe('apcore Conformance Suite (TypeScript)', () => {
       expect(deliveryAttempted).toBe(tc.expected.delivery_attempted);
       expect(!deliveryAttempted).toBe(tc.expected.discarded);
     });
+
+    // PROTOCOL_SPEC 9.16.3 — the event-pattern dialect (#117). Written on
+    // `exclude_events` wherever possible because exclude FAILS OPEN: a pattern
+    // that does not match means the event is DELIVERED, so a matcher that
+    // understands fewer metacharacters than the operator wrote opens the
+    // filter rather than narrowing it.
+    for (const caseId of [
+      'filter_exclude_question_mark_is_a_wildcard',
+      'filter_exclude_character_class_does_not_expand',
+      'filter_include_question_mark_is_a_wildcard',
+    ]) {
+      it(caseId, async () => {
+        const tc = eventHardeningFixture.test_cases.find((t: any) => t.id === caseId);
+        expect(tc).toBeDefined();
+
+        let deliveryAttempted = false;
+        const mockDelegate: EventSubscriber = {
+          async onEvent(_event: ApCoreEvent) {
+            deliveryAttempted = true;
+          },
+        };
+        registerSubscriberType('mock_passthrough', () => mockDelegate);
+
+        const subscriber = createSubscriberFromConfig({
+          type: 'filter',
+          delegate_type: 'mock_passthrough',
+          delegate_config: {},
+          ...(tc.input.subscriber_config.include_events !== undefined
+            ? { include_events: tc.input.subscriber_config.include_events }
+            : {}),
+          ...(tc.input.subscriber_config.exclude_events !== undefined
+            ? { exclude_events: tc.input.subscriber_config.exclude_events }
+            : {}),
+        }) as FilterSubscriber;
+
+        await subscriber.onEvent(
+          makeTestEvent({
+            eventType: tc.input.event.event_type,
+            moduleId: tc.input.event.module_id,
+            severity: tc.input.event.severity,
+            data: tc.input.event.data,
+          }),
+        );
+
+        expect(deliveryAttempted).toBe(tc.expected.delivery_attempted);
+        expect(!deliveryAttempted).toBe(tc.expected.discarded);
+      });
+    }
 
     it('builtin_filter_discards_nonmatching', async () => {
       const tc = eventHardeningFixture.test_cases.find(

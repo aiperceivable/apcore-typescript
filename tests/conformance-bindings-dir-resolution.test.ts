@@ -448,11 +448,16 @@ describe('Conformance: binding-directory resolution (§5.12.6)', () => {
       'default_pattern_when_key_absent',
       'missing_configured_dir_raises',
       'no_auto_scan_at_init',
+      // The pattern DIALECT — PROTOCOL_SPEC 9.2.3, Algorithm A25 (#116).
+      'pattern_star_in_the_middle_is_honoured',
+      'pattern_first_star_must_not_be_removed_from_the_middle',
+      'pattern_question_mark_is_a_wildcard',
+      'pattern_bracket_is_a_literal_not_a_character_class',
     ]);
     expect(
       [...driven].filter((id) => !covered.has(id)),
       'bindings_dir_resolution.json gained cases this driver ignores',
     ).toEqual([]);
-    expect(fixture.test_cases.length, 'the fixture is 9 cases as of spec v1.36.0').toBe(9);
+    expect(fixture.test_cases.length, 'the fixture is 13 cases as of spec v1.37.0').toBe(13);
   });
 });

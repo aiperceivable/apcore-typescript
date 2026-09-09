@@ -5,9 +5,10 @@
 import type { Config } from '../config.js';
 import type { Context } from '../context.js';
 import { Middleware } from '../middleware/base.js';
-// matchPattern intentionally not imported — sensitive_keys uses
-// fnmatch-style globs against lowercased keys, not apcore's segment-aware
-// pattern matcher (which is case-sensitive and segment-anchored).
+import { matchGlob } from '../utils/pattern.js';
+// `matchGlob` (Algorithm A25, PROTOCOL_SPEC 9.2.3) is the matcher for
+// sensitive_keys glob entries; `matchPattern` (A08) is deliberately NOT used
+// here — it matches module IDs and has no `?`.
 
 /**
  * Default sensitive field patterns (Issue #45 §3 — canonical superset
@@ -95,32 +96,50 @@ function _compactKeyForMatch(s: string): string {
   return s.toLowerCase().replace(/[-_ ]/g, '');
 }
 
+// `_globToRegExp` was removed in v1.37.0. It translated a sensitive_keys entry
+// into a RegExp and passed `[...]` through VERBATIM, so `[!p]` meant "`!` or
+// `p`" instead of "not `p`": `[!p]assword` redacted `password` — the one field
+// the other two SDKs deliberately exclude — and leaked `bassword`, which they
+// catch. The meaning was inverted, not merely weakened (#117 section 1).
+// PROTOCOL_SPEC 9.2.3 makes `[` a literal and 10.6.1 routes such an entry
+// through the substring branch instead, so it is inert rather than backwards.
+// Use `matchGlob` (Algorithm A25) from utils/pattern.
+
 /**
- * Compile a sensitive_keys glob into a case-insensitive RegExp matching the
- * full lowercase key. Mirrors fnmatch semantics: `*` -> `.*`, `?` -> `.`,
- * `[abc]` is treated as a character class as-is.
+ * Patterns already reported by {@link compileValuePattern}, so an entry that
+ * cannot compile is named once rather than on every log record.
  */
-function _globToRegExp(pattern: string): RegExp {
-  let out = '';
-  for (let i = 0; i < pattern.length; i++) {
-    const ch = pattern[i];
-    if (ch === '*') out += '.*';
-    else if (ch === '?') out += '.';
-    else if (ch === '[') {
-      const close = pattern.indexOf(']', i + 1);
-      if (close === -1) {
-        out += '\\[';
-      } else {
-        out += pattern.slice(i, close + 1);
-        i = close;
-      }
-    } else if ('\\^$.|+(){}'.includes(ch)) {
-      out += '\\' + ch;
-    } else {
-      out += ch;
+const _reportedBadRegexes = new Set<string>();
+
+/**
+ * Compile one `obs.redaction.regex_patterns` entry, or report it.
+ *
+ * PROTOCOL_SPEC §9.2.3 requirement 6d and §10.6.1: a pattern the engine cannot
+ * compile **MUST NOT** be discarded in silence. It was — the previous code
+ * substituted `/(?!)/`, a regular expression that can never match, and said
+ * nothing, so an operator-authored redaction rule that redacts nothing looked
+ * exactly like one that works. On this surface that difference is credentials
+ * in plaintext (#117 §2). JavaScript is the engine that rejects the inline
+ * `(?i)` flag, which the other two accept, so this fires on portable-looking
+ * patterns rather than only on malformed ones.
+ *
+ * @returns The compiled pattern, or null after warning once.
+ */
+function compileValuePattern(pattern: string): RegExp | null {
+  try {
+    return new RegExp(pattern, 'i');
+  } catch (err) {
+    if (!_reportedBadRegexes.has(pattern)) {
+      _reportedBadRegexes.add(pattern);
+      console.warn(
+        `[apcore] obs.redaction.regex_patterns entry ${JSON.stringify(pattern)} does not ` +
+          `compile and will redact nothing: ${String(err)}. Patterns should stay inside the ` +
+          `portable subset (no lookaround, no backreferences, no inline (?i) flags) — see ` +
+          `PROTOCOL_SPEC 9.2.3 requirement 6.`,
+      );
     }
+    return null;
   }
-  return new RegExp(`^${out}$`, 'i');
 }
 
 /**
@@ -221,14 +240,9 @@ export class RedactionConfig {
     const valueStrings = Array.isArray(rawValues)
       ? (rawValues as unknown[]).filter((p): p is string => typeof p === 'string')
       : [];
-    const valuePatterns: (RegExp | string)[] = valueStrings.map((p) => {
-      try {
-        return new RegExp(p, 'i');
-      } catch {
-        // Drop invalid patterns rather than throwing at logger init.
-        return /(?!)/; // never matches
-      }
-    });
+    const valuePatterns: (RegExp | string)[] = valueStrings
+      .map((p) => compileValuePattern(p))
+      .filter((re): re is RegExp => re !== null);
 
     return new RedactionConfig({
       fieldPatterns,
@@ -288,9 +302,15 @@ export class RedactionConfig {
     for (const pattern of this.fieldPatterns) {
       if (!pattern) continue;
       const lowerPat = pattern.toLowerCase();
-      const isGlob = /[*?[]/.test(lowerPat);
+      // PROTOCOL_SPEC 10.6.1: an entry containing `*` or `?` is a glob-dialect
+      // pattern (A25, anchored to the whole name); anything else is a
+      // substring. `[` is NOT a trigger — brackets are literals under A25
+      // (9.2.3 requirement 4), and reading them as a character class is what
+      // inverted `[!p]assword` here (#117). The case fold is applied to BOTH
+      // sides, which is the half apcore-rust was missing.
+      const isGlob = lowerPat.includes('*') || lowerPat.includes('?');
       if (isGlob) {
-        if (_globToRegExp(lowerPat).test(lowerKey)) return true;
+        if (matchGlob(lowerPat, lowerKey)) return true;
       } else {
         // Plain case-insensitive substring match with hyphen/space ↔ underscore
         // equivalence (apcore-python behavioral parity).
@@ -304,9 +324,13 @@ export class RedactionConfig {
     }
 
     if (typeof value === 'string') {
+      // PROTOCOL_SPEC 9.2.3 requirement 6a: an UNANCHORED, case-insensitive
+      // search over the value. A string supplied programmatically is compiled
+      // through the same path as a configured one, so the `i` flag no longer
+      // depends on which door the pattern arrived through.
       for (const pattern of this.valuePatterns) {
-        const re = pattern instanceof RegExp ? pattern : new RegExp(pattern);
-        if (re.test(value)) return true;
+        const re = pattern instanceof RegExp ? pattern : compileValuePattern(pattern);
+        if (re !== null && re.test(value)) return true;
       }
     }
 

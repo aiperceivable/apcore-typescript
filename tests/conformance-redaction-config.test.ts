@@ -448,6 +448,11 @@ describe('Conformance: redaction configuration (redaction_config.json)', () => {
       'canonical_config_key_is_read',
       'legacy_config_key_is_honoured_with_a_deprecation_warning',
       'canonical_config_key_wins_over_legacy',
+      // The pattern DIALECT — PROTOCOL_SPEC 9.2.3 / 10.6.1 (#117).
+      'sensitive_keys_glob_case_fold_applies_to_the_pattern_too',
+      'sensitive_keys_bracket_is_a_literal_never_a_character_class',
+      'sensitive_keys_glob_entry_is_anchored_to_the_whole_name',
+      'regex_patterns_are_an_unanchored_search',
     ]);
 
     // Every case belongs to exactly one shape. A case carrying neither a
@@ -458,6 +463,10 @@ describe('Conformance: redaction configuration (redaction_config.json)', () => {
       'sensitive_keys_substring_case_insensitive',
       'default_sensitive_keys_cover_common_terms',
       'correlation_fields_never_redacted',
+      'sensitive_keys_glob_case_fold_applies_to_the_pattern_too',
+      'sensitive_keys_bracket_is_a_literal_never_a_character_class',
+      'sensitive_keys_glob_entry_is_anchored_to_the_whole_name',
+      'regex_patterns_are_an_unanchored_search',
     ]);
     expect(configKeyCases.map((c) => c.id)).toEqual([
       'canonical_config_key_is_read',

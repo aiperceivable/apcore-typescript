@@ -151,6 +151,11 @@ describe('Conformance: reload_module path_filter (reload_path_filter.json)', () 
       'no_filter_uses_module_id_for_single_reload',
       'no_match_filter_is_no_op',
       'module_id_and_path_filter_conflict',
+      // The pattern DIALECT — PROTOCOL_SPEC 6.7 clause 4 / 9.2.3 (#117).
+      'question_mark_is_a_wildcard_in_path_filter',
+      'bracket_is_a_literal_and_MUST_NOT_be_rejected',
+      'character_class_does_not_expand',
+      'double_star_is_two_ordinary_stars',
     ]);
   });
 });

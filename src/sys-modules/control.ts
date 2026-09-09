@@ -24,7 +24,7 @@ import { CONSTRAINTS } from '../config.js';
 import type { Context } from '../context.js';
 import type { AuditStore } from './audit.js';
 import { buildAuditEntry, extractAuditIdentity } from './audit.js';
-import { matchPattern } from '../utils/pattern.js';
+import { matchGlob } from '../utils/pattern.js';
 import type { OverridesStore } from './overrides.js';
 
 const RESTRICTED_KEYS = new Set(['sys_modules.enabled']);
@@ -389,7 +389,12 @@ export class ReloadModule {
     // dependency order on top (fixture `system_modules_hardening.json`
     // reload_with_path_filter: `reload_order: "topological"`).
     const matchingIds = this._topoSortModules(
-      allIds.filter((id) => matchPattern(pathFilter, id)).sort(),
+      // PROTOCOL_SPEC 6.7 clause 4 / 9.2.3: `path_filter` is a GLOB-dialect
+      // pattern (A25), not module-ID matching (A08). The two differ on `?`,
+      // which A08 treats as a literal — so `executor.?mail.*` reloaded
+      // nothing here while the other two SDKs reloaded two modules, and the
+      // zero-match no-op rule made that silent (#117).
+      allIds.filter((id) => matchGlob(pathFilter, id)).sort(),
     );
 
     // Capture existing modules and versions before unregistering

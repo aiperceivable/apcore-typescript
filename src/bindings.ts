@@ -19,6 +19,7 @@ import {
 } from './errors.js';
 import type { Registry } from './registry/registry.js';
 import { inferSchemasFromModule } from './schema/extractor.js';
+import { matchGlob } from './utils/pattern.js';
 import { jsonSchemaToTypeBox } from './schema/loader.js';
 import { assertOpenAiStrictCompatible } from './schema/openai-strict.js';
 
@@ -221,9 +222,13 @@ export class BindingLoader {
 
     const files = readdirSync(actualPath)
       .filter((f) => {
-        // Simple glob matching for *.binding.yaml
-        const suffix = actualPattern.replace('*', '');
-        return f.endsWith(suffix);
+        // PROTOCOL_SPEC 5.12.6 clause 1 / 9.2.3: the pattern is matched with
+        // Algorithm A25 against the FILENAME. The suffix comparison this
+        // replaces was written for the default value and was wrong in the
+        // direction that LOADS A FILE NOBODY ASKED FOR: `replace('*','')`
+        // deletes the star wherever it sits, so `a*b.yaml` became `ab.yaml`
+        // and `endsWith` accepted `zab.yaml` (#116).
+        return matchGlob(actualPattern, f);
       })
       .sort();
     const results: FunctionModule[] = [];

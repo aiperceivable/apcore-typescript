@@ -518,6 +518,25 @@ function describeNeverMatchingPatternField(
   // Flat list and explicit `$or` are both OR-of-operands, so the array matches
   // nothing only when every operand does.
   const operands = patterns[0] === '$or' ? patterns.slice(1) : patterns;
+
+  // PROTOCOL_SPEC §6.2.2 (v1.37.0): A08 has `*` as its ONLY metacharacter, and
+  // §2.7 forbids `?` in a module ID, so a pattern carrying one matches nothing
+  // and can never match anything. The author meant a wildcard — `?` IS one in
+  // every other pattern surface the spec defines (A25, §9.2.3) — and got a
+  // rule that is silently inert. Reported, never rejected: promoting `?` in
+  // A08 would widen `allow` rules that are inert in every deployed policy
+  // today, which is the one direction an authorization matcher must not move.
+  const withQuestion = operands.filter((p) => p.includes('?'));
+  if (operands.length > 0 && withQuestion.length === operands.length) {
+    return (
+      `every pattern here contains '?', which is a LITERAL in ACL matching ` +
+      `(Algorithm A08 — '*' is the only metacharacter) and which §2.7 forbids in a module ID, ` +
+      `so ${JSON.stringify(withQuestion)} matches nothing and can never match anything. ` +
+      `'?' is a wildcard in every other pattern surface (A25, §9.2.3), which is where the ` +
+      `expectation comes from. The rule loads and changes no decision — it simply never fires`
+    );
+  }
+
   if (operands.length > 0 && operands.every((p) => matchesNoModuleId(field, p))) {
     return (
       "every pattern is '@external' — the caller-side sentinel §6.5 substitutes for a null " +
@@ -1420,6 +1439,25 @@ export class ACL {
     for (let i = 0; i < rules.length; i++) {
       if (onlyIndex !== undefined && i !== onlyIndex) continue;
       const rule = rules[i];
+      // PROTOCOL_SPEC §6.2.2 clause 1 — the load-time half of the `?`
+      // diagnostic, on the §6.1.2 precedent: warn, never fail.
+      for (const field of ['callers', 'targets'] as const) {
+        const value = rule[field];
+        if (!Array.isArray(value)) continue;
+        for (const pattern of value) {
+          if (typeof pattern !== 'string' || !pattern.includes('?')) continue;
+          console.warn(
+            `[apcore:acl] Rule ${i} (effect=${rule.effect}) ${field} pattern ` +
+              `${JSON.stringify(pattern)} contains '?', which is a LITERAL in ACL matching ` +
+              `(Algorithm A08 — '*' is the only metacharacter) and which PROTOCOL_SPEC §2.7 ` +
+              `forbids in a module ID. The pattern therefore matches nothing and can never ` +
+              `match anything: a 'deny' rule guards nothing, an 'allow' rule never fires. ` +
+              `'?' IS a wildcard in every other pattern surface (Algorithm A25, §9.2.3), ` +
+              `which is where the expectation comes from. Nothing about this rule's meaning ` +
+              `has changed — see §6.2.2.`,
+          );
+        }
+      }
       for (const fault of precheckRule(rule, 'sync')) {
         const detail =
           fault.key !== null && !fault.syncResolvable && fault.asyncResolvable
