@@ -451,17 +451,30 @@ export function registerSysModules(
     }
   };
 
-  // Health modules
-  reg('system.health.summary', new HealthSummaryModule(registry, metricsCollector ?? null, errorHistory, config));
-  reg('system.health.module', new HealthModule(registry, metricsCollector ?? null, errorHistory));
+  // The three per-group flags select WHICH modules register once
+  // `sys_modules.enabled` has activated the section — the split PROTOCOL_SPEC
+  // 9.15.3 states (v1.17.0) and `schemas/sys-modules.schema.json` declares key
+  // by key: "Whether system.health.summary and system.health.module are
+  // registered", and so on. All three default to true, so a flag narrows and
+  // never widens.
+  //
+  // They were read by nothing until now (apcore#118): every flag false
+  // registered the same six modules as every flag true, while the master switch
+  // worked — a half-alive section, so a smoke test of it passes.
+  if (_cfgGet(sysCfg, config, 'health.enabled', true)) {
+    reg('system.health.summary', new HealthSummaryModule(registry, metricsCollector ?? null, errorHistory, config));
+    reg('system.health.module', new HealthModule(registry, metricsCollector ?? null, errorHistory));
+  }
 
-  // Manifest modules
-  reg('system.manifest.module', new ManifestModule(registry, config));
-  reg('system.manifest.full', new ManifestFullModule(registry, config));
+  if (_cfgGet(sysCfg, config, 'manifest.enabled', true)) {
+    reg('system.manifest.module', new ManifestModule(registry, config));
+    reg('system.manifest.full', new ManifestFullModule(registry, config));
+  }
 
-  // Usage modules
-  reg('system.usage.summary', new UsageSummaryModule(usageCollector));
-  reg('system.usage.module', new UsageModule(registry, usageCollector));
+  if (_cfgGet(sysCfg, config, 'usage.enabled', true)) {
+    reg('system.usage.summary', new UsageSummaryModule(usageCollector));
+    reg('system.usage.module', new UsageModule(registry, usageCollector));
+  }
 
   // Events system
   if (_cfgGet(sysCfg, config, 'events.enabled', false)) {
@@ -478,20 +491,29 @@ export function registerSysModules(
     executor.use(pnMiddleware);
     result.platformNotifyMiddleware = pnMiddleware;
 
-    // Control modules (require EventEmitter)
-    reg('system.control.toggle_feature', new ToggleFeatureModule(
-      registry,
-      eventEmitter,
-      toggleState,
-      auditStore ?? undefined,
-      overridesStore ?? undefined,
-    ));
-    reg('system.control.update_config', new UpdateConfigModule(config, eventEmitter, {
-      auditStore: auditStore ?? undefined,
-      overridesPath: overridesPath ?? undefined,
-      overridesStore: overridesStore ?? undefined,
-    }));
-    reg('system.control.reload_module', new ReloadModule(registry, eventEmitter, auditStore ?? undefined));
+    // Control modules (require EventEmitter). `control.enabled` selects
+    // whether the Level 2 WRITE plane registers once `events.enabled` has
+    // activated it — schemas/sys-modules.schema.json: "Whether the
+    // system.control.* modules are registered". Default true, so it narrows
+    // and never widens. Read by nothing until now (apcore#118), which made it
+    // the most consequential of the four inert sub-flags: an operator writing
+    // `control.enabled: false` to keep the approval-gated write surface off a
+    // deployment got all three modules anyway.
+    if (_cfgGet(sysCfg, config, 'control.enabled', true)) {
+      reg('system.control.toggle_feature', new ToggleFeatureModule(
+        registry,
+        eventEmitter,
+        toggleState,
+        auditStore ?? undefined,
+        overridesStore ?? undefined,
+      ));
+      reg('system.control.update_config', new UpdateConfigModule(config, eventEmitter, {
+        auditStore: auditStore ?? undefined,
+        overridesPath: overridesPath ?? undefined,
+        overridesStore: overridesStore ?? undefined,
+      }));
+      reg('system.control.reload_module', new ReloadModule(registry, eventEmitter, auditStore ?? undefined));
+    }
 
     // Wire the EventEmitter on the registry so ephemeral.* register /
     // unregister calls emit the rich D-35 contextual audit payload directly
