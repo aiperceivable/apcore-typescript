@@ -822,6 +822,12 @@ export class Executor {
     // Phase 2: Iterate stream, accumulate chunks
     const outputStream = pipeCtx.outputStream as AsyncGenerator<Record<string, unknown>>;
     const accumulated: Record<string, unknown> = {};
+    // PROTOCOL_SPEC §5: resolved ONCE per stream, not per chunk. A
+    // configuration mutated mid-stream — `system.control.update_config` can do
+    // exactly that — must not change the cap of a stream already in flight.
+    // This used to be called inside the chunk loop, which contradicted the
+    // guarantee its own commit message stated.
+    const mergeDepthCap = resolveMergeDepth(this._config);
     // Read the canonical deadline slot written by BuiltinContextCreation
     // (ms-since-epoch). The earlier `pipeCtx.context.globalDeadline` read was
     // always null in the executor pipeline path because that field is a
@@ -860,7 +866,7 @@ export class Executor {
             },
           );
         }
-        deepMergeChunk(accumulated, chunk, 0, resolveMergeDepth(this._config));
+        deepMergeChunk(accumulated, chunk, 0, mergeDepthCap);
         yield chunk;
         chunkIndex += 1;
       }
