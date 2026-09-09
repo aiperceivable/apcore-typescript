@@ -443,6 +443,57 @@ function resolveConfigurableStepField(key: string): string | undefined {
   return CONFIGURABLE_STEP_FIELDS.get(key);
 }
 
+
+/**
+ * Apply the `validation.pipeline.*` limits (PROTOCOL_SPEC §9.1.2).
+ *
+ * **Both are unconstrained by default.** apcore does not impose limits on the
+ * content its users author; it offers them, and an operator opts in. With no
+ * configuration, or with the keys left at their defaults, this checks nothing
+ * and a pipeline that parsed before this function existed still parses.
+ *
+ * `remove:` is deliberately not name-checked: those names identify steps that
+ * already exist rather than naming new ones, so a limit there would reject a
+ * request to remove a step the operator did not author.
+ */
+function validatePipelineLimits(
+  pipelineConfig: PipelineConfig,
+  config: { get(key: string, defaultValue?: unknown): unknown } | null,
+): void {
+  if (config == null) return;
+  const intLimit = (v: unknown): number | null =>
+    typeof v === 'number' && Number.isInteger(v) && v >= 0 ? v : null;
+  const maxName = intLimit(config.get('validation.pipeline.step_name_max_length'));
+  const maxTimeout = intLimit(config.get('validation.pipeline.timeout_ms_max'));
+  if (maxName === null && maxTimeout === null) return;
+
+  const checkTimeout = (where: string, value: unknown): void => {
+    if (maxTimeout === null || typeof value !== 'number' || !Number.isInteger(value)) return;
+    if (value > maxTimeout) {
+      throw new ConfigurationError(
+        `${where}: timeout_ms ${value} is over the ${maxTimeout} configured by validation.pipeline.timeout_ms_max`,
+      );
+    }
+  };
+
+  for (const [stepName, overrides] of Object.entries(pipelineConfig.configure ?? {})) {
+    if (overrides != null && typeof overrides === 'object') {
+      checkTimeout(`Step '${stepName}'`, (overrides as Record<string, unknown>)['timeout_ms']);
+    }
+  }
+
+  for (const stepDef of pipelineConfig.steps ?? []) {
+    const raw = stepDef as unknown as Record<string, unknown>;
+    const name = raw['name'];
+    if (maxName !== null && typeof name === 'string' && [...name].length > maxName) {
+      throw new ConfigurationError(
+        `Step '${name}': name is ${[...name].length} characters, over the ${maxName} configured by validation.pipeline.step_name_max_length`,
+      );
+    }
+    checkTimeout(`Step '${typeof name === 'string' ? name : '<unnamed>'}'`, raw['timeout_ms']);
+  }
+}
+
 /**
  * Build an ExecutionStrategy from YAML pipeline configuration.
  *
@@ -459,6 +510,8 @@ export async function buildStrategyFromConfig(
   pipelineConfig: PipelineConfig,
   deps: StandardStrategyDeps,
 ): Promise<ExecutionStrategy> {
+  validatePipelineLimits(pipelineConfig, deps.config);
+
   const strategy = buildStandardStrategy(deps);
 
   // (1) Remove steps — fail fast if target does not exist (§1.2)

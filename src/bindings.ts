@@ -109,6 +109,89 @@ export interface BindingLoaderOptions {
   trustedPackagePrefixes?: string[];
 }
 
+
+/**
+ * PROTOCOL_SPEC §9.1.2 requirement 6 — the semver.org grammar, unmodified and
+ * written into the specification as a literal so three implementations cannot
+ * invent three. `1.0` does NOT match: the patch component is required.
+ */
+const SEMVER_RE =
+  /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/;
+
+function positiveIntLimit(value: unknown): number | null {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : null;
+}
+
+/**
+ * Apply the `validation.binding.*` limits to one binding entry (§9.1.2).
+ *
+ * **Every limit is unconstrained by default.** apcore does not impose limits on
+ * the content its users author; it offers them, and an operator opts in. A key
+ * left at its default (`null` / `false`) checks nothing here, so a binding file
+ * that loaded before this function existed still loads after it.
+ *
+ * When a limit IS configured it is enforced, not warned about: the operator
+ * asked for a limit, and a limit that only warns is the `regex_patterns`
+ * failure of §10.6.1 in another place.
+ */
+function validateBindingLimits(
+  entry: Record<string, unknown>,
+  config: BindingConfigLike | null,
+  filePath: string,
+): void {
+  if (config == null) return;
+  const moduleId = String(entry['module_id'] ?? '<unknown>');
+
+  for (const [field, key] of [
+    ['description', 'validation.binding.description_max_length'],
+    ['documentation', 'validation.binding.documentation_max_length'],
+  ] as const) {
+    const max = positiveIntLimit(config.get(key));
+    const value = entry[field];
+    if (max === null || typeof value !== 'string') continue;
+    // §9.1.2 requirement 4: characters, not bytes.
+    if ([...value].length > max) {
+      throw new BindingFileInvalidError(
+        filePath,
+        `binding '${moduleId}' field '${field}' is ${[...value].length} characters, over the ${max} configured by ${key}`,
+      );
+    }
+  }
+
+  const tagsPattern = config.get('validation.binding.tags_pattern');
+  const tags = entry['tags'];
+  if (typeof tagsPattern === 'string' && tagsPattern !== '' && Array.isArray(tags)) {
+    let compiled: RegExp;
+    try {
+      compiled = new RegExp(tagsPattern);
+    } catch (e) {
+      // §9.2.3 requirement 6d: never skipped in silence.
+      throw new BindingFileInvalidError(
+        filePath,
+        `validation.binding.tags_pattern ${JSON.stringify(tagsPattern)} does not compile (${String(e)}), so no tag could be checked against it`,
+      );
+    }
+    for (const tag of tags) {
+      if (typeof tag === 'string' && !compiled.test(tag)) {
+        throw new BindingFileInvalidError(
+          filePath,
+          `binding '${moduleId}' tag ${JSON.stringify(tag)} does not match validation.binding.tags_pattern ${JSON.stringify(tagsPattern)}`,
+        );
+      }
+    }
+  }
+
+  if (config.get('validation.binding.version_require_semver') === true) {
+    const version = entry['version'];
+    if (typeof version === 'string' && !SEMVER_RE.test(version)) {
+      throw new BindingFileInvalidError(
+        filePath,
+        `binding '${moduleId}' version ${JSON.stringify(version)} is not SemVer, required by validation.binding.version_require_semver`,
+      );
+    }
+  }
+}
+
 export class BindingLoader {
   private readonly _trustedPackagePrefixes: readonly string[] | null;
 
@@ -116,7 +199,19 @@ export class BindingLoader {
     this._trustedPackagePrefixes = options.trustedPackagePrefixes ?? null;
   }
 
-  async loadBindings(filePath: string, registry: Registry): Promise<FunctionModule[]> {
+  /**
+   * Load a binding file and register every module it declares.
+   *
+   * @param config Optional configuration supplying the `validation.binding.*`
+   *   limits of PROTOCOL_SPEC §9.1.2. All four are **unconstrained by
+   *   default**, so omitting this argument — as every caller before v1.38.0
+   *   did — checks nothing and rejects nothing.
+   */
+  async loadBindings(
+    filePath: string,
+    registry: Registry,
+    config?: BindingConfigLike | null,
+  ): Promise<FunctionModule[]> {
     const bindingFileDir = dirname(filePath);
 
     let content: string;
@@ -174,6 +269,7 @@ export class BindingLoader {
         throw new BindingFileInvalidError(filePath, "Binding entry missing 'target'");
       }
 
+      validateBindingLimits(entryObj, config ?? null, filePath);
       const fm = await this._createModuleFromBinding(entryObj, bindingFileDir, filePath);
       registry.register(entryObj['module_id'] as string, fm);
       results.push(fm);
@@ -233,7 +329,7 @@ export class BindingLoader {
       .sort();
     const results: FunctionModule[] = [];
     for (const f of files) {
-      results.push(...(await this.loadBindings(join(actualPath, f), registry)));
+      results.push(...(await this.loadBindings(join(actualPath, f), registry, config)));
     }
     return results;
   }

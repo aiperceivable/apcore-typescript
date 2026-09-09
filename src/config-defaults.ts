@@ -65,6 +65,17 @@ export const DEFAULTS: Record<string, unknown> = {
   stream: {
     max_merge_depth: 32,
   },
+  // PROTOCOL_SPEC §9.1.2 (spec v1.38.0, apcore#118). The six `validation.*`
+  // keys are UNCONSTRAINED by default — apcore does not impose limits on the
+  // content its users author, it offers them. Five of the six are unconstrained
+  // AS `null`, and `null` is the absence of a default, so only this one carries
+  // a canonical value: `defaults.schema.json` declares exactly this entry and
+  // `config_key_governance.json` pins this table to that file.
+  validation: {
+    binding: {
+      version_require_semver: false,
+    },
+  },
   // PROTOCOL_SPEC §5.12.6 / §9.1.1, via `defaults.schema.json`'s `bindings`
   // section (spec v1.36.0). Until that section existed the `'./bindings'`
   // default was unreachable from the mechanism meant to serve it: every
