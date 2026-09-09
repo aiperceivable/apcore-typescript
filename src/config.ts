@@ -587,6 +587,24 @@ export function userLevelConfigPaths(): string[] {
 }
 
 // ---------------------------------------------------------------------------
+/**
+ * PROTOCOL_SPEC §9.2.4 — the ten declared configuration keys that reach no
+ * consumer in any implementation (apcore#118). Order is the order they are
+ * reported in, so two SDKs name them the same way.
+ */
+const DEPRECATED_INERT_KEYS: readonly string[] = [
+  'observability.tracing.enabled',
+  'observability.tracing.sampling_rate',
+  'observability.tracing.exporter',
+  'observability.metrics.enabled',
+  'observability.metrics.exporter',
+  'logging.level',
+  'logging.format',
+  'acl.audit.enabled',
+  'acl.audit.include_denied',
+  'acl.audit.log_level',
+];
+
 // Project root (§9.2.2 deprecation phase — apcore#113)
 // ---------------------------------------------------------------------------
 
@@ -968,6 +986,10 @@ export class Config {
     // §13.2 deprecation phase for apcore#113. After validation, so a config
     // that is rejected outright does not also lecture about path resolution.
     config._warnProjectRootDeprecation();
+    // §9.2.4 deprecation phase for apcore#118 — the ten keys that reach no
+    // consumer. Emitted alongside the §9.2.2 notice, on the same once-per-load
+    // cadence, and equally behaviour-free.
+    config._warnDeprecatedInertKeys();
 
     return config;
   }
@@ -1225,6 +1247,35 @@ export class Config {
         '(PROTOCOL_SPEC §9.2.2, apcore#113). Nothing changes yet. Make ' +
         'these values absolute, or run from the project root, to be ' +
         'unaffected.',
+    );
+  }
+
+  /**
+   * PROTOCOL_SPEC §9.2.4 — warn for declared keys that reach no consumer.
+   *
+   * Driven by the **declared** document, never the merged view (requirement 2).
+   * Every one of these keys has a default, so a merged-view check would fire for
+   * every configuration ever loaded — the blanket warning §9.2.2 rejects, which
+   * trains operators to ignore the one that matters.
+   *
+   * Behaviour is unchanged (requirement 3): the keys still parse, still
+   * validate, still answer `get()`, and are still accepted under
+   * `_config.strict`. This adds the one thing they have never had — a way for an
+   * operator to find out that setting them does nothing.
+   */
+  private _warnDeprecatedInertKeys(): void {
+    const declared = DEPRECATED_INERT_KEYS.filter(
+      (key) => this.getDeclared(key) !== undefined,
+    );
+    if (declared.length === 0) return;
+
+    console.warn(
+      `[apcore:config] DEPRECATION (apcore#118, PROTOCOL_SPEC §9.2.4): this ` +
+        `configuration declares ${declared.length} key(s) that reach no consumer in ` +
+        `any apcore SDK and have no effect: ${declared.join(', ')}. They keep parsing ` +
+        `and validating for the whole 1.x line and are removed no earlier than v2.0 ` +
+        `(§13.2 / §13.4). Nothing has changed in this release — the keys did nothing ` +
+        `before this warning existed.`,
     );
   }
 

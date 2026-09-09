@@ -43,6 +43,28 @@ _setAclFileLoader((yamlPath: string): ACL => {
 
   const dataObj = data as Record<string, unknown>;
 
+  // PROTOCOL_SPEC §9.2.4.1 (apcore#118): an `audit:` block in an ACL file has
+  // never been read. Deleting it from `acl-config.schema.json` would produce no
+  // signal at all — no implementation validates an ACL file against that
+  // schema, and this loader casts to an open record and takes the fields it
+  // wants, so any unknown root key is dropped in silence. The diagnostic
+  // therefore has to live here.
+  //
+  // Scoped to `audit` deliberately: this is a deprecation notice, NOT
+  // unknown-key closure for ACL files. Every other unrecognised root key keeps
+  // being ignored exactly as before, and the block itself is still ignored —
+  // nothing about this file's behaviour changes.
+  if ('audit' in dataObj) {
+    console.warn(
+      `[apcore:acl] DEPRECATION (apcore#118, PROTOCOL_SPEC §9.2.4.1): ${yamlPath} ` +
+        `declares an 'audit:' block, which no apcore SDK has ever read — auditing is ` +
+        `wired programmatically through the ACL constructor's auditLogger. The same ` +
+        `three settings are also declared as 'acl.audit.*' in apcore.yaml and are ` +
+        `equally inert. One of the two declarations is removed no earlier than v2.0 ` +
+        `(§13.2 / §13.4); nothing has changed in this release.`,
+    );
+  }
+
   // §6.2.1 point 2 (v1.31.0, #112) — `default_effect` is judged FIRST, before
   // any rule. It is not a rule and has no index, so the rule ordering never
   // reaches it, and a file wrong in both was refused for its rule here and for
