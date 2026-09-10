@@ -447,6 +447,26 @@ export class ContextLogger {
     this._output = options?.output ?? { write: (s: string) => console.error(s) };
   }
 
+  /**
+   * Replace the rules this logger's own recursive pass applies.
+   *
+   * `_emit` redacts the WHOLE `extra` object recursively with `this._redaction`,
+   * which defaults to {@link RedactionConfig.default}. That default is the
+   * shipped `sensitive_keys` list and carries no `regex_patterns`, so a logger
+   * left at the default and a caller-supplied config are two different rule
+   * sets applied to two different parts of one log record.
+   *
+   * {@link ObsLoggingMiddleware} calls this so both passes honour the same
+   * rules, mirroring apcore-python's `ObsLoggingMiddleware.__init__`
+   * (`self._logger._redaction_config = redaction_config`). Without it the
+   * middleware's flat `apply()` redacts a top-level string and the logger's
+   * recursive pass then walks the SAME record under the default rules, so a
+   * secret nested in an object or an array is written out in plaintext.
+   */
+  setRedactionConfig(config: RedactionConfig): void {
+    this._redaction = config;
+  }
+
   static fromContext(
     context: Context<unknown>,
     name: string,
@@ -553,6 +573,26 @@ export class ObsLoggingMiddleware extends Middleware {
     this._logInputs = options?.logInputs ?? true;
     this._logOutputs = options?.logOutputs ?? true;
     this._redactionConfig = options?.redactionConfig ?? null;
+    // An explicit config governs the WHOLE record, not just the `inputs` /
+    // `output` sub-object this middleware redacts itself. `ContextLogger._emit`
+    // runs a second, RECURSIVE pass over the entire `extra`, and until this
+    // line it ran under `RedactionConfig.default()` — a rule set with no
+    // `regex_patterns` at all. Measured with the wiring observability.md
+    // documents (`new ObsLoggingMiddleware({ redactionConfig })`):
+    //
+    //   top:    "***REDACTED***"          <- the flat pass, correct rules
+    //   items:  ["sk-abcdef123456"]       <- LEAKED
+    //   nested: { key: "sk-abcdef123456" }<- LEAKED
+    //
+    // apcore-python has assigned the logger's config here since Issue #43 §5
+    // and answers `***REDACTED***` for all three; apcore-rust redacts
+    // recursively with its own config and has no second pass. This SDK was the
+    // only one that leaked. Aligning also stops the reverse error: a caller who
+    // NARROWS the rules (`sensitive_keys: []`) was still having the default
+    // list applied by the logger underneath.
+    if (this._redactionConfig !== null) {
+      this._logger.setRedactionConfig(this._redactionConfig);
+    }
   }
 
   override before(moduleId: string, inputs: Record<string, unknown>, context: Context): null {
