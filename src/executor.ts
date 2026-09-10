@@ -26,6 +26,7 @@ import type { Config } from './config.js';
 // Node-only code into the browser dependency graph.
 import { type EventEmitter, createEvent } from './events/emitter.js';
 import { Context } from './context.js';
+import { RedactionConfig } from './observability/context-logger.js';
 import {
   ContextBindingError,
   ErrorCodes,
@@ -73,14 +74,32 @@ export const REDACTED_VALUE: string = '***REDACTED***';
 export const CTX_GLOBAL_DEADLINE = '_apcore.executor.global_deadline';
 export const CTX_TRACING_SPANS = '_apcore.mw.tracing.spans';
 
+/**
+ * Redact for the executor's input/output capture point.
+ *
+ * PROTOCOL_SPEC §10.6.1 "Where the rules apply": the union of §10.6's
+ * `x-sensitive` rule and the two configured `obs.redaction.*` rules MUST hold
+ * at BOTH log emission and this capture point, with the same rules at each.
+ * Until `rules` existed this function had no parameter for them at all — the
+ * signature was `(data, schemaDict)`, faithfully mirroring §10.6's published
+ * algorithm — so an operator's `regex_patterns` entry redacted a bearer token
+ * in the log line they were watching and stored it in the audit record they
+ * were not (aiperceivable/apcore#120).
+ *
+ * `rules` omitted means the spec DEFAULTS, per requirement 3: "no
+ * configuration" means the defaults, never no redaction. That is what this
+ * function did before, so an unconfigured caller sees no change.
+ */
 export function redactSensitive(
   data: Record<string, unknown>,
   schemaDict: Record<string, unknown>,
+  rules?: RedactionConfig | null,
 ): Record<string, unknown> {
   const redacted = JSON.parse(JSON.stringify(data));
   redactFields(redacted, schemaDict);
   redactSecretPrefix(redacted);
-  return redacted;
+  const configured = rules ?? RedactionConfig.default();
+  return configured.redact(redacted) as Record<string, unknown>;
 }
 
 function redactFields(data: Record<string, unknown>, schemaDict: Record<string, unknown>): void {

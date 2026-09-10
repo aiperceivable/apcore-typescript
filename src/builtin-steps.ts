@@ -10,6 +10,7 @@ import type { TSchema } from '@sinclair/typebox';
 import { Kind } from '@sinclair/typebox';
 import type { ACL, AccessDecision } from './acl.js';
 import { buildGovernanceProjection } from './acl-handlers.js';
+import { RedactionConfig } from './observability/context-logger.js';
 import type { ApprovalHandler, ApprovalResult } from './approval.js';
 import { createApprovalRequest, createApprovalResult } from './approval.js';
 import type { Config } from './config.js';
@@ -223,7 +224,11 @@ export class BuiltinModuleLookup implements Step {
   private _registry: Registry;
   private readonly _toggleState: ToggleState;
 
-  constructor(registry: Registry, toggleState?: ToggleState) {
+  constructor(
+    registry: Registry,
+    toggleState?: ToggleState,
+    private readonly _redaction: RedactionConfig | null = null,
+  ) {
     this._registry = registry;
     this._toggleState = toggleState ?? DEFAULT_TOGGLE_STATE;
   }
@@ -262,6 +267,7 @@ export class BuiltinModuleLookup implements Step {
         ctx.context.redactedInputs = redactSensitive(
           ctx.inputs,
           inputSchema as unknown as Record<string, unknown>,
+          this._redaction,
         );
       } else {
         ctx.context.redactedInputs = { ...ctx.inputs };
@@ -696,6 +702,9 @@ export class BuiltinApprovalGate implements Step {
 
 /** Validates inputs against module schema and redacts sensitive fields. */
 export class BuiltinInputValidation implements Step {
+  /** The resolved `obs.redaction.*` rules (§10.6.1 "Where the rules apply"). */
+  constructor(private readonly _redaction: RedactionConfig | null = null) {}
+
   readonly name = 'input_validation';
   readonly description = 'Schema validation and redaction for inputs';
   readonly removable = true;
@@ -718,6 +727,7 @@ export class BuiltinInputValidation implements Step {
     ctx.context.redactedInputs = redactSensitive(
       ctx.inputs,
       inputSchema as unknown as Record<string, unknown>,
+      this._redaction,
     );
     ctx.validatedInputs = ctx.inputs;
     return { action: 'continue' };
@@ -954,6 +964,9 @@ export class BuiltinExecute implements Step {
 
 /** Validates output against module schema and redacts sensitive fields. */
 export class BuiltinOutputValidation implements Step {
+  /** The resolved `obs.redaction.*` rules (§10.6.1 "Where the rules apply"). */
+  constructor(private readonly _redaction: RedactionConfig | null = null) {}
+
   readonly name = 'output_validation';
   readonly description = 'Schema validation and redaction for output';
   readonly removable = true;
@@ -989,6 +1002,7 @@ export class BuiltinOutputValidation implements Step {
       ctx.context.redactedOutput = redactSensitive(
         output,
         outputSchema as unknown as Record<string, unknown>,
+        this._redaction,
       );
     }
 
@@ -1077,17 +1091,36 @@ export interface StandardStrategyDeps {
  * Toggle-state check is inlined inside BuiltinModuleLookup (step 3), matching
  * apcore-python and apcore-rust 11-step implementations (sync finding A-D-011).
  */
+/**
+ * The `obs.redaction.*` rules the capture point applies.
+ *
+ * PROTOCOL_SPEC §10.6.1 "Where the rules apply" — the union of `x-sensitive`,
+ * `sensitive_keys` and `regex_patterns` MUST hold at log emission AND at the
+ * executor's input/output capture point, with the same rules at each. Resolved
+ * ONCE per strategy, not per execution: requirement 5 puts compilation at the
+ * configuration read, and `RedactionConfig` compiles `regex_patterns` in its
+ * constructor. Resolving here also means the two `redactedInputs` writers and
+ * the `redactedOutput` writer share one object and cannot drift apart.
+ *
+ * With no config the DEFAULTS apply (requirement 3), which is what the capture
+ * point already did — so an unconfigured caller sees no change.
+ */
+function resolveRedaction(config: Config | null): RedactionConfig {
+  return config === null ? RedactionConfig.default() : RedactionConfig.fromConfig(config);
+}
+
 export function buildStandardStrategy(deps: StandardStrategyDeps): ExecutionStrategy {
+  const redaction = resolveRedaction(deps.config);
   return new ExecutionStrategy('standard', [
     new BuiltinContextCreation(deps.config),
     new BuiltinCallChainGuard(deps.config),
-    new BuiltinModuleLookup(deps.registry, deps.toggleState ?? undefined),
+    new BuiltinModuleLookup(deps.registry, deps.toggleState ?? undefined, redaction),
     new BuiltinACLCheck(deps.acl, deps.eventEmitter ?? null),
     new BuiltinApprovalGate(deps.approvalHandler, deps.policy ?? null, deps.eventEmitter ?? null),
     new BuiltinMiddlewareBefore(deps.middlewareManager),
-    new BuiltinInputValidation(),
+    new BuiltinInputValidation(redaction),
     new BuiltinExecute(deps.config),
-    new BuiltinOutputValidation(),
+    new BuiltinOutputValidation(redaction),
     new BuiltinMiddlewareAfter(deps.middlewareManager),
     new BuiltinReturnResult(),
   ]);
@@ -1098,14 +1131,15 @@ export function buildStandardStrategy(deps: StandardStrategyDeps): ExecutionStra
  * Suitable for trusted internal service-to-service calls.
  */
 export function buildInternalStrategy(deps: StandardStrategyDeps): ExecutionStrategy {
+  const redaction = resolveRedaction(deps.config);
   return new ExecutionStrategy('internal', [
     new BuiltinContextCreation(deps.config),
     new BuiltinCallChainGuard(deps.config),
-    new BuiltinModuleLookup(deps.registry, deps.toggleState ?? undefined),
+    new BuiltinModuleLookup(deps.registry, deps.toggleState ?? undefined, redaction),
     new BuiltinMiddlewareBefore(deps.middlewareManager),
-    new BuiltinInputValidation(),
+    new BuiltinInputValidation(redaction),
     new BuiltinExecute(deps.config),
-    new BuiltinOutputValidation(),
+    new BuiltinOutputValidation(redaction),
     new BuiltinMiddlewareAfter(deps.middlewareManager),
     new BuiltinReturnResult(),
   ]);
@@ -1116,13 +1150,14 @@ export function buildInternalStrategy(deps: StandardStrategyDeps): ExecutionStra
  * Retains middleware and validation for correctness. Fast and predictable for tests.
  */
 export function buildTestingStrategy(deps: StandardStrategyDeps): ExecutionStrategy {
+  const redaction = resolveRedaction(deps.config);
   return new ExecutionStrategy('testing', [
     new BuiltinContextCreation(deps.config),
-    new BuiltinModuleLookup(deps.registry, deps.toggleState ?? undefined),
+    new BuiltinModuleLookup(deps.registry, deps.toggleState ?? undefined, redaction),
     new BuiltinMiddlewareBefore(deps.middlewareManager),
-    new BuiltinInputValidation(),
+    new BuiltinInputValidation(redaction),
     new BuiltinExecute(deps.config),
-    new BuiltinOutputValidation(),
+    new BuiltinOutputValidation(redaction),
     new BuiltinMiddlewareAfter(deps.middlewareManager),
     new BuiltinReturnResult(),
   ]);
@@ -1134,15 +1169,16 @@ export function buildTestingStrategy(deps: StandardStrategyDeps): ExecutionStrat
  * Toggle-state check is inlined in BuiltinModuleLookup (sync finding A-D-011).
  */
 export function buildPerformanceStrategy(deps: StandardStrategyDeps): ExecutionStrategy {
+  const redaction = resolveRedaction(deps.config);
   return new ExecutionStrategy('performance', [
     new BuiltinContextCreation(deps.config),
     new BuiltinCallChainGuard(deps.config),
-    new BuiltinModuleLookup(deps.registry, deps.toggleState ?? undefined),
+    new BuiltinModuleLookup(deps.registry, deps.toggleState ?? undefined, redaction),
     new BuiltinACLCheck(deps.acl, deps.eventEmitter ?? null),
     new BuiltinApprovalGate(deps.approvalHandler, deps.policy ?? null, deps.eventEmitter ?? null),
-    new BuiltinInputValidation(),
+    new BuiltinInputValidation(redaction),
     new BuiltinExecute(deps.config),
-    new BuiltinOutputValidation(),
+    new BuiltinOutputValidation(redaction),
     new BuiltinReturnResult(),
   ]);
 }
@@ -1153,13 +1189,14 @@ export function buildPerformanceStrategy(deps: StandardStrategyDeps): ExecutionS
  * Suitable for pre-validated internal hot paths. Use with caution.
  */
 export function buildMinimalStrategy(deps: StandardStrategyDeps): ExecutionStrategy {
+  const redaction = resolveRedaction(deps.config);
   return new ExecutionStrategy('minimal', [
     new BuiltinContextCreation(deps.config),
     // The per-instance ToggleState must be threaded through here too — the
     // other four preset builders pass it, and omitting it silently falls back
     // to DEFAULT_TOGGLE_STATE, so `apcore.disable(module)` on one instance
     // leaks into every other instance using the `minimal` preset (issue #71).
-    new BuiltinModuleLookup(deps.registry, deps.toggleState ?? undefined),
+    new BuiltinModuleLookup(deps.registry, deps.toggleState ?? undefined, redaction),
     new BuiltinExecute(deps.config),
     new BuiltinReturnResult(),
   ]);
