@@ -15,6 +15,7 @@ import type { ExecutionPolicy } from './policy.js';
 import type { Middleware } from './middleware/index.js';
 import type { ModuleAnnotations, ModuleExample, PreflightResult } from './module.js';
 import type { MetricsCollector } from './observability/metrics.js';
+import { buildTracingMiddleware } from './observability/tracing-config.js';
 import { Registry } from './registry/registry.js';
 import type { RegisterSysModulesOptions, SysModulesContext } from './sys-modules/registration.js';
 import { ToggleState } from './sys-modules/toggle.js';
@@ -130,6 +131,25 @@ export class APCore {
       const discovered = ACL.discover(this.config);
       if (discovered !== null) {
         this.executor.setAcl(discovered);
+      }
+    }
+
+    // Config-driven tracing (PROTOCOL_SPEC §10.1.1). `observability.tracing.*`
+    // was five declared keys that reached nothing: no SDK had ever built a
+    // TracingMiddleware from configuration, so `enabled: true` installed
+    // nothing and the other four configured a middleware that did not exist.
+    //
+    // Skipped when the caller supplied their own Executor — an Executor the
+    // caller built is respected as-is, tracing included, exactly as
+    // config-driven ACL discovery above treats it. That is also what makes
+    // §10.1.1 requirement 6 hold without a second check: the Executor built
+    // here has an empty middleware chain, so configuration can never be the
+    // thing that adds a SECOND tracing middleware. A caller who calls
+    // `use(new TracingMiddleware(...))` afterwards is adding one deliberately.
+    if (this.config && prebuiltExecutor === undefined) {
+      const tracingMw = buildTracingMiddleware(this.config);
+      if (tracingMw !== null) {
+        this.executor.use(tracingMw);
       }
     }
 

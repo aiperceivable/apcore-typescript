@@ -10,8 +10,8 @@
  *
  * **The half of each notice that matters is the SILENT half.** The notice is a
  * property of the *declared document* — `getDeclared`, never the merged view.
- * On a configuration that declares none of the ten, the merged view still
- * answers for three of them in legacy mode and five in namespace mode, because
+ * On a configuration that declares none of them, the merged view still
+ * answers for one of them in legacy mode and two in namespace mode, because
  * `DEFAULTS` and the `observability` namespace registration supply values for
  * them. An implementation driven off `get()` would therefore warn for every
  * configuration ever loaded — the blanket warning §9.2.2 requirement 2 and
@@ -32,8 +32,14 @@ import { ACL } from '../src/acl.js';
 import { Config } from '../src/config.js';
 
 /**
- * The ten keys of PROTOCOL_SPEC §9.2.4, in the order the spec lists them and
- * the notice reports them.
+ * The keys of PROTOCOL_SPEC §9.2.4, in the order the spec lists them and the
+ * notice reports them.
+ *
+ * Ten when the window opened in spec v1.39.0; **seven** since v1.44.0, which
+ * gave `observability.tracing.enabled` / `.sampling_rate` / `.exporter`
+ * consumers (§10.1.1) and cancelled their withdrawal. The three that left are
+ * pinned from the other side by `WIRED_KEYS` below — a table that never shrank
+ * would pass every case here and fail those.
  *
  * Spelled out here rather than imported: `DEPRECATED_INERT_KEYS` is private to
  * `src/config.ts`, and a test that read it would agree with the code by
@@ -41,9 +47,6 @@ import { Config } from '../src/config.js';
  * SDKs name the same keys the same way.
  */
 const INERT_KEYS: readonly string[] = [
-  'observability.tracing.enabled',
-  'observability.tracing.sampling_rate',
-  'observability.tracing.exporter',
   'observability.metrics.enabled',
   'observability.metrics.exporter',
   'logging.level',
@@ -53,11 +56,19 @@ const INERT_KEYS: readonly string[] = [
   'acl.audit.log_level',
 ];
 
-/** A type-appropriate YAML scalar for each of the ten. */
-const INERT_KEY_VALUES: Record<string, string> = {
+/**
+ * The three that spec v1.44.0 wired. Declaring one of these MUST NOT produce
+ * the notice — §9.2.4 requirement 1: the table is the whole list.
+ */
+const WIRED_KEYS: Record<string, string> = {
   'observability.tracing.enabled': 'true',
   'observability.tracing.sampling_rate': '0.1',
   'observability.tracing.exporter': '"stdout"',
+  'observability.tracing.strategy': '"off"',
+};
+
+/** A type-appropriate YAML scalar for each key. */
+const INERT_KEY_VALUES: Record<string, string> = {
   'observability.metrics.enabled': 'true',
   'observability.metrics.exporter': '"prometheus"',
   'logging.level': '"info"',
@@ -70,18 +81,14 @@ const INERT_KEY_VALUES: Record<string, string> = {
 const MINIMAL_YAML = 'version: "0.30.0"\nproject:\n  name: inert-keys-test\n';
 
 /**
- * All ten in one document. Written out rather than assembled from `declare()`
- * per key, which would emit `observability:` three times and produce a
+ * All seven in one document. Written out rather than assembled from `declare()`
+ * per key, which would emit `observability:` twice and produce a
  * duplicate-mapping-key YAML error.
  */
-const ALL_TEN_YAML = `logging:
+const ALL_INERT_YAML = `logging:
   level: "info"
   format: "json"
 observability:
-  tracing:
-    enabled: true
-    sampling_rate: 0.1
-    exporter: "stdout"
   metrics:
     enabled: true
     exporter: "prometheus"
@@ -138,6 +145,24 @@ describe('the §9.2.4 inert-configuration-key notice (apcore#118)', () => {
       .filter((line) => line.startsWith('[apcore:config] DEPRECATION (apcore#118'));
   }
 
+  it.each(Object.keys(WIRED_KEYS))(
+    'is SILENT for %s, which spec v1.44.0 wired',
+    (key) => {
+      // §9.2.4 requirement 1 — the table is the whole list, and a key that has
+      // left it MUST NOT warn. This is the half that fails against a table
+      // which never shrank; the cases above pass either way.
+      const configPath = write(
+        'apcore.yaml',
+        MINIMAL_YAML + declare(key, WIRED_KEYS[key] as string),
+      );
+      const warn = spyOnWarn();
+
+      Config.load(configPath);
+
+      expect(noticesFrom(warn)).toEqual([]);
+    },
+  );
+
   it.each(INERT_KEYS)('warns for a configuration that declares %s, and names it', (key) => {
     const configPath = write(
       'apcore.yaml',
@@ -151,22 +176,22 @@ describe('the §9.2.4 inert-configuration-key notice (apcore#118)', () => {
     expect(notices).toHaveLength(1);
     expect(notices[0]).toContain(key);
     expect(notices[0]).toContain('1 key(s)');
-    // Only the declared one. A notice that named all ten would be no more
+    // Only the declared one. A notice that named all seven would be no more
     // actionable than no notice at all.
     for (const other of INERT_KEYS.filter((k) => k !== key)) {
       expect(notices[0]).not.toContain(other);
     }
   });
 
-  it('names all ten, once, in the §9.2.4 order when a configuration declares all ten', () => {
-    const configPath = write('apcore.yaml', MINIMAL_YAML + ALL_TEN_YAML);
+  it('names all seven, once, in the §9.2.4 order when a configuration declares all seven', () => {
+    const configPath = write('apcore.yaml', MINIMAL_YAML + ALL_INERT_YAML);
     const warn = spyOnWarn();
 
     Config.load(configPath);
 
     const notices = noticesFrom(warn);
     expect(notices).toHaveLength(1);
-    expect(notices[0]).toContain('10 key(s)');
+    expect(notices[0]).toContain('7 key(s)');
     // The order is part of the contract: two SDKs reporting the same document
     // must produce the same list.
     expect(notices[0]).toContain(INERT_KEYS.join(', '));
@@ -183,13 +208,11 @@ describe('the §9.2.4 inert-configuration-key notice (apcore#118)', () => {
     for (const key of INERT_KEYS) {
       expect(config.getDeclared(key)).toBeUndefined();
     }
-    // ...and yet the MERGED view answers for three of them, out of `DEFAULTS`.
+    // ...and yet the MERGED view answers for one of them, out of `DEFAULTS`.
     // That is what makes the silence a real assertion: a merged-view check
     // would fire here, on a document that mentions none of these keys, and so
     // would fire on every configuration this SDK has ever loaded.
     const answeredByMergedView = INERT_KEYS.filter((key) => config.get(key) !== undefined);
-    expect(answeredByMergedView).toContain('observability.tracing.enabled');
-    expect(answeredByMergedView).toContain('observability.tracing.sampling_rate');
     expect(answeredByMergedView).toContain('observability.metrics.enabled');
 
     expect(noticesFrom(warn)).toEqual([]);
@@ -197,9 +220,9 @@ describe('the §9.2.4 inert-configuration-key notice (apcore#118)', () => {
 
   it('is SILENT for a namespace-mode configuration that declares none of them', () => {
     // A separate merge path, and the worse one for this trap: the
-    // `observability` namespace registration seeds all five `observability.*`
-    // keys into the merged tree, so a merged-view check has five triggers here
-    // rather than three.
+    // `observability` namespace registration seeds every `observability.*` key
+    // into the merged tree, so a merged-view check has more triggers here than
+    // in legacy mode.
     const configPath = write(
       'apcore.yaml',
       'apcore:\n  version: "1.0.0"\n  project:\n    name: inert-keys-ns\n',
@@ -213,9 +236,6 @@ describe('the §9.2.4 inert-configuration-key notice (apcore#118)', () => {
     }
     const answeredByMergedView = INERT_KEYS.filter((key) => config.get(key) !== undefined);
     expect(answeredByMergedView).toEqual([
-      'observability.tracing.enabled',
-      'observability.tracing.sampling_rate',
-      'observability.tracing.exporter',
       'observability.metrics.enabled',
       'observability.metrics.exporter',
     ]);
@@ -271,14 +291,14 @@ describe('the §9.2.4 inert-configuration-key notice (apcore#118)', () => {
     expect(noticesFrom(warn)).toHaveLength(3);
   });
 
-  it('changes no behaviour: all ten still parse, validate under strict, and answer get()', () => {
+  it('changes no behaviour: all seven still parse, validate under strict, and answer get()', () => {
     // §9.2.4 requirement 3. Withdrawing these keys cannot be a plain deletion
     // precisely because a configuration carrying them is valid TODAY under
     // `_config.strict: true`; deleting one would turn a currently-valid
     // document into a rejected one, which §13.2 puts behind a two-minor floor.
     const configPath = write(
       'apcore.yaml',
-      `${MINIMAL_YAML}_config:\n  strict: true\n${ALL_TEN_YAML}`,
+      `${MINIMAL_YAML}_config:\n  strict: true\n${ALL_INERT_YAML}`,
     );
     spyOnWarn();
 
@@ -287,7 +307,7 @@ describe('the §9.2.4 inert-configuration-key notice (apcore#118)', () => {
     expect(() => config.validate()).not.toThrow();
     expect(config.get('logging.level')).toBe('info');
     expect(config.get('logging.format')).toBe('json');
-    expect(config.get('observability.tracing.sampling_rate')).toBe(0.1);
+    expect(config.get('observability.metrics.exporter')).toBe('prometheus');
     expect(config.get('acl.audit.include_denied')).toBe(true);
   });
 });

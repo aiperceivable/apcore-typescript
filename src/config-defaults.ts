@@ -54,6 +54,9 @@ export const DEFAULTS: Record<string, unknown> = {
     tracing: {
       enabled: false,
       sampling_rate: 1.0,
+      strategy: 'full',
+      exporter: 'stdout',
+      otlp_endpoint: null,
     },
     metrics: {
       enabled: false,

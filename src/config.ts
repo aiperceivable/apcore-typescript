@@ -85,11 +85,43 @@ function isInteger(v: unknown): v is number {
   return typeof v === 'number' && Number.isInteger(v);
 }
 
+/**
+ * PROTOCOL_SPEC §10.1.1 requirement 3 — an endpoint nothing reads is a rejected
+ * configuration.
+ *
+ * Shared by legacy and namespace mode: the disagreement is between two keys,
+ * and which file layout declared them changes nothing about it.
+ */
+function otlpEndpointMismatchErrors(config: Config): string[] {
+  const endpoint = config.get('observability.tracing.otlp_endpoint');
+  if (endpoint === undefined || endpoint === null) return [];
+  const exporter = config.get('observability.tracing.exporter') ?? 'stdout';
+  if (exporter === 'otlp') return [];
+  return [
+    `observability.tracing.otlp_endpoint is set but observability.tracing.exporter is ` +
+      `'${String(exporter)}', which does not read it. Set exporter to 'otlp', or remove the ` +
+      `endpoint.`,
+  ];
+}
+
 export const CONSTRAINTS: Record<string, [(v: unknown) => boolean, string]> = {
   'acl.default_effect': [(v) => v === 'allow' || v === 'deny', "must be 'allow' or 'deny'"],
   'observability.tracing.sampling_rate': [
     (v) => isNumber(v) && v >= 0.0 && v <= 1.0,
     'must be a number in [0.0, 1.0]',
+  ],
+  'observability.tracing.strategy': [
+    (v) => v === 'full' || v === 'proportional' || v === 'error_first' || v === 'off',
+    "must be 'full', 'proportional', 'error_first' or 'off'",
+  ],
+  'observability.tracing.exporter': [
+    // `in_memory` is deliberately absent: PROTOCOL_SPEC §10.1.1 requirement 2.
+    (v) => v === 'stdout' || v === 'otlp' || v === 'jaeger',
+    "must be 'stdout', 'otlp' or 'jaeger'",
+  ],
+  'observability.tracing.otlp_endpoint': [
+    (v) => v === null || (typeof v === 'string' && v.trim().length > 0),
+    'must be a non-empty URL string, or null',
   ],
   'extensions.max_depth': [
     (v) => isInteger(v) && v >= 1 && v <= 16,
@@ -588,14 +620,16 @@ export function userLevelConfigPaths(): string[] {
 
 // ---------------------------------------------------------------------------
 /**
- * PROTOCOL_SPEC §9.2.4 — the ten declared configuration keys that reach no
+ * PROTOCOL_SPEC §9.2.4 — the declared configuration keys that reach no
  * consumer in any implementation (apcore#118). Order is the order they are
  * reported in, so two SDKs name them the same way.
+ *
+ * Ten when the window opened in spec v1.39.0; seven since v1.44.0, which gave
+ * `observability.tracing.enabled` / `.sampling_rate` / `.exporter` consumers
+ * (§10.1.1) and cancelled their withdrawal. A key that has left the table MUST
+ * NOT warn — §9.2.4 requirement 1.
  */
 const DEPRECATED_INERT_KEYS: readonly string[] = [
-  'observability.tracing.enabled',
-  'observability.tracing.sampling_rate',
-  'observability.tracing.exporter',
   'observability.metrics.enabled',
   'observability.metrics.exporter',
   'logging.level',
@@ -1434,6 +1468,12 @@ export class Config {
     //    and not only on malformed ones.
     errors.push(...uncompilableRegexPatternErrors(this.get('obs.redaction.regex_patterns')));
 
+    // 5. PROTOCOL_SPEC §10.1.1 requirement 3: an OTLP endpoint set against an
+    //    exporter that does not read it is a rejected configuration, not a
+    //    silent no-op. A value an operator wrote down and nothing reads is the
+    //    shape of every defect apcore#118 found.
+    errors.push(...otlpEndpointMismatchErrors(this));
+
     if (errors.length > 0) {
       throw new ConfigError(
         `Configuration validation failed (${errors.length} error(s)):\n` +
@@ -1479,6 +1519,10 @@ export class Config {
     if (apcore !== undefined && apcore !== null) {
       errors.push(...this._undeclaredFrameworkKeyErrors(apcore as Record<string, unknown>));
     }
+
+    // §10.1.1 requirement 3, as in legacy mode: the disagreement is between two
+    // keys, and which file layout declared them changes nothing about it.
+    errors.push(...otlpEndpointMismatchErrors(this));
 
     // Strict mode: reject unknown namespaces (§9.10 step 3b).
     //
