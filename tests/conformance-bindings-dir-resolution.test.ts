@@ -300,7 +300,25 @@ function assertScan(
 // ---------------------------------------------------------------------------
 
 describe('Conformance: binding-directory resolution (§5.12.6)', () => {
-  it('config_file_dir_is_scanned_with_env_unset', async () => {
+  /** Every case id this file registers, recorded AS it registers them. */
+  const DRIVEN = new Set<string>();
+
+  /**
+   * `it()` that remembers the case id.
+   *
+   * The coverage check below used to compare the fixture against a
+   * hand-maintained `covered` list. The list named all four A25 pattern cases
+   * while not one of them had an `it()`, so the assertion asserted its own
+   * list — found by `check_case_pinning.py`, which mutated those four and saw
+   * nothing go red. Collecting the set at registration makes that
+   * unrepresentable: a case is covered exactly when a test exists for it.
+   */
+  function driveCase(id: string, fn: () => void | Promise<void>): void {
+    DRIVEN.add(id);
+    it(id, fn);
+  }
+
+  driveCase('config_file_dir_is_scanned_with_env_unset', async () => {
     // THE DISCRIMINATING CASE. `bindings.dir` in a config FILE,
     // APCORE_BINDINGS_DIR unset, no explicit directory argument. No SDK passed
     // this before v1.35.0, and TypeScript's deleted raw `process.env` read
@@ -310,13 +328,13 @@ describe('Conformance: binding-directory resolution (§5.12.6)', () => {
     expect(registry.has('greet')).toBe(true);
   });
 
-  it('default_dir_when_key_absent', async () => {
+  driveCase('default_dir_when_key_absent', async () => {
     // No `bindings.dir` anywhere and no argument: the §9.1.1 default ./bindings.
     const testCase = caseFor('default_dir_when_key_absent');
     assertScan(testCase, await runCase(testCase));
   });
 
-  it('env_overrides_config_file_dir', async () => {
+  driveCase('env_overrides_config_file_dir', async () => {
     // §9.2 precedence, top tier. BOTH candidate directories exist, both hold a
     // binding file, and the two descriptors carry DISTINCT module IDs — with a
     // shared ID this case passed whichever directory the implementation
@@ -328,7 +346,7 @@ describe('Conformance: binding-directory resolution (§5.12.6)', () => {
     );
   });
 
-  it('env_var_must_not_be_read_directly_at_the_loader', async () => {
+  driveCase('env_var_must_not_be_read_directly_at_the_loader', async () => {
     // §5.12.6 clause 2, and the coverage v1.35.0's fixture lacked entirely: the
     // environment tier reaches the loader through §9.2's ordinary override
     // mechanism, never through a read at the loader. APCORE_BINDINGS_DIR is set
@@ -345,7 +363,7 @@ describe('Conformance: binding-directory resolution (§5.12.6)', () => {
     expect(registry.has('from_env_side'), 'the loader read the raw environment').toBe(false);
   });
 
-  it('explicit_argument_wins_over_config', async () => {
+  driveCase('explicit_argument_wins_over_config', async () => {
     // explicit > env > file > default. All three candidates exist and hold a file.
     const testCase = caseFor('explicit_argument_wins_over_config');
     assertScan(testCase, await runCase(testCase));
@@ -353,7 +371,7 @@ describe('Conformance: binding-directory resolution (§5.12.6)', () => {
     expect(registry.has('from_env_side')).toBe(false);
   });
 
-  it('config_file_pattern_is_honoured', async () => {
+  driveCase('config_file_pattern_is_honoured', async () => {
     // `bindings.pattern` comes from the same precedence chain as the directory,
     // not from a loader-signature default. The decoy matches the DEFAULT
     // pattern, so an SDK that keeps the pattern in its signature loads the
@@ -368,7 +386,7 @@ describe('Conformance: binding-directory resolution (§5.12.6)', () => {
     ]);
   });
 
-  it('default_pattern_when_key_absent', async () => {
+  driveCase('default_pattern_when_key_absent', async () => {
     // No pattern configured: `*.binding.yaml` applies and the sibling that does
     // not match it stays unloaded.
     const testCase = caseFor('default_pattern_when_key_absent');
@@ -378,7 +396,7 @@ describe('Conformance: binding-directory resolution (§5.12.6)', () => {
     expect(observed.sourceFiles).toEqual(['custom_bindings/greet.binding.yaml']);
   });
 
-  it('missing_configured_dir_raises', async () => {
+  driveCase('missing_configured_dir_raises', async () => {
     // §5.12.6 clause 5 (v1.36.0). A resolved directory that does not exist is
     // an error naming that directory, not an empty result. Contrast
     // ACL.discover (D-64): discovery is automatic and silent, binding loading
@@ -406,7 +424,7 @@ describe('Conformance: binding-directory resolution (§5.12.6)', () => {
     expect(registry.list().length).toBe(0);
   });
 
-  it('no_auto_scan_at_init', async () => {
+  driveCase('no_auto_scan_at_init', async () => {
     // §5.12.6 clause 3. The configured directory exists and holds a well-formed
     // binding file that would load cleanly if anything scanned. Asserting only
     // that construction succeeded would pass trivially, so the assertion is
@@ -436,24 +454,31 @@ describe('Conformance: binding-directory resolution (§5.12.6)', () => {
     expect(modules.map((m) => m.moduleId)).toEqual(['greet']);
   });
 
+  // The A25 pattern-dialect cases (§9.2.3, #116). Driven from the fixture
+  // rather than hand-written per case: they differ only in the pattern and the
+  // files it must and must not match, and every one of them was listed as
+  // "covered" by the check below while no `it()` existed for any of them.
+  for (const id of [
+    'pattern_star_in_the_middle_is_honoured',
+    'pattern_first_star_must_not_be_removed_from_the_middle',
+    'pattern_question_mark_is_a_wildcard',
+    'pattern_bracket_is_a_literal_not_a_character_class',
+  ]) {
+    driveCase(id, async () => {
+      const testCase = caseFor(id);
+      const observed = await runCase(testCase);
+      assertScan(testCase, observed);
+    });
+  }
+
   it('every fixture case is driven', () => {
+    // Read back what this file REGISTERED, rather than comparing the fixture
+    // against a hand-maintained list. The list said all four A25 pattern cases
+    // were covered while not one of them had an `it()` — a coverage assertion
+    // that asserts its own list is the defect `check_case_pinning.py` found
+    // here, and it cannot recur once the set comes from the suite.
     const driven = new Set(fixture.test_cases.map((c) => c.id));
-    const covered = new Set([
-      'config_file_dir_is_scanned_with_env_unset',
-      'default_dir_when_key_absent',
-      'env_overrides_config_file_dir',
-      'env_var_must_not_be_read_directly_at_the_loader',
-      'explicit_argument_wins_over_config',
-      'config_file_pattern_is_honoured',
-      'default_pattern_when_key_absent',
-      'missing_configured_dir_raises',
-      'no_auto_scan_at_init',
-      // The pattern DIALECT — PROTOCOL_SPEC 9.2.3, Algorithm A25 (#116).
-      'pattern_star_in_the_middle_is_honoured',
-      'pattern_first_star_must_not_be_removed_from_the_middle',
-      'pattern_question_mark_is_a_wildcard',
-      'pattern_bracket_is_a_literal_not_a_character_class',
-    ]);
+    const covered = DRIVEN;
     expect(
       [...driven].filter((id) => !covered.has(id)),
       'bindings_dir_resolution.json gained cases this driver ignores',

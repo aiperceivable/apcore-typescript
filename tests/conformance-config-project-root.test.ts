@@ -317,25 +317,26 @@ describe('Conformance: the project root, one case per §9.14 discovery tier', ()
     // The case that makes the tier split necessary, and the live defect in
     // apcore#113: `extensions.root: ./extensions` in a config shared by every
     // project the user runs cannot mean `~/.config/apcore/extensions`.
-    const testCase = caseFor('tier_6_user_level_xdg');
-    const observed = observe(testCase);
+    // Through `assertTierCase`, which compares against the case's OWN
+    // `expected` block. Restating the three values inline — which is what this
+    // test did — asserts the driver's copy of the expectation rather than the
+    // fixture's, so `check_case_pinning.py` could rewrite `expected` and
+    // nothing went red. The tiers above were already pinned for exactly the
+    // reason this one was not.
+    assertTierCase('tier_6_user_level_xdg');
 
     // BOTH halves, per the case's own comment: asserting only the source
     // directory passes an implementation that never applies the tier split.
-    // `<tier6_dir>` resolves through HOME_TOKENS to this platform's location.
-    expect(observed.config_source_dir).toBe(layoutPath('<tier6_dir>'));
-    expect(observed.project_root).toBe(layoutPath('project'));
-    expect(observed.project_root_equals_cwd).toBe(true);
+    const testCase = caseFor('tier_6_user_level_xdg');
+    const observed = observe(testCase);
     expect(observed.project_root).not.toBe(observed.config_source_dir);
   });
 
   it('tier_7_legacy_user_level', () => {
+    assertTierCase('tier_7_legacy_user_level');
+
     const testCase = caseFor('tier_7_legacy_user_level');
     const observed = observe(testCase);
-
-    expect(observed.config_source_dir).toBe(layoutPath('<tier7_dir>'));
-    expect(observed.project_root).toBe(layoutPath('project'));
-    expect(observed.project_root_equals_cwd).toBe(true);
     expect(observed.project_root).not.toBe(observed.config_source_dir);
   });
 

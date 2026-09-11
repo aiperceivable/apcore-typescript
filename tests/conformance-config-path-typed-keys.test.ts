@@ -277,12 +277,19 @@ describe('Conformance: the closed set of path-typed configuration keys (§9.2.1)
 
   it('extensions_roots_elements_are_path_typed: both element forms, one reported key', () => {
     const testCase = caseFor('extensions_roots_elements_are_path_typed');
-    const reportedKey = testCase.expected['reported_key'] as string;
     const declared = Config.pathTypedKeys();
 
-    expect({ path_typed: declared.includes(reportedKey), reported_key: reportedKey }).toEqual(
+    // The observed side is read from the SDK, not from `expected`. It used to
+    // take `reported_key` OUT of the expectation and feed it back in as the
+    // lookup, so mutating the expectation moved both sides together and the
+    // assertion cancelled itself — `check_case_pinning.py` rewrote `expected`
+    // and nothing went red. `roots_element_form` already requires exactly one
+    // `extensions.roots*` entry, so that entry IS the observation.
+    const observed = declared.filter((k) => k.startsWith('extensions.roots'));
+    expect({ path_typed: observed.length === 1, reported_key: observed[0] }).toEqual(
       testCase.expected,
     );
+    const reportedKey = testCase.expected['reported_key'] as string;
 
     // `roots_element_form`: the list is ONE entry. Neither the bare list nor the
     // object form's inner `root` may appear as a separate key.
