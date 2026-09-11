@@ -31,7 +31,7 @@ import {
  * `ACL.load()` throws a clear runtime error instead of silently
  * dragging `node:fs` into the browser closure.
  */
-type AclFileLoader = (yamlPath: string) => ACL;
+type AclFileLoader = (yamlPath: string, auditLogger?: AuditLogger | null) => ACL;
 let _aclFileLoader: AclFileLoader | null = null;
 
 /**
@@ -1001,6 +1001,190 @@ function aclTypeName(value: unknown): string {
   return typeof value;
 }
 
+// ---------------------------------------------------------------------------
+// Audit delivery (PROTOCOL_SPEC §6.3.2, apcore#118 decision D-66)
+// ---------------------------------------------------------------------------
+
+/** The three settings of an ACL file's `audit:` block. */
+export const AUDIT_FIELDS = ['enabled', 'include_denied', 'log_level'] as const;
+
+/** The stable name the default sink emits under (§10.3's event table). */
+export const AUDIT_EVENT_NAME = 'apcore.acl.audit';
+
+export interface AuditConfig {
+  enabled: boolean;
+  include_denied: boolean;
+  log_level: 'trace' | 'debug' | 'info' | 'warn' | 'error';
+}
+
+const AUDIT_LEVEL_METHODS: Record<string, 'debug' | 'info' | 'warn' | 'error'> = {
+  trace: 'debug',
+  debug: 'debug',
+  info: 'info',
+  warn: 'warn',
+  error: 'error',
+};
+
+/**
+ * The §6.3.1 record under its **wire** names (§6.3.2 requirement 2).
+ *
+ * §6.3.1 lets an SDK surface use idiomatic field names — this one uses
+ * `callerId` — and that licence stops at the default sink. Emitting the
+ * in-memory object would put `callerId` on the wire here and `caller_id` in the
+ * other two SDKs, which is exactly the "three different structured records from
+ * one specification" the requirement exists to prevent.
+ *
+ * Written out rather than derived by a camel-to-snake transformer: the thirteen
+ * names ARE the contract, and a transformer hides which ones exist behind a
+ * regex that would also silently invent names for any field added later.
+ */
+export function auditEntryToWire(entry: AuditEntry): Record<string, unknown> {
+  return {
+    timestamp: entry.timestamp,
+    caller_id: entry.callerId,
+    target_id: entry.targetId,
+    decision: entry.decision,
+    reason: entry.reason,
+    matched_rule: entry.matchedRule,
+    matched_rule_index: entry.matchedRuleIndex,
+    identity_type: entry.identityType,
+    roles: entry.roles,
+    call_depth: entry.callDepth,
+    trace_id: entry.traceId,
+    handler_error: entry.handlerError,
+    approval_required: entry.approvalRequired,
+  };
+}
+
+/**
+ * The ONE effective sink for an ACL, per §6.3.2 requirement 1.
+ *
+ * Never two. A callback supplied to the constructor receives every entry and is
+ * not narrowed, levelled or silenced by the `audit:` block: an API argument
+ * beats configuration, and the alternative lets a file silently truncate a
+ * compliance sink a developer installed deliberately. The block configures the
+ * **default sink** and nothing else.
+ *
+ * A sink also owns its failure state. Requirement 5 suppresses diagnostics
+ * after the first, scoped to one ACL instance **and one effective sink
+ * configuration** — replacing the sink or reloading a configuration that
+ * changes it builds a new `AuditSink`, so a new failure is never hidden behind
+ * an old one.
+ */
+export class AuditSink {
+  private _failed = false;
+  private _rejectedAwaitable = false;
+
+  constructor(
+    private readonly _callback: AuditLogger | null,
+    /**
+     * `null` means the document declared no `audit:` block. Requirement 2:
+     * DECLARATION activates the default sink, never the default value —
+     * `enabled` defaults to true, so reading the merged view would switch a log
+     * record per check on for every ACL file in existence.
+     */
+    private readonly _config: AuditConfig | null,
+  ) {}
+
+  get isActive(): boolean {
+    if (this._callback !== null) return true;
+    return this._config !== null && this._config.enabled;
+  }
+
+  /** Deliver one entry. NEVER throws (§6.3.2 requirement 3). */
+  deliver(entry: AuditEntry): void {
+    if (this._callback !== null) {
+      this._deliverToCallback(entry);
+      return;
+    }
+    if (this._config === null || !this._config.enabled) return;
+    if (entry.decision === 'deny' && !this._config.include_denied) {
+      // Requirement 6 — the load-time notice for this is emitted once, at load;
+      // withholding here is silent by design.
+      return;
+    }
+    this._emitDefault(entry);
+  }
+
+  private _deliverToCallback(entry: AuditEntry): void {
+    let result: unknown;
+    try {
+      result = (this._callback as AuditLogger)(entry);
+    } catch (e) {
+      this._reportFailure(e);
+      return;
+    }
+    if (typeof (result as { then?: unknown } | null)?.then === 'function') {
+      // Requirement 4. An async callback's rejection surfaces after the
+      // decision has been returned — outside the containment requirement 3
+      // promises, and as an unhandled rejection. Treated as an invalid
+      // delivery, reported once. The promise is caught so Node does not also
+      // report it, which would be a second diagnostic for one cause.
+      void (result as Promise<unknown>).catch(() => {});
+      if (!this._rejectedAwaitable) {
+        this._rejectedAwaitable = true;
+        console.warn(
+          `[apcore:acl] The ACL auditLogger returned a Promise. PROTOCOL_SPEC §6.3.2 ` +
+            `requirement 4 requires a SYNCHRONOUS callback: an async one fails after the ` +
+            `access decision has been returned, where it can no longer be contained. This ` +
+            `entry was NOT delivered. Enqueue the entry inside the callback and return.`,
+        );
+      }
+    }
+  }
+
+  /**
+   * §6.3.2 requirement 2 — the default sink.
+   *
+   * All thirteen §6.3.1 fields go out as STRUCTURED data under their
+   * `snake_case` wire names, not interpolated into the message. Without that,
+   * one specification yields three different "structured records" across the
+   * SDKs and nothing downstream consumes all three.
+   */
+  private _emitDefault(entry: AuditEntry): void {
+    const method = AUDIT_LEVEL_METHODS[(this._config as AuditConfig).log_level] ?? 'info';
+    try {
+      console[method](AUDIT_EVENT_NAME, auditEntryToWire(entry));
+    } catch (e) {
+      this._reportFailure(e);
+    }
+  }
+
+  private _reportFailure(e: unknown): void {
+    if (this._failed) return;
+    this._failed = true;
+    const name = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
+    console.warn(
+      `[apcore:acl] ACL audit delivery failed (${name}). The access decision is ` +
+        `unaffected (PROTOCOL_SPEC §6.3.2 requirement 3) — auditing is a side channel and ` +
+        `does not hold a veto over access. Further failures from this sink are not ` +
+        `reported; replacing the sink or reloading the ACL starts a new report.`,
+    );
+  }
+}
+
+/**
+ * §6.3.2 requirement 1 — name EVERY field the callback overrides.
+ *
+ * Not only the most visible one: an operator who set `include_denied` and
+ * `log_level` and hears about one of them has been told the smaller half of
+ * what happened.
+ */
+export function warnAuditBlockOverridden(
+  callback: AuditLogger | null,
+  config: AuditConfig | null,
+): void {
+  if (callback === null || config === null) return;
+  console.warn(
+    `[apcore:acl] An auditLogger was supplied to this ACL, so it is the effective sink ` +
+      `and the ACL file's 'audit:' block does not apply. The callback receives EVERY ` +
+      `entry, allow and deny alike. These declared settings have no effect: ` +
+      `${AUDIT_FIELDS.map((f) => `audit.${f}`).join(', ')} ` +
+      `(PROTOCOL_SPEC §6.3.2 requirement 1).`,
+  );
+}
+
+
 export class ACL {
   private static conditionHandlers = new Map<string, ACLConditionHandler>();
   private static asyncConditionHandlers = new Map<string, ACLConditionHandler>();
@@ -1301,11 +1485,25 @@ export class ACL {
   private _defaultEffect: string;
   private _yamlPath: string | null = null;
   private _auditLogger: AuditLogger | null = null;
+  private _auditConfig: AuditConfig | null = null;
+  private _auditSink: AuditSink = new AuditSink(null, null);
   /** Rule indices already warned about for want of a context (§6.5). */
   private readonly _warnedMissingContext = new Set<number>();
   debug: boolean = false;
 
-  constructor(rules: ACLRule[], defaultEffect: string = 'deny', auditLogger?: AuditLogger | null) {
+  constructor(
+    rules: ACLRule[],
+    defaultEffect: string = 'deny',
+    auditLogger?: AuditLogger | null,
+    /**
+     * The ACL file's `audit:` block, as declared. `null`/omitted means the
+     * document declared none, which keeps the pre-v1.45.0 behaviour of no audit
+     * output without a callback (PROTOCOL_SPEC §6.3.2 requirement 2). Supplied
+     * by the file loader; callers constructing an ACL directly normally pass
+     * `auditLogger` instead.
+     */
+    auditConfig?: AuditConfig | null,
+  ) {
     // §6.1.5 closes `default_effect` on the same terms as a rule's `effect`,
     // and §6.2.1 point 2 places it: judged FIRST, before any rule, at every
     // door. It is first here by position; `ACL.load()` runs the same function
@@ -1317,6 +1515,13 @@ export class ACL {
     this._rules = [...rules];
     this._defaultEffect = defaultEffect;
     this._auditLogger = auditLogger ?? null;
+    this._auditConfig = auditConfig ?? null;
+    // §6.3.2 requirement 1: one effective sink, never two. Built here and
+    // rebuilt by `reload()`, which is what scopes requirement 5's
+    // once-per-failure suppression to a sink CONFIGURATION rather than to the
+    // ACL object's lifetime.
+    this._auditSink = new AuditSink(this._auditLogger, this._auditConfig);
+    warnAuditBlockOverridden(this._auditLogger, this._auditConfig);
     // §6.2.1 point 2 (v1.31.0, #112) — RULE INDEX DOMINATES THE AXES, so this
     // is one pass per rule and not three passes over the list. Sweeping an axis
     // across every rule before looking at the next axis is forbidden: it makes
@@ -1473,7 +1678,7 @@ export class ACL {
     }
   }
 
-  static load(yamlPath: string): ACL {
+  static load(yamlPath: string, auditLogger?: AuditLogger | null): ACL {
     if (_aclFileLoader === null) {
       throw new ACLRuleError(
         'ACL.load(yamlPath) requires the Node entry of apcore-js. The browser ' +
@@ -1481,7 +1686,7 @@ export class ACL {
           'with `new ACL([...rules])` instead.',
       );
     }
-    return _aclFileLoader(yamlPath);
+    return _aclFileLoader(yamlPath, auditLogger ?? null);
   }
 
   /**
@@ -1560,7 +1765,10 @@ export class ACL {
     // Mirrors asyncCheck snapshot semantics for sync/async parity.
     const rules = this._rules.slice();
     const defaultEffect = this._defaultEffect;
-    const auditLogger = this._auditLogger;
+    // The SINK, not the raw callback: delivery has to be contained (§6.3.2
+    // requirement 3) and the failure state that scopes requirement 5's
+    // suppression lives on the sink, so a bare callable could honour neither.
+    const auditSink = this._auditSink;
     // Open a capture frame private to this evaluation. A nested check()
     // invoked from a condition handler pushes its own frame and restores
     // ours on exit, so it can no longer consume our handler error.
@@ -1582,12 +1790,12 @@ export class ACL {
           continue;
         }
         return this._decideByRule(
-          effectiveCaller, targetId, rule, idx, ctx, auditLogger, frame, pendingApproval,
+          effectiveCaller, targetId, rule, idx, ctx, auditSink, frame, pendingApproval,
         );
       }
 
       return this._decideByDefault(
-        effectiveCaller, targetId, defaultEffect, rules.length, ctx, auditLogger, frame,
+        effectiveCaller, targetId, defaultEffect, rules.length, ctx, auditSink, frame,
         pendingApproval,
       );
     } finally {
@@ -1619,7 +1827,10 @@ export class ACL {
     // (e.g. a concurrent setDefaultEffect() or addRule() call mid-evaluation).
     const rules = this._rules.slice();
     const defaultEffect = this._defaultEffect;
-    const auditLogger = this._auditLogger;
+    // The SINK, not the raw callback: delivery has to be contained (§6.3.2
+    // requirement 3) and the failure state that scopes requirement 5's
+    // suppression lives on the sink, so a bare callable could honour neither.
+    const auditSink = this._auditSink;
     // Open a capture frame private to this evaluation (see checkAccess()).
     const [frame, previousFrame] = ACL._pushEvaluationFrame(options?.arguments ?? null);
     // §6.1.1 rule 5 — see checkAccess(). The two paths MUST NOT drift on this:
@@ -1644,12 +1855,12 @@ export class ACL {
           continue;
         }
         return this._decideByRule(
-          effectiveCaller, targetId, rule, idx, ctx, auditLogger, frame, pendingApproval,
+          effectiveCaller, targetId, rule, idx, ctx, auditSink, frame, pendingApproval,
         );
       }
 
       return this._decideByDefault(
-        effectiveCaller, targetId, defaultEffect, rules.length, ctx, auditLogger, frame,
+        effectiveCaller, targetId, defaultEffect, rules.length, ctx, auditSink, frame,
         pendingApproval,
       );
     } finally {
@@ -1673,7 +1884,7 @@ export class ACL {
     rule: ACLRule,
     ruleIndex: number,
     ctx: Context | null,
-    auditLogger: AuditLogger | null,
+    auditSink: AuditSink,
     frame: EvaluationFrame,
     pendingApproval: boolean,
   ): AccessDecision {
@@ -1695,8 +1906,8 @@ export class ACL {
     // covering both terms rather than only the rule's own.
     const approvalRequired =
       access === 'allow' && (rule.approval === 'required' || pendingApproval);
-    if (auditLogger) {
-      auditLogger(
+    if (auditSink.isActive) {
+      auditSink.deliver(
         this._buildAuditEntry(
           callerId, targetId, access, 'rule_match', rule, ruleIndex, ctx,
           ACL._takeFrameError(frame), approvalRequired,
@@ -1724,7 +1935,7 @@ export class ACL {
     defaultEffect: string,
     ruleCount: number,
     ctx: Context | null,
-    auditLogger: AuditLogger | null,
+    auditSink: AuditSink,
     frame: EvaluationFrame,
     pendingApproval: boolean,
   ): AccessDecision {
@@ -1736,8 +1947,8 @@ export class ACL {
     // A `deny` default clears the pending requirement exactly as a matched
     // `deny` rule does (§6.1.1 rule 5, third bullet).
     const approvalRequired = access === 'allow' && pendingApproval;
-    if (auditLogger) {
-      auditLogger(
+    if (auditSink.isActive) {
+      auditSink.deliver(
         this._buildAuditEntry(
           callerId, targetId, access, reason, null, null, ctx,
           ACL._takeFrameError(frame), approvalRequired,
@@ -2128,13 +2339,27 @@ export class ACL {
     if (this._yamlPath === null) {
       throw new ACLRuleError('Cannot reload: ACL was not loaded from a YAML file');
     }
+    // The callback is NOT passed here: `reload` preserves the one this
+    // instance already has (requirement 7), and handing it to the temporary
+    // would emit requirement 1's override notice a second time for a
+    // configuration the caller has already been told about.
     const reloaded = ACL.load(this._yamlPath);
     this._rules = reloaded._rules;
     this._defaultEffect = reloaded._defaultEffect;
+    // §6.3.2 requirement 7: a reload refreshes the `audit:` block and PRESERVES
+    // a programmatic callback, which was never read from the file. Before
+    // v1.45.0 this method refreshed only the rules and the default effect, so
+    // the audit block was the one part of the document a reload did not pick up.
+    //
+    // Building a NEW sink is also what scopes requirement 5's once-per-failure
+    // suppression: a reload that changes the sink's configuration starts a
+    // fresh report rather than hiding a new failure behind an old one.
+    this._auditConfig = reloaded._auditConfig;
+    this._auditSink = new AuditSink(this._auditLogger, this._auditConfig);
+    warnAuditBlockOverridden(this._auditLogger, this._auditConfig);
     // §6.8 rule 4: `rules` and `defaultEffect` read the live object, so both
     // accessors reflect the reloaded file with no further work.
     this._warnedMissingContext.clear();
-    // Preserve auditLogger — reload only refreshes rules and default effect
   }
 }
 

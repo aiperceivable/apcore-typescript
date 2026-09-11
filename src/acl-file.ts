@@ -14,16 +14,92 @@ import { dirname, isAbsolute, join, resolve } from 'node:path';
 import yaml from 'js-yaml';
 import {
   ACL,
+  AUDIT_FIELDS,
   _parseAclRule,
   _rejectInvalidDefaultEffect,
   _setAclFileLoader,
   _setAclDiscoverer,
 } from './acl.js';
-import type { AclConfigLike } from './acl.js';
+import type { AclConfigLike, AuditConfig, AuditLogger } from './acl.js';
 import { getDefault } from './config-defaults.js';
-import { ACLRuleError, ConfigNotFoundError } from './errors.js';
+import { ACLRuleError, ConfigError, ConfigNotFoundError } from './errors.js';
 
-_setAclFileLoader((yamlPath: string): ACL => {
+/**
+ * Validate an ACL file's `audit:` block (PROTOCOL_SPEC §6.3.2 requirement 8).
+ *
+ * Returns `null` only when the document declares no `audit` key at all — the
+ * distinction requirement 2 turns on, because `enabled` defaults to `true` and
+ * reading the merged view would switch a log record per check on for every ACL
+ * file in existence.
+ *
+ * Validates the SUBTREE only: types and unknown keys inside the block. Every
+ * other unrecognised root key in an ACL file keeps being ignored.
+ */
+function parseAuditBlock(data: Record<string, unknown>, yamlPath: string): AuditConfig | null {
+  if (!('audit' in data)) return null;
+  const raw = data['audit'];
+  // Presence, not truthiness. `audit:` with nothing under it parses to null,
+  // and the operator still wrote the block: a declaration with every setting
+  // at its default, not an absence.
+  if (raw === null || raw === undefined) {
+    return { enabled: true, include_denied: true, log_level: 'info' };
+  }
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new ConfigError(
+      `${yamlPath}: 'audit' must be a mapping (PROTOCOL_SPEC §6.3.2), got ${typeof raw}`,
+    );
+  }
+  const block = raw as Record<string, unknown>;
+
+  const unknown = Object.keys(block)
+    .filter((k) => !(AUDIT_FIELDS as readonly string[]).includes(k))
+    .sort();
+  if (unknown.length > 0) {
+    throw new ConfigError(
+      `${yamlPath}: unknown key(s) in the 'audit' block: ${unknown.join(', ')}. The block ` +
+        `accepts exactly ${AUDIT_FIELDS.join(', ')} ($defs/AuditConfig in ` +
+        `schemas/acl-config.schema.json).`,
+    );
+  }
+
+  const config: AuditConfig = { enabled: true, include_denied: true, log_level: 'info' };
+  for (const key of ['enabled', 'include_denied'] as const) {
+    if (key in block) {
+      if (typeof block[key] !== 'boolean') {
+        throw new ConfigError(
+          `${yamlPath}: 'audit.${key}' must be a boolean, got ${JSON.stringify(block[key])}`,
+        );
+      }
+      config[key] = block[key] as boolean;
+    }
+  }
+  if ('log_level' in block) {
+    const levels = ['trace', 'debug', 'info', 'warn', 'error'];
+    if (typeof block['log_level'] !== 'string' || !levels.includes(block['log_level'])) {
+      throw new ConfigError(
+        `${yamlPath}: 'audit.log_level' must be one of ${levels.join(', ')}, got ` +
+          `${JSON.stringify(block['log_level'])}`,
+      );
+    }
+    config.log_level = block['log_level'] as AuditConfig['log_level'];
+  }
+
+  if (!config.include_denied) {
+    // §6.3.2 requirement 6 — a notice, not a refusal. It withholds the
+    // security-relevant half of the record, so an operator who wrote it
+    // deliberately gets told once per load rather than stopped.
+    console.warn(
+      `[apcore:acl] ${yamlPath} sets audit.include_denied: false, so DENIED access ` +
+        `attempts will not be recorded by the default audit sink (PROTOCOL_SPEC §6.3.2 ` +
+        `requirement 6). Allowed calls are still recorded. Remove the entry to restore ` +
+        `denials.`,
+    );
+  }
+  return config;
+}
+
+
+_setAclFileLoader((yamlPath: string, auditLogger?: AuditLogger | null): ACL => {
   if (!existsSync(yamlPath)) {
     throw new ConfigNotFoundError(yamlPath);
   }
@@ -50,20 +126,15 @@ _setAclFileLoader((yamlPath: string): ACL => {
   // wants, so any unknown root key is dropped in silence. The diagnostic
   // therefore has to live here.
   //
-  // Scoped to `audit` deliberately: this is a deprecation notice, NOT
-  // unknown-key closure for ACL files. Every other unrecognised root key keeps
-  // being ignored exactly as before, and the block itself is still ignored —
-  // nothing about this file's behaviour changes.
-  if ('audit' in dataObj) {
-    console.warn(
-      `[apcore:acl] DEPRECATION (apcore#118, PROTOCOL_SPEC §9.2.4.1): ${yamlPath} ` +
-        `declares an 'audit:' block, which no apcore SDK has ever read — auditing is ` +
-        `wired programmatically through the ACL constructor's auditLogger. The same ` +
-        `three settings are also declared as 'acl.audit.*' in apcore.yaml and are ` +
-        `equally inert. One of the two declarations is removed no earlier than v2.0 ` +
-        `(§13.2 / §13.4); nothing has changed in this release.`,
-    );
-  }
+  // Scoped to `audit` deliberately: §6.3.2 requirement 8 validates this SUBTREE
+  // and nothing else, so every other unrecognised root key in an ACL file keeps
+  // being ignored exactly as before. This was never unknown-key closure for ACL
+  // files, and wiring the block does not make it one.
+  //
+  // The §9.2.4.1 deprecation notice that used to stand here is gone: spec
+  // v1.45.0 gave the block a delivery contract, and a key that has gained a
+  // consumer must stop being announced as going away.
+  const auditConfig = parseAuditBlock(dataObj, yamlPath);
 
   // §6.2.1 point 2 (v1.31.0, #112) — `default_effect` is judged FIRST, before
   // any rule. It is not a rule and has no index, so the rule ordering never
@@ -101,7 +172,7 @@ _setAclFileLoader((yamlPath: string): ACL => {
   // refuse a later rule for a fault a lower-indexed rule already had.
   const rules = rawRules.map((raw, i) => _parseAclRule(raw, i));
 
-  const acl = new ACL(rules, defaultEffect);
+  const acl = new ACL(rules, defaultEffect, auditLogger ?? null, auditConfig);
   acl._setYamlPath(yamlPath);
   return acl;
 });

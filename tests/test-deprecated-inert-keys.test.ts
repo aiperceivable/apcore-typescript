@@ -321,23 +321,22 @@ describe("the §9.2.4.1 ACL-file `audit:` notice (apcore#118)", () => {
       .filter((line) => line.startsWith('[apcore:acl] DEPRECATION (apcore#118'));
   }
 
-  it('warns for an ACL file that declares an audit: block, naming the file', () => {
+  it('no longer produces a deprecation notice for an audit: block', () => {
+    // §9.2.4.1's notice is SUPERSEDED by §6.3.2 (spec v1.45.0). The block had
+    // never been read, so the notice was the only signal an operator got. It is
+    // now read — it has a delivery contract — and a key that has gained a
+    // consumer must stop being announced as going away, for the same reason
+    // §9.2.4 requirement 1 says the table is the whole list.
     const aclPath = write(
       'global_acl.yaml',
       `default_effect: deny\n${RULES}audit:\n  enabled: true\n  include_denied: true\n  log_level: "info"\n`,
     );
     const warn = spyOnWarn();
 
-    ACL.load(aclPath);
+    const acl = ACL.load(aclPath);
 
-    const notices = aclNoticesFrom(warn);
-    expect(notices).toHaveLength(1);
-    expect(notices[0]).toContain(aclPath);
-    expect(notices[0]).toContain("'audit:'");
-    // The notice has to point somewhere: the programmatic replacement, and the
-    // equally inert `acl.audit.*` spelling of the same three settings.
-    expect(notices[0]).toContain('auditLogger');
-    expect(notices[0]).toContain("'acl.audit.*'");
+    expect(aclNoticesFrom(warn)).toEqual([]);
+    expect(acl.rules).toHaveLength(1);
   });
 
   it('is SILENT for an ACL file with no audit: block', () => {
@@ -369,28 +368,20 @@ describe("the §9.2.4.1 ACL-file `audit:` notice (apcore#118)", () => {
     expect(warn.mock.calls.map((call) => String(call[0]))).toEqual([]);
   });
 
-  it('warns on PRESENCE, not on truthiness — an empty audit: block still counts', () => {
-    // `audit:` with nothing under it parses to `null`. The operator wrote the
-    // block; a truthiness check would say nothing about it.
+  it('treats an empty audit: block as DECLARED, with every setting at its default', () => {
+    // `audit:` with nothing under it parses to null, and the operator still
+    // wrote the block. §6.3.2 requirement 2 makes declaration the switch, so
+    // presence — not truthiness — is what activates the default sink. Read off
+    // the behaviour rather than off a notice, because the notice is gone.
     const aclPath = write('global_acl.yaml', `default_effect: deny\n${RULES}audit:\n`);
-    const warn = spyOnWarn();
+    const acl = ACL.load(aclPath);
 
-    ACL.load(aclPath);
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    acl.check('api.x', 'executor.y');
+    const emitted = info.mock.calls.filter((c) => c[0] === 'apcore.acl.audit');
+    info.mockRestore();
 
-    expect(aclNoticesFrom(warn)).toHaveLength(1);
-  });
-
-  it('fires once per LOAD — the loader keeps no memo', () => {
-    const aclPath = write(
-      'global_acl.yaml',
-      `default_effect: deny\n${RULES}audit:\n  enabled: true\n`,
-    );
-    const warn = spyOnWarn();
-
-    ACL.load(aclPath);
-    ACL.load(aclPath);
-
-    expect(aclNoticesFrom(warn)).toHaveLength(2);
+    expect(emitted).toHaveLength(1);
   });
 
   it('changes no behaviour: the file loads and the block stays ignored', () => {
