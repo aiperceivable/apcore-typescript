@@ -59,17 +59,20 @@ async function lazyLoadMetadata(metaPath: string): Promise<Record<string, unknow
 }
 
 async function lazyScanExtensions(
-  root: string, maxDepth: number, followSymlinks: boolean,
+  root: string, maxDepth: number, followSymlinks: boolean, ignorePatterns: readonly string[],
 ): Promise<import('./types.js').DiscoveredModule[]> {
   const { scanExtensions } = await import('./scanner.js');
-  return scanExtensions(root, maxDepth, followSymlinks);
+  return scanExtensions(root, maxDepth, followSymlinks, ignorePatterns);
 }
 
 async function lazyScanMultiRoot(
-  roots: Array<Record<string, unknown>>, maxDepth: number, followSymlinks: boolean,
+  roots: Array<Record<string, unknown>>,
+  maxDepth: number,
+  followSymlinks: boolean,
+  ignorePatterns: readonly string[],
 ): Promise<import('./types.js').DiscoveredModule[]> {
   const { scanMultiRoot } = await import('./scanner.js');
-  return scanMultiRoot(roots, maxDepth, followSymlinks);
+  return scanMultiRoot(roots, maxDepth, followSymlinks, ignorePatterns);
 }
 
 /**
@@ -443,16 +446,23 @@ export class Registry {
   private async _scanRoots(): Promise<import('./types.js').DiscoveredModule[]> {
     let maxDepth = 8;
     let followSymlinks = false;
+    let ignorePatterns: readonly string[] = [];
     if (this._config !== null) {
       maxDepth = (this._config.get('extensions.max_depth', 8) as number);
       followSymlinks = (this._config.get('extensions.follow_symlinks', false) as boolean);
+      ignorePatterns = (this._config.get('extensions.ignore_patterns', []) as string[]) ?? [];
     }
 
     const hasNamespace = this._extensionRoots.some((r) => 'namespace' in r);
     if (this._extensionRoots.length > 1 || hasNamespace) {
-      return lazyScanMultiRoot(this._extensionRoots, maxDepth, followSymlinks);
+      return lazyScanMultiRoot(this._extensionRoots, maxDepth, followSymlinks, ignorePatterns);
     }
-    return lazyScanExtensions(this._extensionRoots[0]['root'] as string, maxDepth, followSymlinks);
+    return lazyScanExtensions(
+      this._extensionRoots[0]['root'] as string,
+      maxDepth,
+      followSymlinks,
+      ignorePatterns,
+    );
   }
 
   /**

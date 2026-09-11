@@ -6,6 +6,7 @@ import { statSync, readdirSync, lstatSync, realpathSync } from 'node:fs';
 import { resolve, relative, join, extname, basename, sep } from 'node:path';
 import { ConfigError, ConfigNotFoundError } from '../errors.js';
 import type { DiscoveredModule } from './types.js';
+import { matchGlob } from '../utils/pattern.js';
 
 const SKIP_DIR_NAMES = new Set(['node_modules', '__pycache__']);
 const VALID_EXTENSIONS = new Set(['.ts', '.js']);
@@ -19,15 +20,33 @@ function existsAndIsDir(p: string): boolean {
   }
 }
 
+/**
+ * `ignorePatterns` is `extensions.ignore_patterns`, matched with Algorithm A25
+ * (PROTOCOL_SPEC §9.2.3) against the ENTRY NAME — one path segment, never a
+ * path, case-sensitively. It is a UNION with `SKIP_DIR_NAMES` and §3.5's
+ * hidden/internal prefixes: a configured pattern adds to those and cannot
+ * switch one off.
+ *
+ * Until spec v1.42.0 the key was registered in every SDK's configuration key
+ * surface and read by none, so §3.6 step 3a was a MUST whose input nothing
+ * supplied and a directory a project had excluded from discovery was scanned
+ * and registered anyway — a skip rule that failed OPEN (apcore#118).
+ */
 export function scanExtensions(
   root: string,
   maxDepth: number = 8,
   followSymlinks: boolean = false,
+  ignorePatterns: readonly string[] = [],
 ): DiscoveredModule[] {
   const rootResolved = resolve(root);
   if (!existsAndIsDir(rootResolved)) {
     throw new ConfigNotFoundError(rootResolved);
   }
+
+  // Empty entries are dropped rather than treated as a pattern: A25 anchors, so
+  // `''` would match only the empty name, and an operator who leaves a blank
+  // line in a YAML list means nothing by it.
+  const patterns = ignorePatterns.filter((p) => p !== '');
 
   const visitedRealPaths = new Set([realpathSync(rootResolved)]);
   const results: DiscoveredModule[] = [];
@@ -51,6 +70,7 @@ export function scanExtensions(
     for (const name of entries) {
       if (name.startsWith('.') || name.startsWith('_')) continue;
       if (SKIP_DIR_NAMES.has(name)) continue;
+      if (patterns.some((pattern) => matchGlob(pattern, name))) continue;
 
       const entryPath = join(dirPath, name);
       let lstat;
@@ -143,6 +163,7 @@ export function scanMultiRoot(
   roots: Array<Record<string, unknown>>,
   maxDepth: number = 8,
   followSymlinks: boolean = false,
+  ignorePatterns: readonly string[] = [],
 ): DiscoveredModule[] {
   const allResults: DiscoveredModule[] = [];
   const seenNamespaces = new Set<string>();
@@ -159,7 +180,7 @@ export function scanMultiRoot(
   }
 
   for (const [rootPath, namespace] of resolved) {
-    const modules = scanExtensions(rootPath, maxDepth, followSymlinks);
+    const modules = scanExtensions(rootPath, maxDepth, followSymlinks, ignorePatterns);
     for (const m of modules) {
       allResults.push({
         filePath: m.filePath,
