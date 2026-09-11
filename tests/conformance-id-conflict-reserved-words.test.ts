@@ -34,7 +34,11 @@ interface Case {
   expected: string | null;
 }
 
-function loadFixture(): { reserved_words: string[]; test_cases: Case[] } {
+function loadFixture(): {
+  reserved_words: string[];
+  error_code_by_conflict: Record<string, string>;
+  test_cases: Case[];
+} {
   return JSON.parse(fs.readFileSync(FIXTURE_PATH, 'utf-8'));
 }
 
@@ -72,11 +76,13 @@ describeIfPresent('Conformance: reserved-word ID conflicts (§2.6 step 2, spec v
         // the message identifies the offending id, rather than pinning a class
         // name the three languages do not share.
         let message = '';
+        let code: unknown;
         expect(() => {
           try {
             registry.register(tc.new_id, conformantModule);
           } catch (e) {
             message = e instanceof Error ? e.message : String(e);
+            code = (e as { code?: unknown }).code;
             throw e;
           }
         }, tc.note).toThrow();
@@ -84,6 +90,17 @@ describeIfPresent('Conformance: reserved-word ID conflicts (§2.6 step 2, spec v
           message.includes(tc.new_id) || message.includes(tc.new_id.split('.')[0]),
           `${tc.note} — message was: ${message}`,
         ).toBe(true);
+
+        // ...and the WIRE CODE says WHICH conflict it was. Without this the
+        // driver only asserts "refused", so `check_case_pinning.py` could
+        // mutate `expected` from `reserved_word` to `duplicate_id` — a value
+        // this very fixture uses — and every SDK stayed green: the distinction
+        // the fixture exists to draw was asserted by nobody. The mapping lives
+        // in the fixture, not here, because it is one rule and §8's codes are
+        // the cross-language contract.
+        expect(code, `${tc.id}: the ${tc.expected} conflict must surface its wire code`).toBe(
+          loadFixture().error_code_by_conflict[tc.expected as string],
+        );
       }
     });
   });

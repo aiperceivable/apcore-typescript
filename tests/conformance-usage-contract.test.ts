@@ -14,7 +14,8 @@ import { describe, expect, it } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
-import { Registry } from '../src/index.js';
+import { APCore, Registry } from '../src/index.js';
+import { Config } from '../src/config.js';
 import { UsageCollector, UsageMiddleware } from '../src/observability/usage.js';
 import { UsageModule, UsageSummaryModule } from '../src/sys-modules/usage.js';
 import { jsonSchemaToTypeBox } from '../src/schema/loader-pure.js';
@@ -133,7 +134,7 @@ function run(testCase: Case): Record<string, unknown> {
 
 describe('conformance: usage_contract.json', () => {
   for (const testCase of fixture.test_cases) {
-    it(testCase.id, () => {
+    it(testCase.id, async () => {
       const expected = testCase.expected;
 
       // Rejection cases assert the declared grammar. It lives in inputSchema
@@ -147,6 +148,26 @@ describe('conformance: usage_contract.json', () => {
           new RegExp(pattern).test(testCase.inputs?.['period'] as string),
           `${testCase.id}: fixture expects this period to be rejected`,
         ).toBe(false);
+
+        // ...and then assert what the case actually SAYS. Both checks above are
+        // about the schema; neither reads `expected.error_code`, so this branch
+        // passed whatever wire code the fixture declared — the case ran and its
+        // expectation asserted nothing. Found by `check_case_pinning.py`:
+        // mutating the code left all three SDKs green, which is how they came
+        // to share the same proxy.
+        //
+        // Rejection happens at input validation (§6.7.1.1), the pipeline's job
+        // rather than `execute`'s, so this has to go through a real client.
+        const client = new APCore({
+          config: new Config({
+            version: '1.0',
+            project: { name: 'usage-contract' },
+            sys_modules: { enabled: true, usage: { enabled: true } },
+          }),
+        });
+        await expect(
+          client.call(testCase.module, { ...(testCase.inputs ?? {}) }),
+        ).rejects.toMatchObject({ code: expected['error_code'] });
         return;
       }
 
