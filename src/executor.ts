@@ -21,6 +21,7 @@ import {
 import type { StandardStrategyDeps } from './builtin-steps.js';
 import { ExecutionCancelledError } from './cancel.js';
 import type { Config } from './config.js';
+import { buildStrategyFromConfigSync } from './pipeline-config.js';
 // Import directly from emitter.js (browser-safe) — NOT events/index.js, which
 // re-exports subscribers.ts (Node-only: node:fs, process) and would drag
 // Node-only code into the browser dependency graph.
@@ -69,6 +70,48 @@ import type { ToggleState } from './sys-modules/toggle.js';
 import { propagateError } from './utils/error-propagation.js';
 
 export const REDACTED_VALUE: string = '***REDACTED***';
+
+/** Steps whose removal withdraws a protection (PROTOCOL_SPEC §5.16 req 7). */
+const SECURITY_STEPS = ['acl_check', 'approval_gate'] as const;
+
+/** The `pipeline:` block of a loaded configuration, or `null`. */
+function pipelineSectionOf(config: Config | null): Record<string, unknown> | null {
+  if (config === null) return null;
+  const section = config.get('pipeline');
+  if (section === null || typeof section !== 'object' || Array.isArray(section)) return null;
+  return Object.keys(section).length > 0 ? (section as Record<string, unknown>) : null;
+}
+
+/**
+ * §5.16 requirement 7 — removing `acl_check` or `approval_gate` warns.
+ *
+ * The reason is the TRANSITION, not the steady state. Requirement 6 makes a
+ * previously ignored section take effect, so a configuration that has been
+ * carrying `remove: [acl_check]` while ACL was enforced anyway starts having
+ * ACL genuinely removed. That is the operator getting what they asked for, and
+ * equally the one direction in which honouring configuration can withdraw a
+ * protection that was in place a moment earlier.
+ *
+ * A notice, never a refusal: the configuration is valid and was written
+ * deliberately, and rejecting it would break projects whose `pipeline:` block
+ * is harmless.
+ */
+function warnRemovedSecuritySteps(section: Record<string, unknown>): void {
+  const remove = Array.isArray(section['remove']) ? (section['remove'] as unknown[]) : [];
+  const removed = remove.filter((n): n is string =>
+    (SECURITY_STEPS as readonly string[]).includes(n as string),
+  );
+  if (removed.length === 0) return;
+  const consequence = removed.includes('acl_check')
+    ? 'Inter-module calls are no longer access-checked'
+    : 'Calls requiring approval are no longer gated';
+  console.warn(
+    `[apcore] pipeline.remove takes ${removed.map((n) => `'${n}'`).join(' and ')} out of the ` +
+      'execution pipeline. Until spec v1.43.0 a `pipeline:` section was accepted and then ' +
+      'ignored, so this removal may not have been in effect before this release even though ' +
+      `it was configured. ${consequence}. See PROTOCOL_SPEC 5.16 requirement 7.`,
+  );
+}
 
 /** Well-known context.data keys used internally by the runtime. */
 export const CTX_GLOBAL_DEADLINE = '_apcore.executor.global_deadline';
@@ -325,8 +368,40 @@ export class Executor {
     // Resolve strategy option (default to standard)
     const strategyOpt = options.strategy;
     if (strategyOpt === undefined || strategyOpt === null) {
-      // Default to standard strategy (pipeline-first)
-      this._strategy = buildStandardStrategy(this._buildStrategyDeps());
+      // PROTOCOL_SPEC §5.16 requirement 6: a configured `pipeline:` section MUST
+      // be applied. `buildStrategyFromConfig` has always existed and takes the
+      // section as an object, but nothing extracted that object from a loaded
+      // Config — so `pipeline: remove: [acl_check]` in apcore.yaml left all
+      // eleven steps in place and a declared custom step silently never ran
+      // (apcore#118, decision D-72).
+      //
+      // Only when the caller supplied no explicit strategy: an explicit one is
+      // an API argument and wins over configuration, per D-73.
+      const pipelineSection = pipelineSectionOf(options.config ?? null);
+      if (pipelineSection !== null) {
+        warnRemovedSecuritySteps(pipelineSection);
+        const { strategy, deferred } = buildStrategyFromConfigSync(
+          pipelineSection,
+          this._buildStrategyDeps(),
+        );
+        if (deferred.length > 0) {
+          // A `handler:` step is an ESM specifier and needs `await import()`,
+          // which a synchronous constructor cannot do. Reported rather than
+          // dropped: omitting it silently is the defect §5.16 requirement 6
+          // exists to remove, and throwing would stop a project from starting
+          // over a step that has never once run.
+          console.warn(
+            `[apcore] ${deferred.length} pipeline step(s) declare a 'handler:' target and ` +
+              `were NOT inserted: ${deferred.join(', ')}. Handler targets are ESM specifiers ` +
+              `and need an await, which the Executor constructor cannot do — build the ` +
+              `strategy with the async buildStrategyFromConfig() and pass it as ` +
+              `options.strategy. Steps declared with 'type:' were inserted normally.`,
+          );
+        }
+        this._strategy = strategy;
+      } else {
+        this._strategy = buildStandardStrategy(this._buildStrategyDeps());
+      }
     } else if (typeof strategyOpt === 'string') {
       // Resolve by name from the global registry
       const resolved = Executor._strategyRegistry.get(strategyOpt);

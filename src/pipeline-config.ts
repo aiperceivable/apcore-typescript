@@ -510,6 +510,97 @@ export async function buildStrategyFromConfig(
   pipelineConfig: PipelineConfig,
   deps: StandardStrategyDeps,
 ): Promise<ExecutionStrategy> {
+  return applyPipelineConfig(pipelineConfig, deps, _resolveStep);
+}
+
+/**
+ * Resolve a step WITHOUT `await import()`, or report that it cannot be.
+ *
+ * `handler:` targets are ESM specifiers, so this SDK — alone of the three —
+ * needs `await` to build them: apcore-python imports synchronously and
+ * apcore-rust looks the target up in a handler map. The synchronous path
+ * therefore returns `null` for a `handler:` entry rather than throwing, and
+ * the caller reports it. Skipping it silently is what §5.16 requirement 6
+ * exists to stop; failing construction outright would take a project that
+ * starts today and stop it from starting, over a step that has never once run.
+ */
+function _resolveStepSyncOrNull(stepDef: StepDefinition): Step | null {
+  if (stepDef.type && _stepTypeRegistry.has(stepDef.type)) {
+    return _resolveStepSync(stepDef);
+  }
+  return stepDef.handler ? null : _resolveStepSync(stepDef);
+}
+
+function _resolveStepSync(stepDef: StepDefinition): Step {
+  const typeName = stepDef.type;
+  const config = stepDef.config ?? {};
+  if (typeName && _stepTypeRegistry.has(typeName)) {
+    const factory = _stepTypeRegistry.get(typeName)!;
+    return new ConfiguredStep(factory(config), stepDef);
+  }
+  throw new ConfigurationError(
+    `Pipeline step at index has neither a registered 'type' nor a 'handler'. ` +
+      `Register the type with registerStepType(), or give the step a handler.`,
+  );
+}
+
+/**
+ * PROTOCOL_SPEC §5.16 requirement 6, synchronously.
+ *
+ * The `Executor` constructor is synchronous and `_strategy` is read by
+ * synchronous accessors (`info()`, `steps`), so a promise held for later would
+ * leave those reporting the DEFAULT pipeline while the configured one was still
+ * pending — a half-state of exactly the kind this requirement exists to remove.
+ *
+ * Everything except a `handler:` step resolves synchronously. Those are
+ * returned in `deferred` for the caller to report.
+ */
+export function buildStrategyFromConfigSync(
+  pipelineConfig: PipelineConfig,
+  deps: StandardStrategyDeps,
+): { strategy: ExecutionStrategy; deferred: string[] } {
+  const deferred: string[] = [];
+  const strategy = applyPipelineConfigSync(pipelineConfig, deps, (stepDef) => {
+    const step = _resolveStepSyncOrNull(stepDef);
+    if (step === null) deferred.push(stepDef.name ?? stepDef.handler ?? '<unnamed>');
+    return step;
+  });
+  return { strategy, deferred };
+}
+
+function applyPipelineConfigSync(
+  pipelineConfig: PipelineConfig,
+  deps: StandardStrategyDeps,
+  resolve: (def: StepDefinition) => Step | null,
+): ExecutionStrategy {
+  // The async entry point awaits its resolver; this one does not. The body is
+  // shared so `remove`, `configure` and their error messages cannot drift.
+  return applyPipelineConfigImpl(pipelineConfig, deps, resolve) as ExecutionStrategy;
+}
+
+async function applyPipelineConfig(
+  pipelineConfig: PipelineConfig,
+  deps: StandardStrategyDeps,
+  resolve: (def: StepDefinition) => Promise<Step>,
+): Promise<ExecutionStrategy> {
+  const resolved = new Map<StepDefinition, Step>();
+  const entries: ReadonlyArray<Record<string, unknown>> = pipelineConfig.steps ?? [];
+  for (const [index, raw] of entries.entries()) {
+    const def = _normalizeStepDefinition(raw, index);
+    resolved.set(def, await resolve(def));
+  }
+  let seen = 0;
+  return applyPipelineConfigImpl(pipelineConfig, deps, () => {
+    const def = [...resolved.keys()][seen++];
+    return def === undefined ? null : (resolved.get(def) ?? null);
+  }) as ExecutionStrategy;
+}
+
+function applyPipelineConfigImpl(
+  pipelineConfig: PipelineConfig,
+  deps: StandardStrategyDeps,
+  resolve: (def: StepDefinition) => Step | null,
+): ExecutionStrategy {
   validatePipelineLimits(pipelineConfig, deps.config);
 
   const strategy = buildStandardStrategy(deps);
@@ -581,7 +672,8 @@ export async function buildStrategyFromConfig(
   const stepEntries: ReadonlyArray<Record<string, unknown>> = pipelineConfig.steps ?? [];
   for (const [index, rawStepDef] of stepEntries.entries()) {
     const stepDef = _normalizeStepDefinition(rawStepDef, index);
-    const step = await _resolveStep(stepDef);
+    const step = resolve(stepDef);
+    if (step === null) continue;
     const after = stepDef.after;
     const before = stepDef.before;
     if (after) {
