@@ -62,6 +62,8 @@ export class Context<T = null> {
   readonly cancelToken: CancelToken | null;
   readonly globalDeadline: number | null;
   private _logger: ContextLogger | null = null;
+  /** One notice per process: this accessor can be hit once per module call. */
+  private static _loggerDeprecationWarned = false;
 
   /**
    * Never-aborted fallback signal returned when no `cancelToken` is bound.
@@ -370,7 +372,38 @@ export class Context<T = null> {
    * instance on subsequent accesses so middleware that logs repeatedly does
    * not allocate a new logger per call.
    */
+  /**
+   * @deprecated Use the host application's logger (apcore#121). Removed at v2.0.
+   *
+   * Application and module code SHOULD log through the logger the host
+   * application has already configured. To emit automatic apcore execution
+   * events instead, install `ObsLoggingMiddleware` explicitly — that is a
+   * different facility, not a drop-in replacement for ad-hoc logging.
+   *
+   * This accessor has no configuration door and cannot acquire one without
+   * paying for it somewhere the framework should not: its logger is built from
+   * a `Context`, which carries no `Config` in any SDK, and the only route that
+   * avoids threading one through `Context`'s pinned six-parameter contract is a
+   * process-global logger — which would end the multi-instance isolation apcore
+   * currently gets for free. So the output is fixed at stderr / `info` / JSON,
+   * bypassing whatever the host has configured. Per PROTOCOL_SPEC §9.2.4's D-67
+   * boundary, apcore does not own the host's logging policy.
+   *
+   * Note also that this SDK **memoises** the logger per `Context` while
+   * apcore-python and apcore-rust rebuild it per access — a divergence with no
+   * observable effect only because the logger is stateless and unconfigurable.
+   */
   get logger(): ContextLogger {
+    if (!Context._loggerDeprecationWarned) {
+      Context._loggerDeprecationWarned = true;
+      console.warn(
+        '[apcore] Context.logger is deprecated and will be removed in version 2.0. ' +
+          "Application and module code SHOULD use the host application's logger; its " +
+          "output is under the host's control, and this one's is not (always stderr, " +
+          'info, JSON). To emit automatic apcore execution events, install ' +
+          'ObsLoggingMiddleware explicitly. See apcore#121.',
+      );
+    }
     if (this._logger === null) {
       this._logger = ContextLogger.fromContext(this, this.callerId ?? 'unknown');
     }
