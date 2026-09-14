@@ -725,6 +725,67 @@ function uncompilableRegexPatternErrors(value: unknown): string[] {
   return out;
 }
 
+/**
+ * PROTOCOL_SPEC §9.6.3's `allow_unknown` row (apcore#118, decision D-69).
+ *
+ * Both halves of that row were inert. `allow_unknown: false` is documented as
+ * "silently ignored (not stored)" and the namespace was stored anyway, so
+ * `get()` answered for it; `allow_unknown: true` is documented as "stored,
+ * accessible, **WARN logged**" and no implementation logged anything. Fixing
+ * one without the other would leave the row half true, and both live here.
+ *
+ * **Namespace mode only, by construction.** §9.6.3 is about *namespaces*, and a
+ * legacy document has none — its root IS the `apcore` namespace, so an
+ * unrecognised top-level key there is a framework key governed by §9.14's walk
+ * under `strict`, not by this field. `strict`'s own clause (b) says it "applies
+ * in legacy mode too", which is the specification saying clause (a) does not.
+ *
+ * Only a deployment that explicitly writes `allow_unknown: false` changes
+ * behaviour, and what changes is that it finally gets the published contract
+ * instead of a no-op — but the change is real: a `get()` that returned a value
+ * now returns `undefined`.
+ */
+function applyAllowUnknown(merged: Record<string, unknown>): Record<string, unknown> {
+  // An ABSENT `_config` is the default pair `strict: false, allow_unknown:
+  // true`, not an exemption: §9.6.3's matrix describes the defaults, so a
+  // document that declares an unregistered namespace and no `_config` at all is
+  // the row that warns. This is not the blanket warning §9.2.2 rejects — it
+  // fires on a condition specific to the document (there IS an unregistered
+  // namespace), never on every configuration ever loaded.
+  const rawMeta = merged['_config'];
+  const meta: Record<string, unknown> =
+    rawMeta !== null && typeof rawMeta === 'object' && !Array.isArray(rawMeta)
+      ? (rawMeta as Record<string, unknown>)
+      : {};
+  if (meta['strict'] === true) {
+    // `strict` already rejects an unknown namespace outright (clause a), so this
+    // field is "only relevant when strict: false" per §9.6.3's own comment.
+    return merged;
+  }
+
+  const known = new Set([...Array.from(_globalNsRegistry.keys()), 'apcore', '_config']);
+  const unknown = Object.keys(merged).filter((k) => !known.has(k)).sort();
+  if (unknown.length === 0) return merged;
+
+  if (meta['allow_unknown'] !== false) {
+    console.warn(
+      `[apcore:config] Configuration declares ${unknown.length} namespace(s) that no ` +
+        `package has registered: ${unknown.join(', ')}. They are stored and readable ` +
+        `through get(), and NOT validated against any schema (PROTOCOL_SPEC §9.6.3). Set ` +
+        `_config.allow_unknown: false to have them dropped instead, or _config.strict: ` +
+        `true to reject them.`,
+    );
+    return merged;
+  }
+
+  const dropped: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(merged)) {
+    if (!unknown.includes(key)) dropped[key] = value;
+  }
+  return dropped;
+}
+
+
 export class Config {
   private _data: Record<string, unknown>;
   /**
@@ -997,6 +1058,12 @@ export class Config {
         declared['apcore'] = applyEnvOverrides(declaredApcore as Record<string, unknown>);
       }
       declared = applyNamespaceEnvOverrides(declared);
+
+      // §9.6.3's `allow_unknown` row, both halves of which were inert
+      // (apcore#118, decision D-69). Applied AFTER the env overrides so a
+      // namespace that exists only because of an `APCORE_*` variable is
+      // treated the same as one written in the file.
+      merged = applyAllowUnknown(merged);
 
       config = new Config(merged);
       config._mode = 'namespace';

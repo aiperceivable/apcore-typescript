@@ -242,6 +242,90 @@ function _pickDependencies(meta: Record<string, unknown>): Array<Record<string, 
   return [];
 }
 
+/**
+ * `id_map.overrides` as declared, or `null`.
+ *
+ * A relative value is used AS-IS — resolved against the process working
+ * directory, exactly as `extensions.root` is. PROTOCOL_SPEC §9.2.1 states that
+ * the resolution base for path-typed keys is deliberately unspecified and
+ * tracked in #113: `acl.root` resolves against the config file's directory,
+ * `schema.root` against the CWD. This key is not the place to settle that — but
+ * it does have to pick, and it picks the base its SIBLING uses.
+ * `id_map.overrides` and `extensions.root` are two halves of one discovery
+ * configuration and are always read together, so a split base between them
+ * would be worse than either. An input to #113, not an answer.
+ */
+function idMapFromConfig(config: Config | null): string | null {
+  if (config === null) return null;
+  const declared = config.get('id_map.overrides');
+  if (typeof declared !== 'string' || declared.trim() === '') return null;
+  return declared;
+}
+
+
+/**
+ * `extensions.roots` if declared, else `extensions.root`, else the default.
+ *
+ * Both element shapes `$defs/ExtensionsConfig` admits are accepted: a bare path
+ * string and an object carrying an explicit `namespace`.
+ *
+ * **Every entry gets a namespace here**, derived from the last path segment
+ * when the entry does not name one — the same value `scanMultiRoot` would
+ * derive. Deriving it at this door rather than leaving it to the scanner is
+ * what makes a ONE-element `roots` list behave like an n-element one: the scan
+ * dispatches on "more than one root or any namespace", so a lone
+ * `roots: ['./beta']` would otherwise take the single-root branch and prefix
+ * nothing. Nothing in the schema makes a one-element list special, and `roots`
+ * versus `root` is the whole distinction between namespaced and
+ * backward-compatible mode.
+ *
+ * A `roots` list that is present but yields no usable entry falls through to
+ * the single-root branch rather than scanning nothing: an empty list is a
+ * configuration that discovers no modules, and silently discovering none is the
+ * failure this whole audit is about.
+ */
+function lastSegment(p: string): string {
+  const trimmed = p.replace(/[\\/]+$/, '');
+  const idx = Math.max(trimmed.lastIndexOf('/'), trimmed.lastIndexOf('\\'));
+  return idx === -1 ? trimmed : trimmed.slice(idx + 1);
+}
+
+function rootsFromConfig(config: Config): Array<Record<string, unknown>> {
+  const declared = config.get('extensions.roots');
+  if (Array.isArray(declared)) {
+    const entries: Array<Record<string, unknown>> = [];
+    for (const item of declared) {
+      if (typeof item === 'string' && item.trim() !== '') {
+        entries.push({ root: item, namespace: lastSegment(item) });
+      } else if (item !== null && typeof item === 'object') {
+        const record = item as Record<string, unknown>;
+        if (typeof record['root'] === 'string' && record['root'] !== '') {
+          const explicit = record['namespace'];
+          entries.push({
+            root: record['root'],
+            namespace:
+              typeof explicit === 'string' && explicit !== ''
+                ? explicit
+                : lastSegment(record['root']),
+          });
+        }
+      }
+    }
+    if (entries.length > 0) return entries;
+    if (declared.length > 0) {
+      console.warn(
+        `[apcore:registry] extensions.roots is declared with ${declared.length} ` +
+          `entry/entries and none of them names a root, so it was ignored and ` +
+          `extensions.root is used instead. An entry is either a path string or an ` +
+          `object with a 'root' key.`,
+      );
+    }
+  }
+  const extRoot = config.get('extensions.root') as string | undefined;
+  return [{ root: extRoot ?? (getDefault('extensions.root') as string) }];
+}
+
+
 export class Registry {
   private _extensionRoots: Array<Record<string, unknown>>;
   private _modules: Map<string, unknown> = new Map();
@@ -306,14 +390,34 @@ export class Registry {
         typeof item === 'string' ? { root: item } : item,
       );
     } else if (config !== null) {
-      const extRoot = config.get('extensions.root') as string | undefined;
-      this._extensionRoots = [{ root: extRoot ?? getDefault('extensions.root') as string }];
+      // `extensions.roots` before `extensions.root`: §9.1.1 declares both and
+      // `$defs/ExtensionsConfig` puts them in exclusive `oneOf` branches, so a
+      // document carrying `roots` is in multi-root mode and `root` is only its
+      // single-root sibling.
+      //
+      // apcore#118 decision D-70. This key was read by apcore-rust alone, so a
+      // multi-root project worked on one SDK of three, silently. `scanMultiRoot`
+      // has always been able to do the work — including the namespace prefixing
+      // `roots` exists for — and nothing extracted the list from a `Config`.
+      this._extensionRoots = rootsFromConfig(config);
     } else {
       this._extensionRoots = [{ root: getDefault('extensions.root') as string }];
     }
 
     this._config = config;
-    this._idMapPath = options?.idMapPath ?? null;
+    // The ID map: explicit argument > `id_map.overrides` > none.
+    //
+    // PROTOCOL_SPEC §9.1.1 declares `id_map.overrides` and nothing read it
+    // (apcore#118, decision D-71). The MECHANISM was implemented in all three
+    // SDKs — `_applyIdMapOverrides` is stage 2 of discovery — and the map
+    // arrived only through this constructor's `idMapPath`. Measured before the
+    // fix: with `id_map.overrides` pointing at a map that renames
+    // `executor/orig/mod.py`, discovery still registered `executor.orig.mod`.
+    //
+    // The precedence is D-73's, and the same one `extensions.root` follows
+    // above: an API argument beats `Config`. See `idMapFromConfig` for why a
+    // relative value follows `extensions.root`'s base rather than `acl.root`'s.
+    this._idMapPath = options?.idMapPath ?? idMapFromConfig(config);
   }
 
   /** Lazily load the ID map from disk on first discover(). */
