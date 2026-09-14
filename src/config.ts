@@ -628,8 +628,13 @@ export function userLevelConfigPaths(): string[] {
  * `observability.tracing.enabled` / `.sampling_rate` / `.exporter` consumers
  * (§10.1.1) and cancelled their withdrawal. A key that has left the table MUST
  * NOT warn — §9.2.4 requirement 1.
+ *
+ * `acl.default_effect` joined in v1.47.0 as §9.1.3's first application: it is
+ * read from the ACL FILE, and the `apcore.yaml` twin reaches nothing. Ordered
+ * first because §9.2.4's table lists it first.
  */
 const DEPRECATED_INERT_KEYS: readonly string[] = [
+  'acl.default_effect',
   'observability.metrics.enabled',
   'observability.metrics.exporter',
   'logging.level',

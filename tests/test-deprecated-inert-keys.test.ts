@@ -47,6 +47,7 @@ import { Config } from '../src/config.js';
  * SDKs name the same keys the same way.
  */
 const INERT_KEYS: readonly string[] = [
+  'acl.default_effect',
   'observability.metrics.enabled',
   'observability.metrics.exporter',
   'logging.level',
@@ -69,6 +70,7 @@ const WIRED_KEYS: Record<string, string> = {
 
 /** A type-appropriate YAML scalar for each key. */
 const INERT_KEY_VALUES: Record<string, string> = {
+  'acl.default_effect': '"allow"',
   'observability.metrics.enabled': 'true',
   'observability.metrics.exporter': '"prometheus"',
   'logging.level': '"info"',
@@ -81,22 +83,23 @@ const INERT_KEY_VALUES: Record<string, string> = {
 const MINIMAL_YAML = 'version: "0.30.0"\nproject:\n  name: inert-keys-test\n';
 
 /**
- * All seven in one document. Written out rather than assembled from `declare()`
+ * All eight in one document. Written out rather than assembled from `declare()`
  * per key, which would emit `observability:` twice and produce a
  * duplicate-mapping-key YAML error.
  */
-const ALL_INERT_YAML = `logging:
+const ALL_INERT_YAML = `acl:
+  default_effect: "allow"
+  audit:
+    enabled: true
+    include_denied: true
+    log_level: "info"
+logging:
   level: "info"
   format: "json"
 observability:
   metrics:
     enabled: true
     exporter: "prometheus"
-acl:
-  audit:
-    enabled: true
-    include_denied: true
-    log_level: "info"
 `;
 
 /** Render a dotted key as the nested YAML block that declares it. */
@@ -176,14 +179,14 @@ describe('the §9.2.4 inert-configuration-key notice (apcore#118)', () => {
     expect(notices).toHaveLength(1);
     expect(notices[0]).toContain(key);
     expect(notices[0]).toContain('1 key(s)');
-    // Only the declared one. A notice that named all seven would be no more
+    // Only the declared one. A notice that named all eight would be no more
     // actionable than no notice at all.
     for (const other of INERT_KEYS.filter((k) => k !== key)) {
       expect(notices[0]).not.toContain(other);
     }
   });
 
-  it('names all seven, once, in the §9.2.4 order when a configuration declares all seven', () => {
+  it('names all eight, once, in the §9.2.4 order when a configuration declares all eight', () => {
     const configPath = write('apcore.yaml', MINIMAL_YAML + ALL_INERT_YAML);
     const warn = spyOnWarn();
 
@@ -191,7 +194,7 @@ describe('the §9.2.4 inert-configuration-key notice (apcore#118)', () => {
 
     const notices = noticesFrom(warn);
     expect(notices).toHaveLength(1);
-    expect(notices[0]).toContain('7 key(s)');
+    expect(notices[0]).toContain('8 key(s)');
     // The order is part of the contract: two SDKs reporting the same document
     // must produce the same list.
     expect(notices[0]).toContain(INERT_KEYS.join(', '));
@@ -244,14 +247,17 @@ describe('the §9.2.4 inert-configuration-key notice (apcore#118)', () => {
   });
 
   it('is SILENT for live keys that sit beside the inert ones in the same sections', () => {
-    // `acl.root` and `acl.default_effect` share the `acl:` parent with
-    // `acl.audit.*`; `stream.max_merge_depth` and
-    // `validation.binding.version_require_semver` are the two keys apcore#118
-    // made live rather than deprecating. A prefix-matched check would trip on
-    // the first two.
+    // `acl.root` shares the `acl:` parent with `acl.audit.*`;
+    // `stream.max_merge_depth` and `validation.binding.version_require_semver`
+    // are the two keys apcore#118 made live rather than deprecating. A
+    // prefix-matched check would trip on the first.
+    //
+    // `acl.default_effect` used to stand here too. Spec v1.47.0 moved it INTO
+    // the table (§9.1.3's first application): an ACL's default effect is read
+    // from the ACL file, and this twin reaches nothing.
     const configPath = write(
       'apcore.yaml',
-      `${MINIMAL_YAML}acl:\n  root: "./acl"\n  default_effect: "deny"\nstream:\n  max_merge_depth: 8\nvalidation:\n  binding:\n    version_require_semver: true\n`,
+      `${MINIMAL_YAML}acl:\n  root: "./acl"\nstream:\n  max_merge_depth: 8\nvalidation:\n  binding:\n    version_require_semver: true\n`,
     );
     const warn = spyOnWarn();
 
@@ -291,7 +297,7 @@ describe('the §9.2.4 inert-configuration-key notice (apcore#118)', () => {
     expect(noticesFrom(warn)).toHaveLength(3);
   });
 
-  it('changes no behaviour: all seven still parse, validate under strict, and answer get()', () => {
+  it('changes no behaviour: all eight still parse, validate under strict, and answer get()', () => {
     // §9.2.4 requirement 3. Withdrawing these keys cannot be a plain deletion
     // precisely because a configuration carrying them is valid TODAY under
     // `_config.strict: true`; deleting one would turn a currently-valid
