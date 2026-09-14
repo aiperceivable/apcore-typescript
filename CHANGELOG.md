@@ -6,9 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
-## [0.31.0] - 2026-09-09
+## [0.31.0] - 2026-09-14
 
 ### Added
+
+- **A configured `pipeline:` section is applied** (spec v1.43.0 §5.16 reqs 6–7, [apcore#118](https://github.com/aiperceivable/apcore/issues/118) D-72). `buildStrategyFromConfig` always existed; its first parameter was an object the *caller* supplied, and nothing extracted it from a loaded `Config`, so `pipeline: remove: [acl_check]` left all eleven steps in place and a declared custom step silently never ran.
+  The `Executor` constructor is synchronous and `currentStrategy` has synchronous accessors, so this SDK gained a sync path beside the async one. A step declared with `handler:` is an ESM specifier needing `await import()`; it is **reported by name**, never dropped, because dropping it silently is the defect this change removes.
+
+- **The five `observability.tracing.*` keys are wired** (spec v1.44.0 §10.1.1, D-68 C′) via `observability/tracing-config.ts`. `jaeger` warns and installs **nothing** rather than substituting another exporter.
+
+- **`ACL.load(path, auditLogger?)`** (spec v1.45.0 §6.3.2, D-66). Without it the combination the contract describes — load from a file, audit through a callback — had no supported path between them.
+
+- **`extensions.roots` is read** (spec v1.46.0, D-70), both element shapes, with namespace isolation. `scanMultiRoot` could always do the work; nothing extracted the list from a `Config`. A one-element `roots` list is namespaced like an n-element one.
+
+- **`id_map.overrides` is read at registry construction** (spec v1.46.0, D-71), with an explicit `idMapPath` still winning.
+
 
 - **The six `validation.*` limits, unconstrained by default ([apcore#118](https://github.com/aiperceivable/apcore/issues/118), spec §9.1.2).** `validation.binding.description_max_length`, `validation.binding.documentation_max_length`, `validation.binding.tags_pattern`, `validation.binding.version_require_semver`, `validation.pipeline.step_name_max_length` and `validation.pipeline.timeout_ms_max` were registered in the key surface and read by nothing; what filled the gap instead was a set of numbers no two documents agreed on. They are now applied by `BindingLoader.loadBindings` and by the pipeline-config builder — **and all six are unconstrained by default**, because apcore does not impose limits on the content its users author: it offers them, and an operator opts in. §9.1.2 recommends values rather than enforcing them, which makes this purely additive — every binding file and every pipeline that loaded before this release still loads after it.
 
@@ -20,11 +32,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **A throwing ACL audit callback no longer changes the access decision** (spec v1.45.0 §6.3.2 req 3, D-66). **This is a behaviour change, and it is a fix.** Measured before it: a throwing `auditLogger` propagated out of `ACL.check()` and turned an **allowed** call into an error.
+  The ACL file's `audit:` block gained a delivery contract with it. **This SDK is the reason one clause of that contract exists**: its in-memory `AuditEntry` spells `callerId`, which §6.3.1 permits and the wire does not, so `auditEntryToWire` maps the thirteen field names explicitly — written out rather than derived by a camel-to-snake transformer, which would silently invent names for fields added later. A `Promise`-returning callback is an invalid delivery, reported once and caught so Node does not report it again for one cause.
+
+- **`_config.allow_unknown: false` now drops unregistered namespaces** (spec v1.46.0 §9.6.3 reqs 1–4, D-69). **Read this before upgrading**: it is the only change here that makes a `get()` which returned a value return `undefined`. It fires only for a configuration that explicitly writes `allow_unknown: false`. `allow_unknown: true` now emits the warning the same specification row has always required.
+
 - **The README stopped presenting configuration that does nothing, and configuration that does not exist, as working.** Found by sweeping the docs for the YAML *shapes* rather than for dotted keys, which is the only way the second category surfaces at all. The namespace-mode example under "YAML File Format" configured `observability.tracing.enabled` / `samplingRate` — one of the ten keys withdrawn below, plus a camelCase spelling that is not the declared name of the second; it now shows `obs.redaction.*`, whose keys are live and are read by `RedactionConfig.fromConfig`. The "Environment Variable Overrides" table illustrated the namespace-prefix convention with `APCORE_OBSERVABILITY_TRACING_ENABLED=true`, an override that reaches an inert key and, as of this release, prints a deprecation notice for the reader who copies it; it now uses `APCORE_OBS_REDACTION_REPLACEMENT`, which resolves in both legacy and namespace mode.
 
   A new **"Configuration keys that do nothing"** section shows all ten under that heading — so a reader who has them in a file can recognise them — and names the programmatic replacement for each. It also documents the opposite trap, previously unwritten anywhere in this repo and the worse of the two: `observability.prometheus.*`, `observability.health.*` and the legacy `observability.redaction.*` spelling are declared in no schema and read by nothing, so a configuration carrying them is *rejected* under `_config.strict: true` rather than merely ignored. Measured: `Unknown key 'observability.prometheus' (strict mode enabled)`. The legacy redaction spelling is the subtle one — this SDK **does** read `field_patterns` / `value_patterns` / `replacement` under it as a fallback with a deprecation warning, where apcore-python deliberately does not, and yet strict mode rejects the document before that fallback can ever run. The canonical `obs.redaction.*` keys are declared, and are read by all three SDKs.
 
 ### Deprecated
+
+- **`acl.default_effect` in `apcore.yaml`** (spec v1.47.0 §9.1.3 req 3, D-73). An ACL's default effect is read from the **ACL file**; this twin reaches nothing. Measured: `allow` here, against an ACL file that omits the key, yields **deny**. Migrate to the ACL file's `default_effect`. Removed at v2.0.
+
+- **`Context.logger`** ([apcore#121](https://github.com/aiperceivable/apcore/issues/121)). No configuration door; output fixed at stderr / `info` / JSON. Use the host application's own logger. `ObsLoggingMiddleware` is **not** the migration target — it emits apcore's execution events, a different facility. Note that this SDK **memoises** the logger per `Context` while apcore-python and apcore-rust rebuild it per access; harmless only because the logger is stateless and unconfigurable. Removed at v2.0.
+
+- **`logging.level` and `logging.format`** are withdrawn with no replacement key (spec v1.48.0, D-67). apcore does not own the host's logging policy, and `ContextLogger` writes directly to `console.error` rather than routing through any host logger.
 
 - **Ten declared configuration keys reach no consumer in any SDK, and now say so ([apcore#118](https://github.com/aiperceivable/apcore/issues/118), spec §9.2.4).** `observability.tracing.enabled` / `.sampling_rate` / `.exporter`, `observability.metrics.enabled` / `.exporter`, `logging.level` / `.format` and `acl.audit.enabled` / `.include_denied` / `.log_level` parse, validate, answer `get()` and pass `_config.strict: true` — and setting any of them does nothing. `Config.load` now emits one notice per affected load, naming the declared keys in the §9.2.4 order so that two SDKs report the same document the same way. **No behaviour changes**: this opens the removal window, it closes nothing. Withdrawing these keys cannot be a plain deletion precisely because all ten are accepted today under `_config.strict`, so removing one would turn a currently-valid configuration into a rejected one — §13.2 sets a two-minor floor for exactly that, and §13.4 restates it for `remove_field`.
 
