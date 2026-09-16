@@ -283,6 +283,34 @@ describe('Executor introspection', () => {
     expect(infos.length).toBeGreaterThan(0);
   });
 
+  // core-executor.md "Contract: Executor.list_strategies": one entry for the
+  // executor's current strategy plus one per registered strategy. The static
+  // overload cannot satisfy it — no built-in is seeded into the static
+  // registry, so a default-constructed Executor reported [] where
+  // apcore-python reported one entry, and design-execution-pipeline.md §8.2
+  // feeds this call to AI strategy selection.
+  it('instance listStrategies() includes the executor current strategy', () => {
+    const executor = new Executor({ registry });
+    const names = executor.listStrategies().map((s) => s.name);
+    expect(names[0]).toBe('standard');
+    expect(names).toContain('standard');
+  });
+
+  it('instance listStrategies() appends registered strategies without duplicating the current one', () => {
+    const deps = makeDeps(registry);
+    Executor.registerStrategy('intro-extra', buildTestingStrategy(deps));
+    // Registering under the current strategy's own name must not produce a
+    // second entry: apcore-python dedupes by name and so does this.
+    Executor.registerStrategy('standard', buildStandardStrategy(deps));
+
+    const executor = new Executor({ registry });
+    const names = executor.listStrategies().map((s) => s.name);
+
+    expect(names[0]).toBe('standard');
+    expect(names).toContain('testing');
+    expect(names.filter((n) => n === 'standard')).toHaveLength(1);
+  });
+
   it('describePipeline returns StrategyInfo for current strategy', () => {
     const executor = new Executor({ registry, strategy: 'testing' });
     const info = executor.describePipeline();

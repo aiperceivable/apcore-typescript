@@ -2,8 +2,9 @@
  * Global event bus with fan-out delivery, per-subscriber retry, and DLQ.
  */
 
-import { resolveRetry, computeDelayMs, fnmatch } from './retry.js';
+import { resolveRetry, computeDelayMs } from './retry.js';
 import type { RetryConfig } from './retry.js';
+import { matchGlob } from '../utils/pattern.js';
 
 export interface ApCoreEvent {
   readonly eventType: string;
@@ -154,7 +155,7 @@ export class EventEmitter {
       // recursively fail on the DLQ event about its own delivery failure.
       const pattern = sub.eventPattern ?? '*';
       if (isDlq && pattern === '*') return false;
-      return fnmatch(eventType, pattern);
+      return matchGlob(pattern, eventType);
     });
   }
 

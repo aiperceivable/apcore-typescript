@@ -6,6 +6,7 @@ import {
   CircularDependencyError,
   DependencyNotFoundError,
   DependencyVersionMismatchError,
+  ModuleLoadError,
 } from '../errors.js';
 import type { DependencyInfo } from './types.js';
 import { matchesVersionHint } from './version.js';
@@ -87,21 +88,43 @@ export function resolveDependencies(
     }
   }
 
-  // Check for cycles
+  // The sort stalled. Kahn's algorithm terminating with nodes remaining has two
+  // distinct causes and only one of them is a cycle (spec §5.15.2, D-79): a real
+  // cycle means the author must break a dependency edge, while a stall with no
+  // back edge means a required dependency is simply missing from this batch.
+  // Reporting CIRCULAR_DEPENDENCY for the latter — with a cyclePath synthesised
+  // from the leftover set, often a one-element "cycle" — sends the author
+  // looking for a loop that does not exist.
   if (loadOrder.length < modules.length) {
     const ordered = new Set(loadOrder);
     const remaining = new Set(modules.filter(([id]) => !ordered.has(id)).map(([id]) => id));
-    const cyclePath = extractCycle(modules, remaining);
-    throw new CircularDependencyError(cyclePath);
+    const cyclePath = findBackEdgeCycle(modules, remaining);
+    if (cyclePath !== null) {
+      throw new CircularDependencyError(cyclePath);
+    }
+    const blocked = [...remaining].sort();
+    throw new ModuleLoadError(
+      blocked.join(','),
+      `${blocked.length} module(s) could not be loaded — ` +
+        `blocked by unresolved required dependencies: ${JSON.stringify(blocked)}`,
+    );
   }
 
   return loadOrder;
 }
 
-function extractCycle(
+/**
+ * Return a back-edge cycle `[n0, ..., nk, n0]` if one exists in `remaining`,
+ * else `null`.
+ *
+ * The earlier `extractCycle` fell back to `sorted(remaining)` when it found no
+ * back edge, which made a non-cycle blockage indistinguishable from a real
+ * cycle. Returning `null` lets the caller tell them apart (D-79).
+ */
+function findBackEdgeCycle(
   modules: Array<[string, DependencyInfo[]]>,
   remaining: Set<string>,
-): string[] {
+): string[] | null {
   const depMap = new Map<string, string[]>();
   for (const [modId, deps] of modules) {
     if (remaining.has(modId)) {
@@ -110,13 +133,12 @@ function extractCycle(
     }
   }
 
-  const sortedRemaining = [...remaining].sort();
-  for (const start of sortedRemaining) {
+  for (const start of [...remaining].sort()) {
     const cycle = dfsFindCycle(depMap, start);
     if (cycle !== null) return cycle;
   }
 
-  return sortedRemaining;
+  return null;
 }
 
 function dfsFindCycle(depMap: Map<string, string[]>, start: string): string[] | null {

@@ -93,20 +93,38 @@ describe('BuiltinContextCreation', () => {
     expect(step.replaceable).toBe(false);
   });
 
+  // Spec v1.50.0 D-99/D-100/D-101: the budget is the first-class
+  // `Context.globalDeadline` field on the epoch-SECONDS clock, stamped onto
+  // the context DERIVED for this call. These cases previously asserted the
+  // private `context.data[CTX_GLOBAL_DEADLINE]` slot in milliseconds.
   it('sets global deadline on root call', async () => {
     const step = new BuiltinContextCreation(null);
     const pctx = makePipelineContext();
     const result = await step.execute(pctx);
     expect(result.action).toBe('continue');
-    expect(pctx.context.data[CTX_GLOBAL_DEADLINE]).toBeTypeOf('number');
+    expect(pctx.context.globalDeadline).toBeTypeOf('number');
+    // Seconds, not milliseconds: a ms value would be ~1e12.
+    expect(pctx.context.globalDeadline as number).toBeLessThan(1e11);
+    expect(CTX_GLOBAL_DEADLINE in pctx.context.data).toBe(false);
   });
 
-  it('does not overwrite existing global deadline', async () => {
+  it('does not overwrite a deadline already carried by the context', async () => {
     const step = new BuiltinContextCreation(null);
-    const pctx = makePipelineContext();
-    pctx.context.data[CTX_GLOBAL_DEADLINE] = 999999;
+    const supplied = Date.now() / 1000 + 999;
+    const pctx = makePipelineContext({
+      context: Context.create(null, null, null, undefined, null, supplied),
+    });
     await step.execute(pctx);
-    expect(pctx.context.data[CTX_GLOBAL_DEADLINE]).toBe(999999);
+    expect(pctx.context.globalDeadline).toBe(supplied);
+  });
+
+  it('does not write the deadline onto the caller-supplied context (D-101)', async () => {
+    const step = new BuiltinContextCreation(null);
+    const caller = Context.create();
+    const pctx = makePipelineContext({ context: caller });
+    await step.execute(pctx);
+    expect(pctx.context.globalDeadline).toBeTypeOf('number');
+    expect(caller.globalDeadline).toBeNull();
   });
 
   it('creates context when context is null', async () => {
@@ -522,8 +540,9 @@ describe('BuiltinExecute', () => {
 
   it('throws ModuleTimeoutError when global deadline exceeded', async () => {
     const step = new BuiltinExecute(null);
-    const ctx = Context.create().child('test.module');
-    ctx.data[CTX_GLOBAL_DEADLINE] = Date.now() - 1000; // already past
+    // Epoch seconds, one second in the past (D-99).
+    const ctx = Context.create(null, null, null, undefined, null, Date.now() / 1000 - 1)
+      .child('test.module');
     const mod = makeModule();
     const pctx = makePipelineContext({ module: mod, context: ctx });
     await expect(step.execute(pctx)).rejects.toThrow(/timed out/i);

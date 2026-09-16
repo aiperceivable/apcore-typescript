@@ -160,8 +160,8 @@ describe('Observability Integration', () => {
     expect(spans).toHaveLength(2);
 
     // Second span has parentSpanId matching first span's spanId
-    const spanA = spans.find((s) => s.attributes['moduleId'] === 'mod.a');
-    const spanB = spans.find((s) => s.attributes['moduleId'] === 'mod.b');
+    const spanA = spans.find((s) => s.attributes['module_id'] === 'mod.a');
+    const spanB = spans.find((s) => s.attributes['module_id'] === 'mod.b');
     expect(spanA).toBeDefined();
     expect(spanB).toBeDefined();
     expect(spanB!.parentSpanId).toBe(spanA!.spanId);
@@ -254,7 +254,7 @@ describe('Observability Integration', () => {
     const spans = exporter.getSpans();
     expect(spans).toHaveLength(1);
     expect(spans[0].status).toBe('error');
-    expect(spans[0].attributes['moduleId']).toBe('test.sampling.error');
+    expect(spans[0].attributes['module_id']).toBe('test.sampling.error');
   });
 
   it('TracingMiddleware with off strategy', async () => {
@@ -388,7 +388,7 @@ describe('Observability Integration', () => {
     expect(logData.extra.inputs._secret_key).toBeDefined();
   });
 
-  it('Span attributes include moduleId, method, callerId', async () => {
+  it('Span attributes include module_id, method, caller_id', async () => {
     const registry = new Registry();
 
     const moduleB = new FunctionModule({
@@ -421,22 +421,23 @@ describe('Observability Integration', () => {
 
     await executor.call('test.a', {});
 
-    // Verify span attributes contain moduleId, method, callerId
+    // Verify span attributes contain module_id, method, caller_id (OBS-003: the
+    // attribute map is a wire payload, so it is snake_case like the peers')
     const spans = exporter.getSpans();
     expect(spans).toHaveLength(2);
 
     // First span (test.a) has null callerId since it's top-level
-    const spanA = spans.find((s) => s.attributes['moduleId'] === 'test.a');
+    const spanA = spans.find((s) => s.attributes['module_id'] === 'test.a');
     expect(spanA).toBeDefined();
-    expect(spanA!.attributes['moduleId']).toBe('test.a');
+    expect(spanA!.attributes['module_id']).toBe('test.a');
     expect(spanA!.attributes['method']).toBe('execute');
-    expect(spanA!.attributes['callerId']).toBeNull();
+    expect(spanA!.attributes['caller_id']).toBeNull();
 
     // Second span (test.b) has callerId='test.a' since it's called by test.a
-    const spanB = spans.find((s) => s.attributes['moduleId'] === 'test.b');
+    const spanB = spans.find((s) => s.attributes['module_id'] === 'test.b');
     expect(spanB).toBeDefined();
-    expect(spanB!.attributes['moduleId']).toBe('test.b');
+    expect(spanB!.attributes['module_id']).toBe('test.b');
     expect(spanB!.attributes['method']).toBe('execute');
-    expect(spanB!.attributes['callerId']).toBe('test.a');
+    expect(spanB!.attributes['caller_id']).toBe('test.a');
   });
 });

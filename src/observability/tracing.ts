@@ -207,10 +207,16 @@ export class TracingMiddleware extends Middleware {
       name: 'apcore.module.execute',
       startTime: Date.now() / 1000,
       parentSpanId,
+      // OBS-003: the attribute map is a WIRE payload, not a
+      // language-idiomatic object, so the correlation fields are spelled
+      // snake_case — as observability.md names them, as apcore-python and
+      // apcore-rust write them, and as the `duration_ms` / `success` /
+      // `error_code` attributes written later on this very span already were.
+      // A single span used to carry both conventions at once.
       attributes: {
-        moduleId,
+        module_id: moduleId,
         method: 'execute',
-        callerId: context.callerId,
+        caller_id: context.callerId,
       },
     });
     spansStack.push(span);

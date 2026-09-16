@@ -186,6 +186,19 @@ export interface PipelineContext {
   inputs: Record<string, unknown>;
   context: Context;
   module?: unknown | null;
+
+  /**
+   * The registry's declared (descriptor) annotations for this module, resolved
+   * by Step 3 (`module_lookup`) alongside `module`.
+   *
+   * The second governance source PROTOCOL_SPEC §7.4 (D-96) unions with the live
+   * instance. It travels on the context for the same reason
+   * `aclApprovalRequired` does: the step that can compute it is not the step
+   * that needs it, and the approval gate has no registry of its own. `null`
+   * when the module was never merged (`registerInternal`) or the lookup was
+   * bypassed.
+   */
+  declaredAnnotations?: unknown | null;
   validatedInputs?: Record<string, unknown> | null;
   output?: Record<string, unknown> | null;
   validatedOutput?: Record<string, unknown> | null;
@@ -200,6 +213,18 @@ export interface PipelineContext {
   versionHint?: string | null;
   /** Tracks which middleware ran, enabling on_error recovery chain. */
   executedMiddlewares?: unknown[];
+
+  /**
+   * Whether the `execute` step actually invoked the module (MW-001).
+   *
+   * `output == null` is ambiguous on its own: it means both "the module
+   * returned nothing" and "the step that would have set an output never ran"
+   * (dry run, streaming Phase 1, a `runUntil` that stopped earlier). The
+   * after-middleware chain has to distinguish them — a middleware that
+   * acquired state in `before()` MUST get its matching `after()` — so the
+   * execute step records the fact rather than leaving it to be inferred.
+   */
+  executeStepRan?: boolean;
   /** When set, pipeline halts after the first step where predicate returns true (§1.4). */
   runUntil?: ((state: PipelineState) => boolean) | null;
 

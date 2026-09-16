@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { Type } from '@sinclair/typebox';
 import { CancelToken, ExecutionCancelledError } from '../src/cancel.js';
 import { Context } from '../src/context.js';
@@ -69,14 +69,53 @@ describe('CancelToken D-18 — real abort via AbortSignal', () => {
     expect(observed).toEqual([true]);
   });
 
-  it('reset() installs a fresh non-aborted signal', () => {
+  // reset() used to install a FRESH AbortController, which detached every
+  // consumer holding the pre-reset signal: reset() then cancel() left that
+  // signal un-aborted, so a module that had composed it into an in-flight
+  // fetch never saw the cancel. The signal is the D-18 real-abort channel
+  // (async-tasks.md makes it normative for TypeScript specifically), and the
+  // divergence was invisible to cooperative checkers. One controller now
+  // lives for the whole token, mirroring the in-place reset Python and Rust
+  // perform on their flag.
+  it('reset() keeps one signal identity for the life of the token', () => {
     const token = new CancelToken();
-    const oldSignal = token.signal;
-    token.cancel();
-    expect(oldSignal.aborted).toBe(true);
+    const captured = token.signal;
     token.reset();
-    expect(token.signal).not.toBe(oldSignal);
-    expect(token.signal.aborted).toBe(false);
+    expect(token.signal).toBe(captured);
+  });
+
+  it('a holder of the pre-reset signal still observes a later cancel', () => {
+    const token = new CancelToken();
+    const captured = token.signal;
+    const observed: boolean[] = [];
+    captured.addEventListener('abort', () => observed.push(true));
+
+    token.reset();
+    token.cancel();
+
+    expect(captured.aborted).toBe(true);
+    expect(observed).toEqual([true]);
+  });
+
+  it('reset() clears the cooperative state and warns once that the signal cannot be re-armed', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const token = new CancelToken();
+      token.cancel();
+      token.reset();
+
+      // Cooperative state resets exactly as in apcore-python/apcore-rust...
+      expect(token.isCancelled).toBe(false);
+      expect(() => token.check()).not.toThrow();
+      // ...but an AbortSignal can never be un-aborted, and that is reported
+      // rather than silently pretended away — once per token.
+      expect(token.signal.aborted).toBe(true);
+      expect(warn).toHaveBeenCalledTimes(1);
+      token.reset();
+      expect(warn).toHaveBeenCalledTimes(1);
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
 

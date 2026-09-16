@@ -43,6 +43,34 @@ export class CircuitBreakerWrapper implements EventSubscriber {
     this._subscriberType = config.subscriberType ?? this._subscriber.constructor.name;
   }
 
+  /**
+   * EVT-001: the wrapper stands in for the wrapped subscriber in the emitter's
+   * subscriber list, so it must carry that subscriber's identity.
+   *
+   * `EventEmitter._getMatchingSubscribers` falls back to `'*'` when
+   * `eventPattern` is absent, so a wrapper that declared none silently widened
+   * a FILTERED subscriber to catch-all — an event the operator had excluded
+   * was POSTed to the webhook anyway. `subscriberId` and `subscriberType` are
+   * forwarded for the same reason: they are the identity fields of the DLQ
+   * payload, and the wrapper is not the subscriber that failed. apcore-rust
+   * forwards all three.
+   *
+   * `undefined` is forwarded as `undefined`, so an unfiltered subscriber
+   * still wraps as catch-all and an anonymous one still falls back to the
+   * emitter's derivation.
+   */
+  get eventPattern(): string | undefined {
+    return this._subscriber.eventPattern;
+  }
+
+  get subscriberId(): string | undefined {
+    return this._subscriber.subscriberId;
+  }
+
+  get subscriberType(): string | undefined {
+    return this._subscriber.subscriberType ?? this._subscriberType;
+  }
+
   get state(): CircuitState {
     return this._state;
   }

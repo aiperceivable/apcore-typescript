@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { Type } from '@sinclair/typebox';
-import { CTX_GLOBAL_DEADLINE, Executor } from '../src/executor.js';
+import { Executor } from '../src/executor.js';
 import { FunctionModule } from '../src/decorator.js';
 import { Registry } from '../src/registry/registry.js';
 import { Middleware } from '../src/middleware/base.js';
@@ -241,12 +241,13 @@ describe('Executor.stream()', () => {
     expect(chunks).toHaveLength(2);
   });
 
-  it('A-D-202: enforces global_deadline between chunks via context.data[CTX_GLOBAL_DEADLINE]', async () => {
-    // The deadline is stored as ms-since-epoch in context.data[CTX_GLOBAL_DEADLINE]
-    // by BuiltinContextCreation (builtin-steps.ts:127-128). stream() must read
-    // that slot and compare against Date.now() directly. Earlier code read
-    // pipeCtx.context.globalDeadline (always null) and divided Date.now() by
-    // 1000, silently disabling the deadline check.
+  it('D-99/D-100: enforces global_deadline between chunks from Context.globalDeadline', async () => {
+    // Spec v1.50.0 D-100: the budget is the first-class
+    // `Context.globalDeadline` field; D-99 puts it on the epoch-SECONDS
+    // clock. This case previously pre-populated the private
+    // `context.data[CTX_GLOBAL_DEADLINE]` slot in milliseconds — a slot
+    // `data`'s shared-by-reference lifetime made unusable as a per-call
+    // budget, and a clock a spec-following caller could not write to.
     const registry = new Registry();
     const mod = {
       description: 'slow streaming module',
@@ -267,8 +268,7 @@ describe('Executor.stream()', () => {
     // Pre-populate the context with an already-expired global deadline so
     // the first chunk-loop check trips. Use the canonical context.data slot.
     const { Context } = await import('../src/context.js');
-    const ctx = Context.create();
-    ctx.data[CTX_GLOBAL_DEADLINE] = Date.now() + 10; // ~10ms from now
+    const ctx = Context.create(null, null, null, undefined, null, (Date.now() + 10) / 1000); // ~10ms from now
 
     const collected: Record<string, unknown>[] = [];
     let caught: Error | null = null;

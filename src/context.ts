@@ -211,13 +211,43 @@ export class Context<T = null> {
   }
 
   /**
+   * @internal SDK-only. Returns a new Context carrying `globalDeadline`
+   * (epoch seconds), leaving this one untouched.
+   *
+   * The pipeline uses this to stamp the budget onto the context it derives
+   * for a single call. Spec v1.50.0 D-101 makes copy-on-write the requirement
+   * rather than an implementation detail: a caller-supplied Context may be
+   * reused across successive top-level `Executor.call()` invocations, and a
+   * budget written onto that object would make the second call inherit the
+   * first call's remaining time — or fail immediately, having already expired.
+   */
+  _withGlobalDeadline(globalDeadline: number | null): Context<T> {
+    return new Context<T>(
+      this.traceId,
+      this.callerId,
+      [...this.callChain],
+      this.executor,
+      this.identity,
+      this.redactedInputs,
+      this.data,
+      this.cancelToken,
+      this.services,
+      globalDeadline,
+      this.redactedOutput,
+    );
+  }
+
+  /**
    * @internal SDK-only. Returns a new Context with `cancelToken` bound.
    *
    * Idempotent for the same token instance — returns `this` unchanged.
    * Throws {@link ContextBindingError} if the Context is already bound to a
    * different CancelToken.
    */
-  // TODO(api-surface): classify vs api-surface-conventions §6.1
+  // Classified in api-surface-conventions.md §6 (SDK status table): a
+  // single-package internal — no cross-file, exported-interface or
+  // foreign-implementer use — so no public alias is needed, unlike
+  // `_withExecutor`. A candidate for a true `#private` in a future major.
   _withCancelToken(cancelToken: CancelToken): Context<T> {
     if (this.cancelToken === cancelToken) return this;
     if (this.cancelToken != null) {

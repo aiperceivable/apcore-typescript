@@ -65,7 +65,7 @@ describe('TracingMiddleware', () => {
     expect(spans).toHaveLength(1);
     expect(spans[0].name).toBe('apcore.module.execute');
     expect(spans[0].status).toBe('ok');
-    expect(spans[0].attributes['moduleId']).toBe('mod.a');
+    expect(spans[0].attributes['module_id']).toBe('mod.a');
   });
 
   it('creates error spans', () => {

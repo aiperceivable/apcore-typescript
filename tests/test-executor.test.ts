@@ -3,7 +3,7 @@ import { Type } from '@sinclair/typebox';
 import { Context, createIdentity } from '../src/context.js';
 import { Executor, redactSensitive, REDACTED_VALUE } from '../src/executor.js';
 import { FunctionModule } from '../src/decorator.js';
-import { Registry } from '../src/registry/registry.js';
+import { MAX_MODULE_ID_LENGTH, Registry } from '../src/registry/registry.js';
 import { ACL } from '../src/acl.js';
 import { Middleware } from '../src/middleware/base.js';
 import {
@@ -380,6 +380,54 @@ describe('Executor', () => {
     expect(result.valid).toBe(false);
     expect(result.errors.some((e: Record<string, unknown>) => e['code'] === 'INVALID_MODULE_ID')).toBe(true);
     expect(result.checks.find((c: { check: string }) => c.check === 'module_id')?.passed).toBe(false);
+  });
+
+  /* ---------------------------------------------------------
+   * D-75 (spec v1.49.0) — core-executor.md "Contract: Executor.call"
+   * requires empty / over-length / malformed IDs to be rejected
+   * BEFORE the PipelineContext is constructed. MAX_MODULE_ID_LENGTH
+   * was enforced in the registry only, one step later, so a
+   * 300-character well-formed ID built a context and came back as
+   * MODULE_NOT_FOUND instead of INVALID_MODULE_ID.
+   * --------------------------------------------------------- */
+
+  it('D-75: call() rejects an over-length module ID at the entry guard', async () => {
+    const registry = new Registry();
+    const executor = new Executor({ registry });
+    const overLong = `a.${'b'.repeat(MAX_MODULE_ID_LENGTH)}`;
+    expect(overLong.length).toBeGreaterThan(MAX_MODULE_ID_LENGTH);
+
+    // Well-formed against MODULE_ID_PATTERN — only the length is wrong.
+    await expect(executor.call(overLong, {})).rejects.toThrow(InvalidInputError);
+    try {
+      await executor.call(overLong, {});
+      expect.unreachable('expected InvalidInputError');
+    } catch (e) {
+      expect((e as InvalidInputError).code).toBe('INVALID_MODULE_ID');
+      // Not MODULE_NOT_FOUND from a pipeline that should never have started.
+      expect(e).not.toBeInstanceOf(ModuleNotFoundError);
+    }
+  });
+
+  it('D-75: an ID exactly at MAX_MODULE_ID_LENGTH passes the entry guard', async () => {
+    const registry = new Registry();
+    const executor = new Executor({ registry });
+    const atLimit = `a${'b'.repeat(MAX_MODULE_ID_LENGTH - 1)}`;
+    expect(atLimit.length).toBe(MAX_MODULE_ID_LENGTH);
+    // Reaches module lookup — the length bound is exclusive at the boundary.
+    await expect(executor.call(atLimit, {})).rejects.toThrow(ModuleNotFoundError);
+  });
+
+  it('D-75: validate() reports the over-length ID as a module_id check failure', async () => {
+    const registry = new Registry();
+    const executor = new Executor({ registry });
+    const overLong = `a.${'b'.repeat(MAX_MODULE_ID_LENGTH)}`;
+    const result = await executor.validate(overLong);
+    expect(result.valid).toBe(false);
+    expect(result.errors.some((e: Record<string, unknown>) => e['code'] === 'INVALID_MODULE_ID')).toBe(true);
+    expect(result.checks.find((c: { check: string }) => c.check === 'module_id')?.passed).toBe(false);
+    // The pipeline never ran, so no module_lookup check was recorded.
+    expect(result.checks.find((c: { check: string }) => c.check === 'module_lookup')).toBeUndefined();
   });
 
   it('validate() returns module_lookup failure for unknown module', async () => {

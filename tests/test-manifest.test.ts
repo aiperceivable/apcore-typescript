@@ -92,7 +92,17 @@ describe('ManifestModule', () => {
     expect(result['description']).toBe('Detailed module');
     expect(result['input_schema']).toBe(inputSchema);
     expect(result['output_schema']).toBe(outputSchema);
-    expect(result['annotations']).toEqual(annotations);
+    // SYS-5: annotations are emitted in the snake_case WIRE shape, as
+    // apcore-python and apcore-rust emit them and as system-modules.md's own
+    // output example shows. The camelCase struct stays internal.
+    expect(result['annotations']).toMatchObject({
+      readonly: true,
+      destructive: false,
+      idempotent: true,
+      requires_approval: false,
+      open_world: false,
+      streaming: false,
+    });
     expect(result['tags']).toEqual(['search', 'query']);
     expect(result['metadata']).toEqual({});
   });

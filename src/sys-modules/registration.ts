@@ -8,6 +8,7 @@ import type { Config } from '../config.js';
 import type { MetricsCollector } from '../observability/metrics.js';
 import type { AuditStore } from './audit.js';
 import type { OverridesStore } from './overrides.js';
+import { FileOverridesStore } from './overrides.js';
 import { SysModuleRegistrationError } from '../errors.js';
 import { ErrorHistory } from '../observability/error-history.js';
 import { ErrorHistoryMiddleware } from '../middleware/error-history.js';
@@ -361,7 +362,7 @@ export function registerSysModules(
 ): SysModulesContext {
   const result: SysModulesContext = {};
   const failOnError = options?.failOnError ?? false;
-  const overridesStore = options?.overridesStore ?? null;
+  const explicitOverridesStore = options?.overridesStore ?? null;
   const auditStore = options?.auditStore ?? null;
   // Per-instance ToggleState (Issue #71): undefined here lets
   // ToggleFeatureModule fall back to DEFAULT_TOGGLE_STATE.
@@ -384,12 +385,34 @@ export function registerSysModules(
     options?.overridesPath ??
     (_cfgGet(sysCfg, config, 'control.overrides_path', null) as string | null);
 
+  // SYS-2: the path must reach the WRITE side too, not only the restore.
+  // `ToggleFeatureModule` has no path field — it persists a decision only
+  // `if (this._overridesStore !== null)` — and nothing here ever turned
+  // `overridesPath` into a store. So a deployment that set
+  // `sys_modules.control.overrides_path` and passed no programmatic store
+  // restored toggles at startup and wrote none: `toggle_feature
+  // {enabled: false}` reported success, persisted nothing, and the module was
+  // enabled again after a restart. The round trip looked functional and was
+  // not. apcore-python (`registration.py:674`) and apcore-rust
+  // (`mod.rs:706`) both pass the path through to the toggle module.
+  //
+  // An explicitly supplied store still wins — a caller that injected a store
+  // is naming the storage layer, and synthesizing a second one beside it
+  // would split the overrides across two backends.
+  const overridesStore: OverridesStore | null =
+    explicitOverridesStore ??
+    (overridesPath !== null ? new FileOverridesStore(overridesPath) : null);
+
   // Load overrides file and apply after base config. The actual file
   // reader is installed by the Node-only side-effect module
   // `./overrides-file.js` (imported by the package's Node entry). When
   // running in a browser bundle the loader is unset and overridesPath is
   // silently ignored.
-  if (overridesPath !== null && _overridesLoader !== null) {
+  //
+  // Only needed when an explicit store displaced the synthesized file store:
+  // otherwise the `FileOverridesStore` built above reads the same YAML file
+  // in the store branch below, and running both would apply it twice.
+  if (explicitOverridesStore !== null && overridesPath !== null && _overridesLoader !== null) {
     // Loaders installed via `_setOverridesLoader` already swallow file IO
     // errors and return null, but we still defend against a future loader
     // that throws — preserves the v0.21.0 fail-soft semantics.
@@ -507,9 +530,13 @@ export function registerSysModules(
         auditStore ?? undefined,
         overridesStore ?? undefined,
       ));
+      // `overridesPath` is deliberately NOT forwarded: `overridesStore` above
+      // is already a `FileOverridesStore` over that same path whenever the key
+      // is set, and `UpdateConfigModule` applies store-XOR-path precedence, so
+      // passing both would leave its legacy `_persistOverride` writer
+      // permanently unreachable from here. One writer, one file.
       reg('system.control.update_config', new UpdateConfigModule(config, eventEmitter, {
         auditStore: auditStore ?? undefined,
-        overridesPath: overridesPath ?? undefined,
         overridesStore: overridesStore ?? undefined,
       }));
       reg('system.control.reload_module', new ReloadModule(registry, eventEmitter, auditStore ?? undefined));

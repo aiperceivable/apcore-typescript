@@ -1536,6 +1536,23 @@ export const ErrorCodes = Object.freeze({
   STEP_NOT_REPLACEABLE: 'STEP_NOT_REPLACEABLE',
   STRATEGY_NOT_FOUND: 'STRATEGY_NOT_FOUND',
   PIPELINE_STEP_NOT_FOUND: 'PIPELINE_STEP_NOT_FOUND',
+  // ERR-002: the same failure mode as the PIPELINE_* block above, on three
+  // more codes the framework throws from outside this module.
+  //
+  // `TraceContext.inject` (src/trace-context.ts) stamps INVALID_PARENT_ID on a
+  // malformed `parentId`, and no reserved prefix covers `INVALID_`, so
+  // `registry.register('executor.my_mod', ['INVALID_PARENT_ID'])` was ACCEPTED
+  // here while apcore-python and apcore-rust raised ERROR_CODE_COLLISION —
+  // letting a module's code shadow the framework's.
+  //
+  // The two SCHEMA_UNION_* codes (src/schema/validator.ts) were reachable by
+  // the guard only through the `SCHEMA_` reserved PREFIX. That covers them in
+  // practice, but the prefix is a policy about a namespace while this map is
+  // the inventory of codes the framework actually throws, and the exact-code
+  // half must be able to stand on its own.
+  INVALID_PARENT_ID: 'INVALID_PARENT_ID',
+  SCHEMA_UNION_NO_MATCH: 'SCHEMA_UNION_NO_MATCH',
+  SCHEMA_UNION_AMBIGUOUS: 'SCHEMA_UNION_AMBIGUOUS',
 } as const);
 
 export type ErrorCode = (typeof ErrorCodes)[keyof typeof ErrorCodes];

@@ -174,6 +174,14 @@ export class AsyncTaskManager {
   private _runningCount: number = 0;
   private readonly _waitQueue: Array<() => void> = [];
   private _reaper: ReaperHandle | null = null;
+  /**
+   * Admission serializer for {@link submit} (mirrors apcore-python's
+   * `_admission_lock` and apcore-rust's `admission_lock`). A single-threaded
+   * event loop needs no mutex primitive — chaining the critical section onto
+   * one promise is enough to make "count the active tasks, then persist the
+   * PENDING record" atomic with respect to other submits.
+   */
+  private _admitChain: Promise<unknown> = Promise.resolve();
 
   constructor(opts: AsyncTaskManagerOptions) {
     this._executor = opts.executor;
@@ -196,14 +204,6 @@ export class AsyncTaskManager {
     inputs: Record<string, unknown>,
     opts?: { context?: Context | null; retry?: RetryConfig },
   ): Promise<string> {
-    // A-D-AT-01 (apcore v0.22.0): max_tasks counts active (PENDING|RUNNING)
-    // tasks only — completed/failed/cancelled tasks remain in `_internal` for
-    // bookkeeping but must not count toward the live concurrency cap. Mirrors
-    // Python `_ACTIVE_STATUSES` filter.
-    const active = await this._countActiveTasks();
-    if (active >= this._maxTasks) {
-      throw new TaskLimitExceededError(this._maxTasks);
-    }
     const taskId = uuidv4();
     const retry = opts?.retry ?? null;
     const info: MutableTaskInfo = {
@@ -219,7 +219,25 @@ export class AsyncTaskManager {
       maxRetries: retry?.maxRetries ?? 0,
     };
 
-    await this._store.save(info);
+    // Check capacity and persist the PENDING record atomically. Both steps
+    // await, and without the admission serializer a second submit interleaves
+    // between them: at `maxTasks: 1` with an empty store, two concurrent
+    // submits both observed active=0 and both persisted, leaving two PENDING
+    // tasks under a cap of one and never raising TaskLimitExceededError.
+    // apcore-python holds `_admission_lock` across the same pair and
+    // apcore-rust holds `admission_lock`.
+    //
+    // A-D-AT-01 (apcore v0.22.0): max_tasks counts active (PENDING|RUNNING)
+    // tasks only — completed/failed/cancelled tasks remain in `_internal` for
+    // bookkeeping but must not count toward the live concurrency cap. Mirrors
+    // Python `_ACTIVE_STATUSES` filter.
+    await this._admit(async () => {
+      const active = await this._countActiveTasks();
+      if (active >= this._maxTasks) {
+        throw new TaskLimitExceededError(this._maxTasks);
+      }
+      await this._store.save(info);
+    });
 
     let resolvePromise!: () => void;
     const promise = new Promise<void>((resolve) => {
@@ -283,11 +301,24 @@ export class AsyncTaskManager {
       return false;
     }
 
+    // A task can be active in the store with no in-process handle: a
+    // persistent or shared TaskStore keeps PENDING/RUNNING records written by
+    // another process or by a previous run of this one. A missing handle is
+    // therefore NOT a third "false" case — the cancel Contract defines false
+    // as "the task did not exist or had already reached a terminal state",
+    // both already answered above. Returning false here left every such
+    // record permanently uncancellable and still consuming the maxTasks
+    // budget, and it broke `shutdown()`'s postcondition ("every task that was
+    // PENDING or RUNNING at the time of the call will be in CANCELLED
+    // state"), which is delegated to this method. apcore-rust
+    // (async_task.rs:559) likewise treats the missing handle as a skipped
+    // interrupt, not an early return.
     const internal = this._internal.get(taskId);
-    if (!internal) return false;
+    if (internal) {
+      internal.cancelled = true;
+      internal.cancelToken.cancel();
+    }
 
-    internal.cancelled = true;
-    internal.cancelToken.cancel();
     info.status = TaskStatus.CANCELLED;
     info.completedAt = Date.now() / 1000;
     await this._store.save(info);
@@ -328,18 +359,87 @@ export class AsyncTaskManager {
    * Cancel all pending and running tasks and wait for them to settle.
    */
   async shutdown(): Promise<void> {
-    const promises: Promise<void>[] = [];
-    for (const task of await this._store.list()) {
-      if (task.status === TaskStatus.PENDING || task.status === TaskStatus.RUNNING) {
-        const internal = this._internal.get(task.taskId);
-        void this.cancel(task.taskId);
-        if (internal) promises.push(internal.promise);
-      }
-    }
+    // Stop the reaper BEFORE anything else, matching apcore-python
+    // (`await self.stop_reaper()`) and apcore-rust (`self.stop_reaper()`), both
+    // of which do it as their first statement. This used to run after the
+    // cancellations had settled, which leaks no timer — the throw comes later —
+    // but does leave a sweep able to fire *during* the cancel loop and delete
+    // records the loop is walking. The window is real whenever shutdown is slow:
+    // a remote store, a large task set, or D-122's best-effort loop grinding
+    // through a backend that is failing every write.
     if (this._reaper) {
       await this._reaper.stop();
     }
+
+    const promises: Promise<void>[] = [];
+    const cancels: Promise<boolean>[] = [];
+    for (const task of await this._store.list()) {
+      if (task.status === TaskStatus.PENDING || task.status === TaskStatus.RUNNING) {
+        const internal = this._internal.get(task.taskId);
+        // Issued together (not awaited one by one) so the store writes still
+        // overlap, but collected rather than dropped: the postcondition is
+        // that no active task survives the call, so shutdown() must not
+        // resolve while a CANCELLED write is still outstanding.
+        cancels.push(this.cancel(task.taskId));
+        if (internal) promises.push(internal.promise);
+      }
+    }
+    const cancelOutcomes = await Promise.allSettled(cancels);
+    // Task-body exceptions stay swallowed — the shutdown Contract's `### Errors`
+    // row says they are settled and not re-raised.
     await Promise.allSettled(promises);
+
+    // A store write that failed is a different matter (spec v1.49.0, D-81:
+    // "store errors reach the caller"). Resolving normally would assert this
+    // method's own postcondition — every task that was PENDING or RUNNING is now
+    // CANCELLED — for a task whose CANCELLED record never landed. The reaper and
+    // the task promises are settled first so a store outage does not also leak a
+    // running timer.
+    const storeFailure = cancelOutcomes.find((o) => o.status === 'rejected');
+    if (storeFailure !== undefined) {
+      throw (storeFailure as PromiseRejectedResult).reason;
+    }
+  }
+
+  /**
+   * Run `critical` with exclusive access to the submit admission section.
+   *
+   * Each call chains onto the previous one, so the check-then-save pair runs
+   * to completion before the next submit starts its own check. A rejected
+   * critical section (typically {@link TaskLimitExceededError}) must not
+   * poison the chain for later submits, so the chain itself continues from a
+   * settled promise whose outcome is discarded — the rejection is still
+   * delivered to this caller through the returned promise.
+   */
+  private _admit<T>(critical: () => Promise<T>): Promise<T> {
+    const run = this._admitChain.then(critical, critical);
+    this._admitChain = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
+
+  /**
+   * Re-read the stored record and report whether it has already reached a
+   * terminal status.
+   *
+   * Ports the semantics of apcore-rust's `save_terminal_if_not_cancelled`:
+   * every status write by the runner is preceded by a fresh read, so a
+   * concurrent `cancel()` — including one issued by another process against
+   * a shared store — is never overwritten. The read must happen BEFORE the
+   * caller mutates its own copy: `InMemoryTaskStore` hands out the live
+   * object, so mutating first would destroy the evidence this check needs.
+   *
+   * The read/check/write sequence is not atomic at the store level, so a
+   * perfectly-timed cancel can still slip in between; closing that last
+   * window would need compare-and-set support in the `TaskStore` interface.
+   * The window left here is small and the cost of slipping is one extra
+   * terminal write that the next cancel no-ops against.
+   */
+  private async _isStoredTerminal(taskId: string): Promise<boolean> {
+    const current = await this._store.get(taskId);
+    return current !== null && TERMINAL_STATUSES.has(current.status);
   }
 
   /** Count tasks in PENDING or RUNNING state across the store. */
@@ -478,6 +578,15 @@ export class AsyncTaskManager {
           const info = await this._store.get(taskId) as MutableTaskInfo | null;
           if (!info) return;
 
+          // The stored record is the authority on whether this task is still
+          // ours to advance. `internal.cancelled` only sees cancels issued
+          // through THIS manager instance; a cancel written by another
+          // process against a shared store, or by a `cancel()` that found no
+          // in-process handle, shows up only here. Overwriting it with
+          // RUNNING would be a cancelled -> running transition, which
+          // protocol-spec.md section 5.8 forbids.
+          if (TERMINAL_STATUSES.has(info.status)) return;
+
           info.status = TaskStatus.RUNNING;
           // A-D-AT-08: preserve startedAt across retries (set only on first
           // attempt). Mirrors Python + Rust semantics — `startedAt` reflects
@@ -489,15 +598,23 @@ export class AsyncTaskManager {
 
           let execError: unknown = null;
           let succeeded = false;
+          // Set when the stored record reached a terminal status while this
+          // attempt was running: the task is no longer ours to finish, so we
+          // stop without writing anything further.
+          let abandoned = false;
 
           try {
             const result = await this._executor.call(moduleId, inputs, taskContext);
             if (!internal.cancelled) {
-              info.status = TaskStatus.COMPLETED;
-              info.completedAt = Date.now() / 1000;
-              info.result = result;
-              await this._store.save(info);
-              succeeded = true;
+              if (await this._isStoredTerminal(taskId)) {
+                abandoned = true;
+              } else {
+                info.status = TaskStatus.COMPLETED;
+                info.completedAt = Date.now() / 1000;
+                info.result = result;
+                await this._store.save(info);
+                succeeded = true;
+              }
             }
           } catch (err) {
             execError = err;
@@ -506,10 +623,13 @@ export class AsyncTaskManager {
           this._releaseSlot();
           slotHeld = false;
 
-          if (succeeded || internal.cancelled) return;
+          if (succeeded || abandoned || internal.cancelled) return;
 
           if (retry && info.retryCount < retry.maxRetries) {
             const delay = retry.computeDelayMs(info.retryCount);
+            // Re-checked before the write: a cancel that landed while the
+            // attempt was failing must not be resurrected as PENDING.
+            if (await this._isStoredTerminal(taskId)) return;
             info.retryCount += 1;
             info.status = TaskStatus.PENDING;
             // Intentionally do NOT reset startedAt / completedAt (A-D-AT-08):
@@ -527,6 +647,7 @@ export class AsyncTaskManager {
             if (internal.cancelled) return;
             // Loop continues: re-acquire slot and retry
           } else {
+            if (await this._isStoredTerminal(taskId)) return;
             info.status = TaskStatus.FAILED;
             info.completedAt = Date.now() / 1000;
             info.error = execError instanceof Error ? execError.message : String(execError);
@@ -537,6 +658,15 @@ export class AsyncTaskManager {
       } finally {
         if (slotHeld) this._releaseSlot();
         internal.resolve();
+        // The handle holds a Promise, a resolve closure and a live
+        // AbortController; keeping one per completed task for the lifetime of
+        // a long-lived manager is a leak, because the only other removals —
+        // `cleanup()` and the reaper sweep — are opt-in (async-tasks.md
+        // section 1.3: "The Reaper MUST be opt-in"). apcore-python pops its
+        // handle in a done-callback and apcore-rust removes it at the end of
+        // the spawned task. Those other removals stay as belt and braces for
+        // tasks whose runner never started.
+        this._internal.delete(taskId);
       }
     };
 

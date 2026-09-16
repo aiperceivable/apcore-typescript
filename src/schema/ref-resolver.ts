@@ -34,6 +34,11 @@ export class RefResolver {
   private _schemasDir: string;
   private _maxDepth: number;
   private _fileCache: Map<string, Record<string, unknown>> = new Map();
+  /**
+   * The file {@link resolve} was entered with. The D-104 node fallback is
+   * scoped to THAT document — see {@link _resolveLocalPointer}.
+   */
+  private _originFile: string | null = null;
 
   constructor(schemasDir: string, maxDepth: number = 32) {
     // Realpath the root as well (Python: `Path(schemas_dir).resolve()`), so a
@@ -54,15 +59,20 @@ export class RefResolver {
     const result = deepCopy(schema);
     this._fileCache.set(INLINE_SENTINEL, result);
     const visited = new Set<string>();
-    // Only meaningful for an inline document: with a `currentFile`, `#` points at
-    // that file rather than at the schema passed in.
-    if (currentFile == null) {
-      for (const alias of rootRefAliases(result)) visited.add(alias);
-    }
+    // The schema passed in is the document being resolved, so `#` / `#/` /
+    // its own `$id` denote IT and stay lazy from the first encounter
+    // (spec §4.15.2), whether or not a `currentFile` is known. D-104 changes
+    // only where a POINTERED local reference looks: the file root first, then
+    // this node. A bare `#` addresses no sub-document and is a
+    // self-reference either way.
+    for (const alias of rootRefAliases(result)) visited.add(alias);
+    const previousOrigin = this._originFile;
+    this._originFile = currentFile ?? null;
     try {
       this._resolveNode(result, currentFile ?? null, visited, 0);
     } finally {
       this._fileCache.delete(INLINE_SENTINEL);
+      this._originFile = previousOrigin;
     }
     return result;
   }
@@ -104,7 +114,9 @@ export class RefResolver {
 
     const [filePath, jsonPointer] = this._parseRef(refString, currentFile);
     const document = this._loadFile(filePath);
-    const target = this._resolveJsonPointer(document, jsonPointer, refString);
+    const target = refString.startsWith('#') && filePath !== INLINE_SENTINEL
+      ? this._resolveLocalPointer(document, jsonPointer, refString, filePath)
+      : this._resolveJsonPointer(document, jsonPointer, refString);
 
     let result: unknown = deepCopy(target);
 
@@ -264,6 +276,49 @@ export class RefResolver {
 
     const pointer = pointerParts.length > 0 ? '/' + pointerParts.join('/') : '';
     return [filePath, pointer];
+  }
+
+  /**
+   * Resolve a local (`#`-prefixed) pointer per Algorithm A05 step 4a, as
+   * settled by spec v1.50.0 D-104: **the file root first, then the schema
+   * node being resolved.**
+   *
+   * Both layouts are normative and an implementation MUST support both —
+   * `definitions:` as a top-level sibling of `input_schema` in the FILE
+   * (§4.11's own example, previously loadable on apcore-rust alone), and
+   * `$defs:` nested inside the `input_schema` node (what apcore-python and
+   * apcore-typescript accepted, and therefore presumably what is in the
+   * wild). The two lookups cannot collide: a pointer either resolves at the
+   * file root or it does not.
+   *
+   * The fallback is scoped to the document `resolve()` was entered with.
+   * D-104 settled WHICH two bases a local pointer tries; it did not say how
+   * far the second one travels, and the answer was "everywhere": a
+   * `#/$defs/X` written inside an EXTERNAL schema, for a definition that
+   * document does not have, fell back to the calling module's schema node and
+   * bound to whatever happened to share the name. Three consequences, in
+   * increasing order of cost: an invalid reference reported success where it
+   * owes `SCHEMA_NOT_FOUND`; the resolved schema then validated against a
+   * contract the external author never wrote; and §10.6 reads `x-sensitive`
+   * off the RESOLVED schema, so a field the external document marks sensitive
+   * could be replaced by a local definition that does not and be logged in
+   * plaintext. A document only ever falls back to its own node.
+   */
+  private _resolveLocalPointer(
+    document: unknown,
+    pointer: string,
+    refString: string,
+    filePath: string,
+  ): unknown {
+    try {
+      return this._resolveJsonPointer(document, pointer, refString);
+    } catch (err) {
+      if (!(err instanceof SchemaNotFoundError)) throw err;
+      if (filePath !== this._originFile) throw err;
+      const inline = this._fileCache.get(INLINE_SENTINEL);
+      if (inline === undefined) throw err;
+      return this._resolveJsonPointer(inline, pointer, refString);
+    }
   }
 
   private _resolveJsonPointer(document: unknown, pointer: string, refString: string): unknown {

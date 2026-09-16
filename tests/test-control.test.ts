@@ -12,6 +12,7 @@ import {
 } from '../src/errors.js';
 import type { ApCoreEvent } from '../src/events/emitter.js';
 import { InMemoryOverridesStore } from '../src/sys-modules/overrides.js';
+import { REDACTED_VALUE } from '../src/executor.js';
 import { mkdtempSync, existsSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -159,6 +160,9 @@ describe('UpdateConfigModule', () => {
   });
 
   describe('sensitive value redaction', () => {
+    // SYS-13: the mask is the framework's canonical `REDACTED_VALUE`
+    // ('***REDACTED***'), which is what apcore-python and apcore-rust write.
+    // These cases used to pin the bespoke '***' this SDK alone emitted.
     const sensitiveKeys = [
       'api.token',
       'db.secret',
@@ -173,8 +177,8 @@ describe('UpdateConfigModule', () => {
         config.set(sensitiveKey, 'old_secret_value');
         const result = mod.execute({ key: sensitiveKey, value: 'new_secret_value', reason: 'rotation' }, null);
 
-        expect(result.old_value).toBe('***');
-        expect(result.new_value).toBe('***');
+        expect(result.old_value).toBe(REDACTED_VALUE);
+        expect(result.new_value).toBe(REDACTED_VALUE);
       });
     }
 
@@ -187,8 +191,8 @@ describe('UpdateConfigModule', () => {
 
       expect(events).toHaveLength(1);
       expect(events[0].eventType).toBe('apcore.config.updated');
-      expect(events[0].data['old_value']).toBe('***');
-      expect(events[0].data['new_value']).toBe('***');
+      expect(events[0].data['old_value']).toBe(REDACTED_VALUE);
+      expect(events[0].data['new_value']).toBe(REDACTED_VALUE);
     });
 
     it('does not redact non-sensitive keys', () => {
@@ -204,30 +208,30 @@ describe('UpdateConfigModule', () => {
       // But the key itself has uppercase, so segment is 'TOKEN' -> lowercase -> 'token'
       const result = mod.execute({ key: 'api.TOKEN', value: 'new', reason: 'test' }, null);
 
-      expect(result.old_value).toBe('***');
-      expect(result.new_value).toBe('***');
+      expect(result.old_value).toBe(REDACTED_VALUE);
+      expect(result.new_value).toBe(REDACTED_VALUE);
     });
 
     it('redacts underscore-compound sensitive segments like api_key and auth_token', () => {
       config.set('service.api_key', 'sk-old');
       const r1 = mod.execute({ key: 'service.api_key', value: 'sk-new', reason: 'rotate' }, null);
-      expect(r1.old_value).toBe('***');
-      expect(r1.new_value).toBe('***');
+      expect(r1.old_value).toBe(REDACTED_VALUE);
+      expect(r1.new_value).toBe(REDACTED_VALUE);
 
       config.set('provider.auth_token', 'tok-old');
       const r2 = mod.execute({ key: 'provider.auth_token', value: 'tok-new', reason: 'rotate' }, null);
-      expect(r2.old_value).toBe('***');
-      expect(r2.new_value).toBe('***');
+      expect(r2.old_value).toBe(REDACTED_VALUE);
+      expect(r2.new_value).toBe(REDACTED_VALUE);
     });
 
     it('does not redact segments that merely contain sensitive words', () => {
       // "keyboard" contains "key" and "authentication" contains "auth"
       // but neither is a true sensitive compound segment
       const r1 = mod.execute({ key: 'input.keyboard', value: 'us', reason: 'test' }, null);
-      expect(r1.old_value).not.toBe('***');
+      expect(r1.old_value).not.toBe(REDACTED_VALUE);
 
       const r2 = mod.execute({ key: 'login.authentication', value: 'oauth', reason: 'test' }, null);
-      expect(r2.old_value).not.toBe('***');
+      expect(r2.old_value).not.toBe(REDACTED_VALUE);
     });
   });
 

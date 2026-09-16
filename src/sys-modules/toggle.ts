@@ -62,6 +62,9 @@ export function checkModuleDisabled(moduleId: string): void {
  */
 export class ToggleFeatureModule {
   readonly description = 'Disable or enable a module without unloading it';
+  // SYS-19: toggle_feature IS idempotent — setting a module to the state it
+  // is already in changes nothing. Its two `system.control.*` siblings are
+  // not, and now say so.
   readonly annotations = { readonly: false, destructive: false, idempotent: true, requiresApproval: true, openWorld: false, streaming: false, cacheable: false, cacheTtl: 0, cacheKeyFields: null, paginated: false, paginationStyle: 'cursor' as const };
   readonly inputSchema = {
     type: 'object' as const,

@@ -236,7 +236,8 @@ function getNested(
     if (
       current !== null &&
       typeof current === 'object' &&
-      part in (current as Record<string, unknown>)
+      !isForbiddenSegment(part) &&
+      Object.hasOwn(current as Record<string, unknown>, part)
     ) {
       current = (current as Record<string, unknown>)[part];
     } else {
@@ -246,11 +247,55 @@ function getNested(
   return current;
 }
 
+/**
+ * Dot-path segments that must never be followed into the host object graph.
+ *
+ * A configuration dot-path addresses DATA. `__proto__` is an inherited accessor
+ * on every plain object, so a membership test written as `part in current` is
+ * true for it and `typeof Object.prototype === 'object'`, which let
+ * `setNested(data, '__proto__.polluted', v)` walk out of `data` entirely and
+ * assign to `Object.prototype` — polluting every object in the process while
+ * leaving `data`'s own keys untouched.
+ *
+ * The path needs no module call and no ACL decision to reach: the `APCORE_`
+ * env-override loader turns `APCORE_____PROTO_____POLLUTED=x` into the dot-path
+ * `__proto__.polluted` (`__` is the escape for a literal `_`), so merely having
+ * that variable in the environment at `Config.load()` was enough.
+ * `system.control.update_config` is a second door, its `key` being a
+ * caller-supplied string behind a denylist rather than an allowlist.
+ *
+ * apcore-python and apcore-rust are unaffected — a Python dict has no prototype
+ * chain and Rust has no ambient object graph, so both store `__proto__` as an
+ * ordinary nested key. Storing it as data is the behaviour this guard restores.
+ */
+const FORBIDDEN_PATH_SEGMENTS = new Set(['__proto__', 'constructor', 'prototype']);
+
+function isForbiddenSegment(part: string): boolean {
+  return FORBIDDEN_PATH_SEGMENTS.has(part);
+}
+
 function setNested(data: Record<string, unknown>, dotPath: string, value: unknown): void {
   const parts = dotPath.split('.');
+  // Refuse the whole write rather than sanitising a segment out of it: a caller
+  // who wrote `__proto__.polluted` gets no key at all, instead of silently
+  // getting `polluted` at the root.
+  if (parts.some(isForbiddenSegment)) {
+    console.warn(
+      `[apcore:config] Refusing to set '${dotPath}': the path contains a reserved ` +
+        `object-graph segment (${[...FORBIDDEN_PATH_SEGMENTS].join(', ')}). ` +
+        'Configuration paths address data, not the host object graph.',
+    );
+    return;
+  }
   let current = data;
   for (const part of parts.slice(0, -1)) {
-    if (!(part in current) || typeof current[part] !== 'object' || current[part] === null) {
+    // `Object.hasOwn`, not `in`: `in` walks the prototype chain, which is what
+    // allowed the escape described above.
+    if (
+      !Object.hasOwn(current, part) ||
+      typeof current[part] !== 'object' ||
+      current[part] === null
+    ) {
       current[part] = {};
     }
     current = current[part] as Record<string, unknown>;

@@ -10,6 +10,7 @@ import type { TSchema } from '@sinclair/typebox';
 import { Kind } from '@sinclair/typebox';
 import type { ACL, AccessDecision } from './acl.js';
 import { buildGovernanceProjection } from './acl-handlers.js';
+import { governanceUnion } from './schema/annotations.js';
 import { RedactionConfig } from './observability/context-logger.js';
 import type { ApprovalHandler, ApprovalResult } from './approval.js';
 import { createApprovalRequest, createApprovalResult } from './approval.js';
@@ -30,7 +31,7 @@ import {
   SchemaValidationError,
 } from './errors.js';
 import { DEFAULT_TOGGLE_STATE, type ToggleState } from './sys-modules/toggle.js';
-import { CTX_GLOBAL_DEADLINE, CTX_TRACING_SPANS, redactSensitive } from './executor.js';
+import { CTX_TRACING_SPANS, redactSensitive } from './executor.js';
 import { type EventEmitter, createEvent } from './events/emitter.js';
 import type { ExecutionPolicy, PolicyDecision } from './policy.js';
 import { applyDecisionToAnnotations } from './policy.js';
@@ -142,20 +143,45 @@ export class BuiltinContextCreation implements Step {
   async execute(ctx: PipelineContext): Promise<StepResult> {
     // Always wrap in a child context for this module call.
     // If no parent context was provided, create a fresh root first.
+    let derived: Context;
     if (ctx.context == null) {
       // Issue #66: no executor arg; auto-binding happens on the next
       // executor entry. For internal child-context creation we just need a
       // fresh root.
-      ctx.context = Context.create().child(ctx.moduleId);
+      derived = Context.create().child(ctx.moduleId);
     } else {
-      ctx.context = ctx.context.child(ctx.moduleId);
+      derived = ctx.context.child(ctx.moduleId);
     }
 
-    // Set global deadline on root call only
-    if (!(CTX_GLOBAL_DEADLINE in ctx.context.data) && this._globalTimeout > 0) {
-      ctx.context.data[CTX_GLOBAL_DEADLINE] = Date.now() + this._globalTimeout;
+    // `global_deadline` — spec v1.50.0 D-99 / D-100 / D-101,
+    // core-executor.md "`global_deadline` Representation and Lifetime".
+    //
+    // D-100: the first-class `Context.globalDeadline` field is the storage.
+    // This step used to write `context.data[CTX_GLOBAL_DEADLINE]` and every
+    // reader used to read it back from there, so the field — a documented
+    // `Context.create` parameter — was read nowhere in the pipeline and a
+    // caller-supplied deadline was silently replaced by the config default.
+    //
+    // D-99: the clock is epoch SECONDS, as design-context-annotations-acl.md
+    // has said since the field was introduced, so a caller writing
+    // `Date.now() / 1000 + budget` is on the same basis the pipeline is. The
+    // previous `Date.now() + timeout` made the public parameter unusable: a
+    // spec-shaped value read as milliseconds has always already expired.
+    //
+    // D-101: computed onto the context derived for THIS call. `data` is
+    // shared by reference through `child()`, so the old
+    // `!(KEY in ctx.context.data)` guard saw call #1's key on call #2 — a
+    // Context reused across successive top-level calls (explicitly blessed by
+    // the spec) inherited the first call's remaining budget. The derived
+    // context is fresh per call, and `child()` carries the field down, so a
+    // NESTED call still inherits the enclosing budget exactly as before.
+    if (derived.globalDeadline === null && this._globalTimeout > 0) {
+      derived = derived._withGlobalDeadline(
+        (Date.now() + this._globalTimeout) / 1000,
+      );
     }
 
+    ctx.context = derived;
     return { action: 'continue' };
   }
 }
@@ -246,6 +272,14 @@ export class BuiltinModuleLookup implements Step {
     }
 
     ctx.module = mod;
+    // PROTOCOL_SPEC §7.4 (D-96): resolve the registry's DECLARED annotations
+    // here and hand them to the gate, which has no registry of its own — the
+    // same shape as `aclApprovalRequired`, which Step 4 computes and Step 5
+    // reads. Without this the gate could only ever see the live instance, and a
+    // `*_meta.yaml` / `metadata` source declaring `requires_approval: true`
+    // reached `getDefinition()` and the manifest while the module executed
+    // UNGATED.
+    ctx.declaredAnnotations = this._registry.getDeclaredAnnotations(ctx.moduleId);
 
     // PROTOCOL_SPEC §6.1.8: the governance projection is computed HERE, during
     // module lookup, so it is available to the ACL check at Step 4. The
@@ -464,6 +498,16 @@ export class BuiltinApprovalGate implements Step {
     // branches below rather than folded into the policy's own resolution.
     const aclApprovalRequired = ctx.aclApprovalRequired === true;
 
+    // PROTOCOL_SPEC §7.4 (D-96): governance is the UNION of the live module
+    // instance and the registry's declared annotations. Reading the instance
+    // alone ignored what an operator declared in a `*_meta.yaml` / `metadata`
+    // source — a `requires_approval: true` that reached `getDefinition()` and
+    // the manifest and gated nothing. Reading the declared slot alone would be
+    // worse: it carries YAML > code precedence, so a metadata `false` would
+    // cancel a module that asks to be gated. Both single-source readings are
+    // fail-OPEN.
+    const governance = governanceUnion(mod?.['annotations'], ctx.declaredAnnotations);
+
     let decision: PolicyDecision | null = null;
     let needs: boolean;
     let effectiveDestructive: boolean;
@@ -478,7 +522,7 @@ export class BuiltinApprovalGate implements Step {
       // explicitly — §7.4's "before passing to subsequent steps" does not reach
       // a decision made INSIDE Step 5, so an implementation can satisfy §7.4
       // literally and still hand the token to the policy.
-      decision = this._policy.resolve(ctx.moduleId, mod?.['annotations'] ?? null, {
+      decision = this._policy.resolve(ctx.moduleId, governance, {
         arguments: ctx.inputs ?? null,
         context: ctx.context ?? null,
       });
@@ -488,9 +532,9 @@ export class BuiltinApprovalGate implements Step {
         this._emitPolicyAudit(decision, ctx.context);
       }
     } else {
-      // §6.9 rows 3 and 5: module annotation ∪ ACL decision ∪ gate_destructive.
-      needs = needsApproval(mod) || aclApprovalRequired;
-      effectiveDestructive = moduleIsDestructive(mod);
+      // §6.9 rows 3 and 5: governance union ∪ ACL decision ∪ gate_destructive.
+      needs = Boolean(governance?.requiresApproval) || aclApprovalRequired;
+      effectiveDestructive = Boolean(governance?.destructive);
     }
 
     if (!needs) {
@@ -531,19 +575,10 @@ export class BuiltinApprovalGate implements Step {
     if (approvalToken !== null) {
       result = await this._handler.checkApproval(approvalToken);
     } else {
-      const annotations = mod?.['annotations'];
-      let ann: ModuleAnnotations;
-      if (
-        annotations != null &&
-        typeof annotations === 'object' &&
-        'requiresApproval' in annotations
-      ) {
-        ann = annotations as ModuleAnnotations;
-      } else if (annotations != null && typeof annotations === 'object') {
-        ann = dictToAnnotations(annotations as Record<string, unknown>);
-      } else {
-        ann = DEFAULT_ANNOTATIONS;
-      }
+      // The handler must be told what the gate fired on: the union, not a
+      // second, narrower read of the live instance. Gating on one source and
+      // describing the call from another is the split D-96 closes.
+      let ann: ModuleAnnotations = governance ?? DEFAULT_ANNOTATIONS;
 
       if (decision !== null) {
         // Preserve the ApprovalRequest contract ("requiresApproval is guaranteed
@@ -841,9 +876,12 @@ export class BuiltinExecute implements Step {
     // deadline (if any) further clamps the effective timeout so the call
     // cannot outrun an outer budget.
     let timeoutMs = this._readModuleTimeoutMs(mod) ?? this._defaultTimeout;
-    const globalDeadline = ctx.context.data[CTX_GLOBAL_DEADLINE] as number | undefined;
-    if (globalDeadline !== undefined) {
-      const remaining = globalDeadline - Date.now();
+    // D-100: read the first-class field, not a private `data` key. D-99: the
+    // field is epoch SECONDS, so scale it before differencing against
+    // `Date.now()` milliseconds.
+    const globalDeadline = ctx.context.globalDeadline;
+    if (globalDeadline !== null) {
+      const remaining = globalDeadline * 1000 - Date.now();
       if (remaining <= 0) {
         throw new ModuleTimeoutError(ctx.moduleId, 0);
       }
@@ -900,6 +938,10 @@ export class BuiltinExecute implements Step {
       })) as Record<string, unknown>;
     }
 
+    // MW-001: record that the module actually ran. `output == null` alone
+    // cannot tell "the module returned nothing" from "this step never ran",
+    // and the after-middleware chain has to distinguish them.
+    ctx.executeStepRan = true;
     return { action: 'continue' };
   }
 
@@ -1029,12 +1071,30 @@ export class BuiltinMiddlewareAfter implements Step {
   }
 
   async execute(ctx: PipelineContext): Promise<StepResult> {
-    // Skip when no output is available (streaming Phase 1, dry_run, etc.)
-    if (ctx.output == null) {
+    // MW-001: skip only when the module never ran and produced nothing —
+    // a `runUntil` that stopped earlier, or a strategy without an execute
+    // step. Dry run and streaming Phase 1 never reach here at all (this step
+    // is `pure: false`, and the stream branch returns `skip_to:
+    // 'return_result'`); streaming Phase 3 re-enters with the accumulated
+    // output already on the context.
+    //
+    // The guard used to be `ctx.output == null`, which is the SAME null a
+    // module that returned nothing produces — so a void module skipped the
+    // ENTIRE after chain. `after()` is the closing half of `before()`
+    // (middleware-system.md), so a middleware that acquired state in
+    // `before()` never released it: metrics unrecorded, tracing span
+    // unpopped, audit line unwritten — and an `after()` returning a mapping
+    // could not replace the result. apcore-python runs the chain with `{}`
+    // and apcore-rust with the module's `null`.
+    if (ctx.output == null && ctx.executeStepRan !== true) {
       return { action: 'continue' };
     }
 
-    const output = ctx.output;
+    // A void module's output is normalised to `{}` for the chain, as
+    // apcore-python does: `after()` is typed to receive a mapping, and
+    // `Executor.call` already returns `{}` for such a module, so the
+    // observable result is unchanged when no middleware replaces it.
+    const output = ctx.output ?? {};
     const transformed = await this._middlewareManager.executeAfter(
       ctx.moduleId,
       ctx.inputs,

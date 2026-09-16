@@ -2,8 +2,6 @@
  * Retry configuration types and helpers for event delivery.
  */
 
-import { matchGlob } from '../utils/pattern.js';
-
 export interface RetryConfig {
   maxAttempts?: number;
   initialBackoffMs?: number;
@@ -43,21 +41,6 @@ export function resolveRetry(config?: RetryConfig): ResolvedRetryConfig {
     return { ...DEFAULT_RETRY };
   }
   return { ...DEFAULT_RETRY, ...config };
-}
-
-/**
- * Event-type pattern matching (PROTOCOL_SPEC §9.16.3, Algorithm A25).
- *
- * Kept as a named export for the call sites that already use it, but the
- * implementation is now the one shared matcher rather than a local
- * glob-to-RegExp translation. The translation happened to agree with A25 on
- * `*` and `?` and to escape `[`, so this SDK was the closest of the three —
- * but "closest" is not a contract, and the argument order (text, pattern) is
- * the reverse of A25's, which is exactly the kind of local convention that
- * makes two implementations look identical and behave differently.
- */
-export function fnmatch(text: string, pattern: string): boolean {
-  return matchGlob(pattern, text);
 }
 
 /** Exponential-backoff delay for attempt `attempt` (0-based, clamped to ≥ 0). */

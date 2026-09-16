@@ -202,16 +202,19 @@ describe('discoverMultiClass — edge branches', () => {
     expect(result).toEqual([{ moduleId: 'email.sender', className: '__' }]);
   });
 
+  // Spec v1.50.0 D-107: the per-class `multiClass` marker is the only
+  // multi-class opt-in. These three cases used to reach the derivation loop
+  // through the free function's `multiClassEnabled` boolean, which is now
+  // ignored, so the descriptors carry the marker instead.
   it('throws ModuleIdConflictError when two classes derive the same segment', () => {
     expect(() =>
       discoverMultiClass(
         'extensions/email/sender.ts',
         [
-          { name: 'EmailSender', implementsModule: true },
-          { name: 'Email_Sender', implementsModule: true },
+          { name: 'EmailSender', implementsModule: true, multiClass: true },
+          { name: 'Email_Sender', implementsModule: true, multiClass: true },
         ],
         'extensions',
-        true,
       ),
     ).toThrow(ModuleIdConflictError);
   });
@@ -223,11 +226,10 @@ describe('discoverMultiClass — edge branches', () => {
       discoverMultiClass(
         'extensions/123bad/sender.ts',
         [
-          { name: 'Alpha', implementsModule: true },
-          { name: 'Beta', implementsModule: true },
+          { name: 'Alpha', implementsModule: true, multiClass: true },
+          { name: 'Beta', implementsModule: true, multiClass: true },
         ],
         'extensions',
-        true,
       ),
     ).toThrow(InvalidSegmentError);
   });
@@ -238,11 +240,10 @@ describe('discoverMultiClass — edge branches', () => {
       discoverMultiClass(
         `extensions/${longDir}/file.ts`,
         [
-          { name: 'Alpha', implementsModule: true },
-          { name: 'Beta', implementsModule: true },
+          { name: 'Alpha', implementsModule: true, multiClass: true },
+          { name: 'Beta', implementsModule: true, multiClass: true },
         ],
         'extensions',
-        true,
       ),
     ).toThrow(IdTooLongError);
   });

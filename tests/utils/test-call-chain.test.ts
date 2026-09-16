@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { guardCallChain, DEFAULT_MAX_CALL_DEPTH, DEFAULT_MAX_MODULE_REPEAT } from '../../src/utils/call-chain.js';
-import { CallDepthExceededError, CircularCallError, CallFrequencyExceededError } from '../../src/errors.js';
+import { CallDepthExceededError, CircularCallError, CallFrequencyExceededError, InvalidInputError, ModuleError } from '../../src/errors.js';
 
 describe('guardCallChain', () => {
   it('passes for normal call chain', () => {
@@ -34,12 +34,30 @@ describe('guardCallChain', () => {
     expect(DEFAULT_MAX_MODULE_REPEAT).toBe(3);
   });
 
-  it('throws on invalid maxCallDepth', () => {
+  // D-84: the floor rejection is a typed apcore error, not a bare Error. A bare
+  // Error escapes `instanceof ModuleError` handlers and carries no registry code.
+  it('throws InvalidInputError(GENERAL_INVALID_INPUT) on invalid maxCallDepth', () => {
     expect(() => guardCallChain('a', ['a'], 0)).toThrow('maxCallDepth must be >= 1');
+    expect(() => guardCallChain('a', ['a'], 0)).toThrow(InvalidInputError);
+    try {
+      guardCallChain('a', ['a'], 0);
+      expect.unreachable('guardCallChain should have thrown');
+    } catch (e) {
+      expect(e).toBeInstanceOf(ModuleError);
+      expect((e as ModuleError).code).toBe('GENERAL_INVALID_INPUT');
+    }
   });
 
-  it('throws on invalid maxModuleRepeat', () => {
+  it('throws InvalidInputError(GENERAL_INVALID_INPUT) on invalid maxModuleRepeat', () => {
     expect(() => guardCallChain('a', ['a'], 32, 0)).toThrow('maxModuleRepeat must be >= 1');
+    expect(() => guardCallChain('a', ['a'], 32, 0)).toThrow(InvalidInputError);
+    try {
+      guardCallChain('a', ['a'], 32, 0);
+      expect.unreachable('guardCallChain should have thrown');
+    } catch (e) {
+      expect(e).toBeInstanceOf(ModuleError);
+      expect((e as ModuleError).code).toBe('GENERAL_INVALID_INPUT');
+    }
   });
 
   it('allows at most maxModuleRepeat occurrences', () => {

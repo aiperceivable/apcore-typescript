@@ -6,6 +6,8 @@ import {
   CallDepthExceededError,
   CallFrequencyExceededError,
   CircularCallError,
+  ErrorCodes,
+  InvalidInputError,
 } from '../errors.js';
 
 export const DEFAULT_MAX_CALL_DEPTH = 32;
@@ -26,6 +28,7 @@ export const DEFAULT_MAX_MODULE_REPEAT = 3;
  * @throws {CallDepthExceededError} Chain too deep.
  * @throws {CircularCallError} Circular call detected.
  * @throws {CallFrequencyExceededError} Module called too many times.
+ * @throws {InvalidInputError} `maxCallDepth` or `maxModuleRepeat` is less than 1.
  */
 export function guardCallChain(
   moduleId: string,
@@ -33,11 +36,23 @@ export function guardCallChain(
   maxCallDepth: number = DEFAULT_MAX_CALL_DEPTH,
   maxModuleRepeat: number = DEFAULT_MAX_MODULE_REPEAT,
 ): void {
+  // Typed, not bare (spec v1.49.0, D-84). A bare `Error` escapes every
+  // `instanceof ModuleError` handler and carries no code from the registry, so a
+  // misconfigured `executor.max_call_depth: 0` surfaced through preflight as an
+  // error whose `code` was not an apcore code at all.
   if (maxCallDepth < 1) {
-    throw new Error(`maxCallDepth must be >= 1, got ${maxCallDepth}`);
+    throw new InvalidInputError(
+      `maxCallDepth must be >= 1, got ${maxCallDepth}`,
+      undefined,
+      ErrorCodes.GENERAL_INVALID_INPUT,
+    );
   }
   if (maxModuleRepeat < 1) {
-    throw new Error(`maxModuleRepeat must be >= 1, got ${maxModuleRepeat}`);
+    throw new InvalidInputError(
+      `maxModuleRepeat must be >= 1, got ${maxModuleRepeat}`,
+      undefined,
+      ErrorCodes.GENERAL_INVALID_INPUT,
+    );
   }
 
   const chain = [...callChain];

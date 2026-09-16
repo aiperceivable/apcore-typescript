@@ -15,25 +15,30 @@ function sleep(ms: number): Promise<void> {
 }
 
 describe('Executor global timeout', () => {
-  it('sets _global_deadline on root call', async () => {
+  // Spec v1.50.0 D-100: the budget lives in the first-class
+  // `Context.globalDeadline` field, not in a private `context.data` key, and
+  // D-99 puts it on the epoch-SECONDS clock. These assertions used to read
+  // `ctx.data['_apcore.executor.global_deadline']` in milliseconds.
+  it('sets globalDeadline on root call', async () => {
     const reg = makeRegistry();
-    let capturedData: Record<string, unknown> = {};
+    let captured: number | null = null;
     reg.register('test.mod', {
       id: 'test.mod',
       execute: (_inputs: Record<string, unknown>, ctx: Context) => {
-        capturedData = { ...ctx.data };
+        captured = ctx.globalDeadline;
         return { ok: true };
       },
     });
     const config = new Config({ executor: { default_timeout: 30000, global_timeout: 60000, max_call_depth: 32, max_module_repeat: 3 } });
     const exec = new Executor({ registry: reg, config });
 
+    const before = Date.now() / 1000;
     await exec.call('test.mod');
-    expect(capturedData['_apcore.executor.global_deadline']).toBeDefined();
-    expect(typeof capturedData['_apcore.executor.global_deadline']).toBe('number');
+    expect(typeof captured).toBe('number');
+    expect(captured as unknown as number).toBeGreaterThanOrEqual(before + 60);
   });
 
-  it('inherits _global_deadline in nested calls', async () => {
+  it('inherits globalDeadline in nested calls', async () => {
     const reg = makeRegistry();
     let outerDeadline: number | undefined;
     let innerDeadline: number | undefined;
@@ -41,7 +46,7 @@ describe('Executor global timeout', () => {
     reg.register('outer', {
       id: 'outer',
       execute: async (_inputs: Record<string, unknown>, ctx: Context) => {
-        outerDeadline = ctx.data['_apcore.executor.global_deadline'] as number;
+        outerDeadline = ctx.globalDeadline as number;
         // Simulate a nested call by calling inner via executor
         const executor = ctx.executor as Executor;
         return executor.call('inner', {}, ctx);
@@ -50,7 +55,7 @@ describe('Executor global timeout', () => {
     reg.register('inner', {
       id: 'inner',
       execute: (_inputs: Record<string, unknown>, ctx: Context) => {
-        innerDeadline = ctx.data['_apcore.executor.global_deadline'] as number;
+        innerDeadline = ctx.globalDeadline as number;
         return { ok: true };
       },
     });
@@ -82,11 +87,11 @@ describe('Executor global timeout', () => {
 
   it('does not set deadline when globalTimeout is 0', async () => {
     const reg = makeRegistry();
-    let capturedData: Record<string, unknown> = {};
+    let captured: number | null = -1;
     reg.register('test.mod', {
       id: 'test.mod',
       execute: (_inputs: Record<string, unknown>, ctx: Context) => {
-        capturedData = { ...ctx.data };
+        captured = ctx.globalDeadline;
         return { ok: true };
       },
     });
@@ -95,16 +100,16 @@ describe('Executor global timeout', () => {
     const exec = new Executor({ registry: reg, config });
 
     await exec.call('test.mod');
-    expect(capturedData['_apcore.executor.global_deadline']).toBeUndefined();
+    expect(captured).toBeNull();
   });
 
-  it('stream() also sets _global_deadline', async () => {
+  it('stream() also sets globalDeadline', async () => {
     const reg = makeRegistry();
-    let capturedData: Record<string, unknown> = {};
+    let captured: number | null = null;
     reg.register('test.stream', {
       id: 'test.stream',
       execute: (_inputs: Record<string, unknown>, ctx: Context) => {
-        capturedData = { ...ctx.data };
+        captured = ctx.globalDeadline;
         return { ok: true };
       },
     });
@@ -116,7 +121,6 @@ describe('Executor global timeout', () => {
     for await (const chunk of exec.stream('test.stream')) {
       chunks.push(chunk);
     }
-    expect(capturedData['_apcore.executor.global_deadline']).toBeDefined();
-    expect(typeof capturedData['_apcore.executor.global_deadline']).toBe('number');
+    expect(typeof captured).toBe('number');
   });
 });

@@ -111,7 +111,25 @@ describe('Conformance: binding_yaml_canonical.yaml', () => {
     expect(entry['auto_schema']).toBe(true);
     expect(entry['version']).toBe('1.0.0');
     expect(entry['tags']).toEqual(['conformance', 'auto_schema']);
-    expect(entry['annotations']).toEqual({ readonly: true, idempotent: true });
+    // Assert the FULL declared key set, not a two-key subset. The fixture used
+    // to carry only `readonly` and `idempotent` — two keys every SDK handles —
+    // so a binding parser covering 5 of the 12 schema-declared annotation
+    // properties passed this case (DEC-002). `extra` is checked separately
+    // below because it is the one key whose §4.4.1 wire rule a parser can get
+    // wrong in a way the others cannot: routing unknown keys INTO it re-nests
+    // extension data under its own name.
+    const annotations = entry['annotations'] as Record<string, unknown>;
+    expect(annotations['readonly']).toBe(true);
+    expect(annotations['idempotent']).toBe(true);
+    expect(annotations['destructive']).toBe(false);
+    expect(annotations['requires_approval']).toBe(true);
+    expect(annotations['open_world']).toBe(false);
+    expect(annotations['cacheable']).toBe(true);
+    expect(annotations['cache_ttl']).toBe(300);
+    expect(annotations['cache_key_fields']).toEqual(['a', 'b']);
+    expect(annotations['paginated']).toBe(true);
+    expect(annotations['pagination_style']).toBe('offset');
+    expect(annotations['extra']).toEqual({ 'mcp.category': 'email' });
   });
 
   it('entry 2 declares explicit input/output schemas and display metadata', () => {

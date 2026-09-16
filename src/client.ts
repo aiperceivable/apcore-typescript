@@ -101,12 +101,36 @@ export class APCore {
   private _sysModulesContext: SysModulesContext = {};
 
   constructor(options?: APCoreOptions) {
-    this.registry = options?.registry ?? new Registry();
     this.config = options?.config ?? null;
     this._toggleState = options?.toggleState ?? new ToggleState();
 
     this.metricsCollector = options?.metricsCollector ?? null;
     const prebuiltExecutor = options?.executor;
+
+    // CLI-1: a supplied Executor brings its own Registry, and that is the one
+    // this client must expose. Building a second one here meant `register()`
+    // wrote into `this.registry` while `call()` resolved against
+    // `executor.registry` — so `listModules()` listed a module that could not
+    // be called, and with sys modules enabled `disable()` failed with
+    // MODULE_NOT_FOUND for `system.control.toggle_feature`, which the
+    // installer had registered into the executor's registry. apcore-rust
+    // adopts `executor.registry` (client.rs:104-107) and
+    // `apcore-client.md` states the precedence for the equivalent
+    // constructor: the registry argument is "Ignored when executor is also
+    // provided".
+    //
+    // CLI-3: the fallback Registry is built FROM the Config. Its constructor
+    // resolves `extensions.roots` / `extensions.root` / `id_map.overrides`
+    // from one, and `_scanRoots` applies `extensions.*` only when
+    // `this._config !== null` — so a no-argument `new Registry()` left every
+    // registry-side config key inert through the client door and made
+    // `discover()` scan the hardcoded `./extensions` default whatever the
+    // config said. A Config that declares none of those keys still resolves
+    // to exactly the previous default, so this only ever narrows.
+    this.registry =
+      prebuiltExecutor?.registry ??
+      options?.registry ??
+      new Registry({ config: this.config });
     this.executor =
       prebuiltExecutor ??
       new Executor({

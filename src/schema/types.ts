@@ -25,6 +25,17 @@ export interface SchemaDefinition {
   outputSchema: Record<string, unknown>;
   errorSchema?: Record<string, unknown> | null;
   definitions: Record<string, unknown>;
+  /**
+   * Absolute path of the `*.schema.yaml` this definition was loaded from, or
+   * null for a definition that never came off disk.
+   *
+   * Spec v1.50.0 D-104 makes this load-bearing: a local `#/…` reference
+   * resolves its pointer against the FILE ROOT first, so the resolver has to
+   * be told which file that is. Without it `#/definitions/User` could only
+   * ever address inside the `input_schema` node, and §4.11's own example —
+   * `definitions:` as a top-level sibling of `input_schema` — did not load.
+   */
+  sourcePath?: string | null;
   version: string;
   documentation?: string | null;
   schemaUrl?: string | null;

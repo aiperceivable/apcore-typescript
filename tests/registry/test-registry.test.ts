@@ -1513,6 +1513,126 @@ describe('Registry.describe()', () => {
     const registry = new Registry();
     expect(() => registry.describe('nonexistent.module')).toThrow(ModuleNotFoundError);
   });
+
+  /* ---------------------------------------------------------
+   * D-77 (spec v1.49.0) — `describe()` is typed `: string` and must
+   * never hand back anything else. `Module.describe()` is declared as
+   * returning a ModuleDescription MAPPING (optionally a Promise of
+   * one), so passing the override through verbatim made
+   * `registry.describe(id).split('\n')` a TypeError.
+   * --------------------------------------------------------- */
+
+  it('D-77: falls through to the generated envelope for a structured describe()', () => {
+    const registry = new Registry();
+    const mod = {
+      execute: async () => ({}),
+      description: 'Module returning an introspection mapping',
+      inputSchema: {
+        type: 'object',
+        properties: { value: { type: 'string', description: 'Input value' } },
+        required: ['value'],
+      },
+      outputSchema: { type: 'object' },
+      // The shape module-interface.md actually declares for describe().
+      describe() {
+        return {
+          description: 'Module returning an introspection mapping',
+          input_schema: { type: 'object' },
+          output_schema: { type: 'object' },
+          annotations: {},
+        };
+      },
+    };
+    registry.register('test.structured', mod);
+
+    const result = registry.describe('test.structured');
+    expect(typeof result).toBe('string');
+    // The generated envelope, not a stringified mapping: str(dict) is a
+    // language-specific repr, not a description.
+    expect(result).toContain('# test.structured');
+    expect(result).toContain('**Parameters:**');
+    expect(result).not.toContain('[object Object]');
+    expect(result).not.toContain('input_schema');
+    // The caller's line that used to blow up.
+    expect(() => result.split('\n')).not.toThrow();
+  });
+
+  it('D-77: falls through to the generated envelope for an async describe()', () => {
+    const registry = new Registry();
+    const mod = {
+      execute: async () => ({}),
+      description: 'Module with an async describe',
+      inputSchema: { type: 'object' },
+      outputSchema: { type: 'object' },
+      async describe() {
+        return { description: 'from a promise' };
+      },
+    };
+    registry.register('test.async_describe', mod);
+
+    const result = registry.describe('test.async_describe');
+    expect(typeof result).toBe('string');
+    expect(result).toContain('# test.async_describe');
+    expect(result).toContain('Module with an async describe');
+  });
+
+  it('D-77: falls through to the generated envelope for a null describe()', () => {
+    const registry = new Registry();
+    const mod = {
+      execute: async () => ({}),
+      description: 'Module whose describe opts out',
+      inputSchema: { type: 'object' },
+      outputSchema: { type: 'object' },
+      describe() {
+        return null;
+      },
+    };
+    registry.register('test.null_describe', mod);
+
+    const result = registry.describe('test.null_describe');
+    expect(typeof result).toBe('string');
+    expect(result).toContain('# test.null_describe');
+  });
+
+  it('D-77: a string override is still returned verbatim', () => {
+    // Rule 1: a genuine string IS the author's deliberate override.
+    const registry = new Registry();
+    const mod = {
+      execute: async () => ({}),
+      description: 'Module with a string describe',
+      inputSchema: { type: 'object' },
+      outputSchema: { type: 'object' },
+      describe() {
+        return 'Hand-written description.\nSecond line.';
+      },
+    };
+    registry.register('test.string_describe', mod);
+    expect(registry.describe('test.string_describe')).toBe(
+      'Hand-written description.\nSecond line.',
+    );
+  });
+
+  it('D-77: describe() always returns a string, for every override shape', () => {
+    const registry = new Registry();
+    const shapes: Array<[string, unknown]> = [
+      ['test.shape_string', () => 'a string'],
+      ['test.shape_object', () => ({ description: 'an object' })],
+      ['test.shape_promise', async () => ({ description: 'a promise' })],
+      ['test.shape_null', () => null],
+      ['test.shape_number', () => 42],
+      ['test.shape_array', () => ['a', 'b']],
+    ];
+    for (const [id, describeFn] of shapes) {
+      registry.register(id, {
+        execute: async () => ({}),
+        description: `Module ${id}`,
+        inputSchema: { type: 'object' },
+        outputSchema: { type: 'object' },
+        describe: describeFn,
+      });
+      expect(typeof registry.describe(id)).toBe('string');
+    }
+  });
 });
 
 /* -----------------------------------------------------------
@@ -1535,6 +1655,76 @@ describe('Registry hot reload (watch/unwatch)', () => {
     expect(() => registry.watch()).not.toThrow();
     registry.unwatch();
   });
+
+  /* ---------------------------------------------------------
+   * D-80 (spec v1.49.0) — `file_changed` is part of the closed
+   * registry event set, because this SDK's notify-only `watch()`
+   * emits it. Before the fix `on('file_changed', ...)` threw
+   * InvalidInputError, so the callback list was permanently empty
+   * and EVERY hot-reload notification was silently discarded.
+   * --------------------------------------------------------- */
+
+  it("D-80: on() accepts 'file_changed' — an SDK must accept every event it can emit", () => {
+    const registry = new Registry();
+    expect(() => registry.on('file_changed', () => {})).not.toThrow();
+  });
+
+  it("D-80: off() accepts 'file_changed' and removes the subscription", () => {
+    const registry = new Registry();
+    const cb = (): void => {};
+    registry.on('file_changed', cb);
+    expect(registry.off('file_changed', cb)).toBe(true);
+    // Removing it twice reports "was not subscribed", not an invalid event.
+    expect(registry.off('file_changed', cb)).toBe(false);
+  });
+
+  it('D-80: the event set stays closed — an unknown name is still rejected', () => {
+    const registry = new Registry();
+    // registry-system.md's own example used to tell readers to call these.
+    for (const bogus of ['change', 'add', 'remove', 'fille_changed']) {
+      expect(() => registry.on(bogus, () => {})).toThrow(InvalidInputError);
+      expect(() => registry.off(bogus, () => {})).toThrow(InvalidInputError);
+    }
+  });
+
+  it('D-80: a watched file change reaches a callback subscribed through on()', async () => {
+    // End-to-end over a real fs.watch: subscribe via the public API, touch a
+    // watched file, and require the notification to arrive. Without the fix
+    // the `on()` call itself throws, so this test cannot even reach the touch.
+    const registry = new Registry({ extensionsDir: tempDir });
+    const watchedFile = join(tempDir, 'watched.js');
+    writeFileSync(watchedFile, 'export const version = 1;\n');
+
+    const mod = {
+      execute: async () => ({}),
+      description: 'Watched module',
+      inputSchema: { type: 'object' },
+      outputSchema: { type: 'object' },
+    };
+    registry.register('watched', mod);
+
+    const seen: Array<{ moduleId: string; payload: unknown }> = [];
+    registry.on('file_changed', (moduleId: string, payload: unknown) => {
+      seen.push({ moduleId, payload });
+    });
+
+    await registry.watch();
+    try {
+      // fs.watch delivery is asynchronous and platform-dependent; poll rather
+      // than sleeping a fixed amount, and re-touch in case the watcher was not
+      // yet armed when the first write landed.
+      const deadline = Date.now() + 5000;
+      while (seen.length === 0 && Date.now() < deadline) {
+        writeFileSync(watchedFile, `export const version = ${Date.now()};\n`);
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      expect(seen.length).toBeGreaterThan(0);
+      expect(seen[0].moduleId).toBe('watched');
+      expect((seen[0].payload as { filePath: string }).filePath).toContain('watched.js');
+    } finally {
+      registry.unwatch();
+    }
+  }, 15000);
 
   it('unwatch() is safe to call when not watching', () => {
     const registry = new Registry();
@@ -1639,15 +1829,13 @@ describe('Registry hot reload (watch/unwatch)', () => {
     registry.register('watched', mod);
 
     const events: Array<{ moduleId: string; payload: unknown }> = [];
-    // 'file_changed' is not a standard registry event, so subscribe via the
-    // internal callback map (the map is initialised lazily for each event
-    // name on first emit; we add the bucket here to capture).
-    (registry as unknown as { _callbacks: Map<string, Array<(id: string, payload: unknown) => void>> })
-      ._callbacks.set('file_changed', [
-        (id: string, payload: unknown) => {
-          events.push({ moduleId: id, payload });
-        },
-      ]);
+    // D-80: 'file_changed' IS a standard registry event and is subscribed to
+    // through the public `on()`. This test used to reach into `_callbacks`
+    // directly because `on()` rejected the name — which was the bug, not a
+    // testing convenience.
+    registry.on('file_changed', (id: string, payload: unknown) => {
+      events.push({ moduleId: id, payload });
+    });
 
     await (registry as unknown as { _handleFileChange: (p: string) => Promise<void> })
       ._handleFileChange('/extensions/watched.js');
@@ -2349,5 +2537,217 @@ describe('registerInternal reserves the ID during onLoad (sync finding A-D-001)'
     // The failed ID must be free again, not stuck reserved.
     expect(() => registry.registerInternal('system.c', leaf())).not.toThrow();
     expect(registry.get('system.c')).not.toBeNull();
+  });
+});
+
+describe('the custom-discoverer path reserves the ID during onLoad (A-D-001)', () => {
+  // `_registerImpl` was the one registration path that never reserved the ID
+  // in `_inFlight`, even though `register()` computes its duplicate set as
+  // `_modules ∪ _inFlight`. While a custom-discovered module ran its sync
+  // onLoad, the ID was in neither set, so a re-entrant `register()` of that
+  // same ID was accepted: it published its own module and fired a `register`
+  // event, and the discoverer's publish then overwrote it last-writer-wins —
+  // orphaning a module whose onLoad had run, whose register event had been
+  // delivered, and whose onUnload was thereafter unreachable.
+  const leaf = () => ({
+    description: 'm',
+    inputSchema: {},
+    outputSchema: {},
+    execute: async () => ({}),
+  });
+
+  it('rejects a re-entrant registration of the same ID with DUPLICATE_MODULE_ID', async () => {
+    const registry = new Registry();
+    const inner = leaf();
+    let innerError: unknown = null;
+    const outer = {
+      ...leaf(),
+      onLoad() {
+        try {
+          void registry.register('custom.x', inner);
+        } catch (e) {
+          innerError = e;
+        }
+      },
+    };
+    registry.setDiscoverer({
+      discover: () => [{ moduleId: 'custom.x', module: outer }],
+    });
+
+    expect(await registry.discover()).toBe(1);
+    expect(innerError).toBeInstanceOf(DuplicateModuleIdError);
+    expect((innerError as DuplicateModuleIdError).code).toBe('DUPLICATE_MODULE_ID');
+    expect(registry.get('custom.x')).toBe(outer);
+  });
+
+  it('fires exactly one register event for the ID', async () => {
+    const registry = new Registry();
+    const seen: string[] = [];
+    registry.on('register', (id: string) => seen.push(id));
+
+    const outer = {
+      ...leaf(),
+      onLoad() {
+        try {
+          void registry.register('custom.y', leaf());
+        } catch {
+          /* expected */
+        }
+      },
+    };
+    registry.setDiscoverer({
+      discover: () => [{ moduleId: 'custom.y', module: outer }],
+    });
+
+    await registry.discover();
+    expect(seen.filter((id) => id === 'custom.y')).toHaveLength(1);
+  });
+
+  it('releases the reservation on success and on an onLoad failure', async () => {
+    const registry = new Registry();
+    const failing = {
+      ...leaf(),
+      onLoad() {
+        throw new Error('boom');
+      },
+    };
+    registry.setDiscoverer({
+      discover: () => [
+        { moduleId: 'custom.ok', module: leaf() },
+        { moduleId: 'custom.bad', module: failing },
+      ],
+    });
+
+    // The failing module is skipped with a warning, not fatal to the run.
+    expect(await registry.discover()).toBe(1);
+    expect(registry.get('custom.ok')).not.toBeNull();
+    // Neither ID may be left stuck reserved: both must be registrable again.
+    await expect(registry.register('custom.bad', leaf())).resolves.toBeUndefined();
+    expect(registry.get('custom.bad')).not.toBeNull();
+  });
+});
+
+describe('getDefinition derives sunsetDate from the x-deprecation block', () => {
+  // `sunsetDate` used to be read from a top-level `meta['sunsetDate']` key
+  // that `mergeModuleMetadata` never writes, so the field was null for every
+  // module ever registered and no deprecation notice was ever emitted.
+  // apcore-python derives it from `metadata["x-deprecation"]["sunset_date"]`
+  // and logs a warning.
+  const deprecatedModule = () => ({
+    description: 'm',
+    inputSchema: {},
+    outputSchema: {},
+    execute: async () => ({}),
+    metadata: {
+      'x-deprecation': {
+        deprecated_since: '1.2.0',
+        sunset_version: '2.0.0',
+        sunset_date: '2027-01-01',
+        migration_guide: 'use billing.charge_v2',
+      },
+    },
+  });
+
+  it('reads sunset_date and warns once per module version', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const registry = new Registry();
+      await registry.register('billing.charge', deprecatedModule());
+
+      const def = registry.getDefinition('billing.charge');
+      expect(def!.sunsetDate).toBe('2027-01-01');
+
+      expect(warn).toHaveBeenCalledTimes(1);
+      const msg = String(warn.mock.calls[0]![0]);
+      expect(msg).toContain("Module 'billing.charge' v1.0.0 is deprecated");
+      expect(msg).toContain('since 1.2.0');
+      expect(msg).toContain('sunset in 2.0.0');
+      expect(msg).toContain('Migration: use billing.charge_v2');
+
+      // getDefinition is a read callers make repeatedly: the notice is once
+      // per module version, not once per call.
+      registry.getDefinition('billing.charge');
+      expect(warn).toHaveBeenCalledTimes(1);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('falls back to "unknown" for absent deprecation fields and reports no sunsetDate', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const registry = new Registry();
+      await registry.register('billing.partial', {
+        description: 'm',
+        inputSchema: {},
+        outputSchema: {},
+        execute: async () => ({}),
+        metadata: { 'x-deprecation': {} },
+      });
+
+      expect(registry.getDefinition('billing.partial')!.sunsetDate).toBeNull();
+      const msg = String(warn.mock.calls[0]![0]);
+      expect(msg).toContain('since unknown, sunset in unknown');
+      expect(msg).not.toContain('Migration:');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('leaves sunsetDate null and warns nothing for a module with no x-deprecation', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const registry = new Registry();
+      await registry.register('billing.current', createMod('billing.current'));
+
+      expect(registry.getDefinition('billing.current')!.sunsetDate).toBeNull();
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
+
+describe('register() runs the custom validator before duplicate detection', () => {
+  // apcore-python (registry.py:1305) and apcore-rust (registry.rs:1094) both
+  // validate first. With the order inverted, one call reported three
+  // different error codes across the three SDKs, and a stateful validator
+  // was invoked for a duplicate ID on Python/Rust but skipped here.
+  it('reports the validator rejection rather than DuplicateModuleIdError', async () => {
+    const registry = new Registry();
+    await registry.register('dup.mod', createMod('dup.mod'));
+
+    const seen: unknown[] = [];
+    registry.setValidator({
+      validate: (module: unknown) => {
+        seen.push(module);
+        return ['not acceptable'];
+      },
+    });
+
+    expect(() => registry.register('dup.mod', createMod('dup.mod'))).toThrow(InvalidInputError);
+    // The validator saw the module: a stateful validator now behaves the
+    // same way in all three SDKs.
+    expect(seen).toHaveLength(1);
+  });
+
+  it('still throws DuplicateModuleIdError synchronously when the validator accepts', async () => {
+    const registry = new Registry();
+    await registry.register('dup.ok', createMod('dup.ok'));
+    registry.setValidator({ validate: () => [] });
+
+    // Synchronous throw — the `.toThrow()` compat property the duplicate
+    // check is placed for.
+    expect(() => registry.register('dup.ok', createMod('dup.ok'))).toThrow(DuplicateModuleIdError);
+  });
+
+  it('defers the duplicate check into the returned promise for an async validator', async () => {
+    const registry = new Registry();
+    await registry.register('dup.async', createMod('dup.async'));
+    registry.setValidator({ validate: async () => [] });
+
+    await expect(registry.register('dup.async', createMod('dup.async'))).rejects.toBeInstanceOf(
+      DuplicateModuleIdError,
+    );
   });
 });

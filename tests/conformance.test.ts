@@ -169,13 +169,15 @@ const SDK_WIRE_CODES: ReadonlySet<string> = new Set<string>(Object.values(ErrorC
  * the inverse of a wire-code check — a native Error that is *not* a ModuleError.
  * Anything else unrecognised is a hard failure, never a skipped branch.
  *
- * `call_chain`'s `INVALID_LIMIT` is the same shape and says so in the case's own
- * `note`: "Python ValueError / TS Error / Rust ModuleError
- * GENERAL_INVALID_INPUT" (divergence T-B-005). There is no `INVALID_LIMIT` wire
- * code; in this SDK the limit floor is a plain `Error`, so `not a ModuleError`
- * is exactly the discriminating check.
+ * `call_chain`'s `INVALID_LIMIT` used to be listed here for the same reason, and
+ * is NOT any more. Spec v1.49.0 decision D-84 closed divergence T-B-005: all
+ * three SDKs now raise the typed error with `GENERAL_INVALID_INPUT`, because a
+ * builtin `ValueError` / bare `Error` is catchable by no cross-language caller
+ * and carries no code from the registry. The fixture now spells that wire code
+ * directly, so no alias is needed — exempting it instead would have kept
+ * asserting the very defect D-84 fixed.
  */
-const NON_WIRE_EXPECTATIONS: ReadonlySet<string> = new Set(['PARSE_ERROR', 'INVALID_LIMIT']);
+const NON_WIRE_EXPECTATIONS: ReadonlySet<string> = new Set(['PARSE_ERROR']);
 
 /** Run `fn`, returning what it threw, or `null` when it completed. */
 function captureThrow(fn: () => unknown): unknown {
@@ -983,6 +985,31 @@ describe('apcore Conformance Suite (TypeScript)', () => {
   // rather than in the SDK. There is nothing on the thrown error to observe, and
   // restating the number from the fixture would assert nothing. The wire code,
   // which IS the SDK's contract, is asserted below.
+  /**
+   * Resolve a case's declared approval requirement.
+   *
+   * Two shapes. The original cases carry a single `module_requires_approval`
+   * boolean, which each SDK was free to satisfy from whichever governance
+   * source it preferred — and that is exactly how an approval bypass survived
+   * this fixture: apcore-rust decided gate firing from the registry DESCRIPTOR
+   * while its test module left `annotations()` at the default, so all three
+   * SDKs passed the same case off two different sources of truth (D-96).
+   *
+   * The newer cases state `governance_sources` with the module and descriptor
+   * declarations SEPARATELY. apcore-typescript derives the descriptor from the
+   * module, so the two are not independently settable here; per D-96 the gate
+   * fires on the UNION of the sources an implementation has, and the union of
+   * what this SDK can express is `module || descriptor`. That reaches the same
+   * expected outcome, which is why the union costs this SDK nothing.
+   */
+  function declaredRequiresApproval(tc: any): boolean {
+    const sources = tc.governance_sources;
+    if (sources === undefined || sources === null) {
+      return Boolean(tc.module_requires_approval);
+    }
+    return Boolean(sources.module) || Boolean(sources.descriptor);
+  }
+
   describe('Approval Gate', () => {
     const approvalFixture = loadFixture('approval_gate');
 
@@ -1020,7 +1047,7 @@ describe('apcore Conformance Suite (TypeScript)', () => {
 
         const mod: Record<string, unknown> = {
           annotations: {
-            requiresApproval: tc.module_requires_approval,
+            requiresApproval: declaredRequiresApproval(tc),
           },
           description: null,
           tags: [],
@@ -1259,16 +1286,25 @@ describe('apcore Conformance Suite (TypeScript)', () => {
           return;
         }
 
-        const { file_path, extensions_root, multi_class_enabled, classes } = tc.input;
+        const { file_path, extensions_root, classes } = tc.input;
+        // Spec v1.50.0 D-107: the per-class `multi_class` marker is the ONLY
+        // multi-class opt-in. The fixture used to carry a file-level
+        // `multi_class_enabled`, the model decision-log D-06 withdrew, and the
+        // driver briefly read it as a fallback while the fixture was corrected.
+        // That fallback is gone deliberately: tolerating both models is exactly
+        // what let three SDKs implement three different ones and stay green, so
+        // a driver that accepts the withdrawn spelling cancels out the
+        // discrimination the corrected fixture exists to provide.
         const descriptors = (classes as any[]).map((c: any) => ({
           name: c.name,
           implementsModule: c.implements_module,
+          multiClass: c.multi_class === true,
         }));
 
         if (tc.expected.error) {
           let thrown: unknown = null;
           try {
-            discoverMultiClass(file_path, descriptors, extensions_root, multi_class_enabled);
+            discoverMultiClass(file_path, descriptors, extensions_root);
           } catch (e) {
             thrown = e;
           }
@@ -1280,7 +1316,7 @@ describe('apcore Conformance Suite (TypeScript)', () => {
           return;
         }
 
-        const result = discoverMultiClass(file_path, descriptors, extensions_root, multi_class_enabled);
+        const result = discoverMultiClass(file_path, descriptors, extensions_root);
         const moduleIds = result.map(r => r.moduleId);
 
         expect(moduleIds).toEqual(tc.expected.module_ids);

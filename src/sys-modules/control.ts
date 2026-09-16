@@ -25,6 +25,7 @@ import type { Context } from '../context.js';
 import type { AuditStore } from './audit.js';
 import { buildAuditEntry, extractAuditIdentity } from './audit.js';
 import { matchGlob } from '../utils/pattern.js';
+import { REDACTED_VALUE } from '../executor.js';
 import type { OverridesStore } from './overrides.js';
 
 const RESTRICTED_KEYS = new Set(['sys_modules.enabled']);
@@ -47,7 +48,12 @@ export interface UpdateConfigOptions {
 
 export class UpdateConfigModule {
   readonly description = 'Update a runtime configuration value by dot-path key';
-  readonly annotations = { readonly: false, destructive: false, idempotent: true, requiresApproval: true, openWorld: false, streaming: false, cacheable: false, cacheTtl: 0, cacheKeyFields: null, paginated: false, paginationStyle: 'cursor' as const };
+  // SYS-19: `idempotent` is declared PER MODULE. All three `system.control.*`
+  // modules used to claim `true`, so middleware that retries or dedupes on the
+  // annotation would retry a config WRITE. A config update is a state
+  // transition with an audit entry and an `apcore.config.updated` event per
+  // call — replaying it is not free.
+  readonly annotations = { readonly: false, destructive: false, idempotent: false, requiresApproval: true, openWorld: false, streaming: false, cacheable: false, cacheTtl: 0, cacheKeyFields: null, paginated: false, paginationStyle: 'cursor' as const };
   readonly inputSchema = {
     type: 'object' as const,
     properties: {
@@ -93,9 +99,14 @@ export class UpdateConfigModule {
 
     this._validatePostSet(key, value, oldValue);
 
+    // SYS-13: mask with the framework's canonical redaction constant, which is
+    // what apcore-python and apcore-rust write. A bespoke `'***'` here meant an
+    // operator grepping an audit trail for the redaction marker found the
+    // config-write events on two SDKs of three, and a consumer matching on the
+    // constant silently classified a redacted value as a real one.
     const isSensitive = isSensitiveKey(key);
-    const safeOld = isSensitive ? '***' : oldValue;
-    const safeNew = isSensitive ? '***' : value;
+    const safeOld = isSensitive ? REDACTED_VALUE : oldValue;
+    const safeNew = isSensitive ? REDACTED_VALUE : value;
 
     // Store-XOR-path precedence (Python/Rust parity, matches toggle.ts): the
     // pluggable store takes precedence over the legacy YAML path; never both.
@@ -224,7 +235,9 @@ export class UpdateConfigModule {
 /** @internal */
 export class ReloadModule {
   readonly description = 'Hot-reload a module by safe unregister and re-discover';
-  readonly annotations = { readonly: false, destructive: false, idempotent: true, requiresApproval: true, openWorld: false, streaming: false, cacheable: false, cacheTtl: 0, cacheKeyFields: null, paginated: false, paginationStyle: 'cursor' as const };
+  // SYS-19: not idempotent — each reload unregisters and re-imports, running
+  // `onUnload` / `onLoad` and emitting `apcore.module.reloaded` again.
+  readonly annotations = { readonly: false, destructive: false, idempotent: false, requiresApproval: true, openWorld: false, streaming: false, cacheable: false, cacheTtl: 0, cacheKeyFields: null, paginated: false, paginationStyle: 'cursor' as const };
   readonly inputSchema = {
     type: 'object' as const,
     properties: {

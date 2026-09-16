@@ -4,6 +4,7 @@ import {
   CircularDependencyError,
   DependencyNotFoundError,
   DependencyVersionMismatchError,
+  ModuleLoadError,
 } from '../../src/errors.js';
 
 describe('resolveDependencies', () => {
@@ -88,6 +89,73 @@ describe('resolveDependencies', () => {
       const path = (err as CircularDependencyError).details.cyclePath as string[];
       expect(path[0]).toBe(path[path.length - 1]);
       expect(new Set(path.slice(0, -1))).toEqual(new Set(['mod.a', 'mod.b']));
+    }
+  });
+
+  /* ---------------------------------------------------------
+   * D-79 (spec §5.15.2, v1.49.0) — a stalled topological sort is not
+   * a cycle. Kahn's algorithm terminating with nodes remaining has two
+   * causes needing opposite fixes: break an edge, versus add the
+   * missing module to the batch. Reporting CIRCULAR_DEPENDENCY for the
+   * second — with a cyclePath synthesised from the leftover set — sends
+   * the author looking for a loop that does not exist.
+   * --------------------------------------------------------- */
+
+  it('D-79: a genuine A->B->A cycle still raises CIRCULAR_DEPENDENCY with a real path', () => {
+    const modules: Array<[string, Array<{ moduleId: string; optional: boolean; version: string | null }>]> = [
+      ['mod.a', [{ moduleId: 'mod.b', optional: false, version: null }]],
+      ['mod.b', [{ moduleId: 'mod.a', optional: false, version: null }]],
+    ];
+    try {
+      resolveDependencies(modules);
+      expect.unreachable('expected CircularDependencyError');
+    } catch (err) {
+      expect(err).toBeInstanceOf(CircularDependencyError);
+      expect((err as CircularDependencyError).code).toBe('CIRCULAR_DEPENDENCY');
+      const path = (err as CircularDependencyError).details.cyclePath as string[];
+      // A real cycle closes on itself and has at least two distinct nodes.
+      expect(path[0]).toBe(path[path.length - 1]);
+      expect(new Set(path.slice(0, -1))).toEqual(new Set(['mod.a', 'mod.b']));
+    }
+  });
+
+  it('D-79: a batch member blocked on a registered-but-not-batched module raises MODULE_LOAD_ERROR', () => {
+    // mod.external is known (registered) but is not part of this batch, so
+    // mod.a's in-degree never reaches zero. There is no cycle anywhere.
+    const modules: Array<[string, Array<{ moduleId: string; optional: boolean; version: string | null }>]> = [
+      ['mod.a', [{ moduleId: 'mod.external', optional: false, version: null }]],
+    ];
+    const knownIds = new Set(['mod.a', 'mod.external']);
+    try {
+      resolveDependencies(modules, knownIds);
+      expect.unreachable('expected ModuleLoadError');
+    } catch (err) {
+      expect(err).toBeInstanceOf(ModuleLoadError);
+      expect(err).not.toBeInstanceOf(CircularDependencyError);
+      expect((err as ModuleLoadError).code).toBe('MODULE_LOAD_ERROR');
+      // The blocked module is named, and NO cyclePath is fabricated.
+      expect((err as ModuleLoadError).message).toContain('mod.a');
+      expect((err as ModuleLoadError).details).not.toHaveProperty('cyclePath');
+    }
+  });
+
+  it('D-79: a multi-module stall names every blocked module and reports no cycle', () => {
+    const modules: Array<[string, Array<{ moduleId: string; optional: boolean; version: string | null }>]> = [
+      ['mod.a', [{ moduleId: 'mod.external', optional: false, version: null }]],
+      ['mod.b', [{ moduleId: 'mod.a', optional: false, version: null }]],
+      ['mod.ok', []],
+    ];
+    const knownIds = new Set(['mod.a', 'mod.b', 'mod.ok', 'mod.external']);
+    try {
+      resolveDependencies(modules, knownIds);
+      expect.unreachable('expected ModuleLoadError');
+    } catch (err) {
+      expect(err).toBeInstanceOf(ModuleLoadError);
+      const message = (err as ModuleLoadError).message;
+      expect(message).toContain('mod.a');
+      expect(message).toContain('mod.b');
+      // mod.ok sorted fine and must not be reported as blocked.
+      expect(message).not.toContain('mod.ok');
     }
   });
 

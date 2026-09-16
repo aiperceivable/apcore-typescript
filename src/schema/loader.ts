@@ -89,6 +89,7 @@ export class SchemaLoader {
       outputSchema: dataObj['output_schema'] as Record<string, unknown>,
       errorSchema: (dataObj['error_schema'] as Record<string, unknown>) ?? null,
       definitions,
+      sourcePath: filePath,
       version: (dataObj['version'] as string) ?? '1.0.0',
       documentation: (dataObj['documentation'] as string) ?? null,
       schemaUrl: (dataObj['$schema'] as string) ?? null,
@@ -99,8 +100,17 @@ export class SchemaLoader {
   }
 
   resolve(schemaDef: SchemaDefinition): [ResolvedSchema, ResolvedSchema] {
-    const resolvedInput = this._resolver.resolve(schemaDef.inputSchema);
-    const resolvedOutput = this._resolver.resolve(schemaDef.outputSchema);
+    // D-104 (spec v1.50.0): hand the resolver the file this definition came
+    // from, so a local `#/…` reference resolves against the FILE ROOT first
+    // and falls back to the schema node. Both layouts are normative; passing
+    // nothing here left only the node addressable, which is why the spec's own
+    // §4.11 example — `definitions:` as a top-level sibling of `input_schema`
+    // — loaded on apcore-rust alone. It is also what makes
+    // `SchemaDefinition.definitions` live: it was dead precisely because the
+    // refs that would have used it could not resolve.
+    const sourcePath = schemaDef.sourcePath ?? null;
+    const resolvedInput = this._resolver.resolve(schemaDef.inputSchema, sourcePath);
+    const resolvedOutput = this._resolver.resolve(schemaDef.outputSchema, sourcePath);
 
     const inputSchema = jsonSchemaToTypeBox(resolvedInput);
     const outputSchema = jsonSchemaToTypeBox(resolvedOutput);

@@ -65,17 +65,53 @@ function computeBaseId(filePath: string, extensionsRoot: string): string {
 }
 
 /**
+ * One-shot notice for the withdrawn `multiClassEnabled` argument, so a caller
+ * still passing it learns the value is no longer consulted rather than
+ * silently getting a different answer than before.
+ */
+let _multiClassEnabledArgWarned = false;
+
+/** @internal exported for tests so they can reset between cases. */
+export function _resetMultiClassEnabledArgWarned(): void {
+  _multiClassEnabledArgWarned = false;
+}
+
+function warnMultiClassEnabledArg(): void {
+  if (_multiClassEnabledArgWarned) return;
+  _multiClassEnabledArgWarned = true;
+  console.warn(
+    '[apcore:multi-class] DEPRECATION: the `multiClassEnabled` argument to ' +
+      '`discoverMultiClass()` is no longer consulted. Per-class markers are the ' +
+      'only multi-class opt-in path (spec v1.50.0 D-107, decision-log D-06): ' +
+      'set `multiClass: true` on each participating `ClassDescriptor`. The ' +
+      'parameter will be removed at 2.0.',
+  );
+}
+
+/**
  * Discover module IDs for classes in a single file under multi-class mode.
  *
  * Implements the Registry.discover_multi_class contract from PROTOCOL_SPEC §2.1.1.
  *
- * When multiClassEnabled is false (the default — multi-class mode is opt-in),
- * only the first qualifying class is used and the bare base_id is returned.
+ * **Opt-in is per class** (spec v1.50.0 D-107, decision-log D-06): the file is
+ * in multi-class mode when at least one QUALIFYING class carries
+ * `multiClass: true`. Otherwise only the first qualifying class is used and the
+ * bare base_id is returned.
  *
- * When multiClassEnabled is true and exactly one class qualifies:
- * - If the class segment matches the file's last path segment (class named after
- *   the file), the bare base_id is returned to preserve existing module IDs.
- * - Otherwise the class segment is appended: base_id.class_segment.
+ * This used to gate on the `multiClassEnabled` boolean below and read the
+ * `multiClass` field nowhere, while `Registry.discoverMultiClass` read the
+ * field — so this repo shipped two doors with opposite defaults, and
+ * multi-module-discovery.md's own TypeScript example (which passes three
+ * arguments and marks both classes) silently returned one module where it
+ * documents two. A file-level toggle also cannot express the case the feature
+ * exists for: two participating classes beside a helper class that must not
+ * become a module.
+ *
+ * When multi-class mode is on and exactly one class qualifies, the bare
+ * base_id is still returned — the single-class identity guarantee.
+ *
+ * @param multiClassEnabled - **Deprecated and ignored.** Retained so existing
+ *   4-argument call sites keep compiling; passing it warns once per process.
  *
  * @internal Prefer `Registry.discoverMultiClass` (D-15) for the canonical
  * cross-language API surface; this free function is retained for backwards
@@ -89,14 +125,22 @@ export function discoverMultiClass(
   filePath: string,
   classes: readonly ClassDescriptor[],
   extensionsRoot: string = 'extensions',
-  multiClassEnabled: boolean = false,
+  multiClassEnabled?: boolean,
 ): MultiClassEntry[] {
+  if (multiClassEnabled !== undefined) {
+    warnMultiClassEnabledArg();
+  }
+
   const qualifying = classes.filter(c => c.implementsModule);
   if (qualifying.length === 0) return [];
 
   const baseId = computeBaseId(filePath, extensionsRoot);
 
-  if (!multiClassEnabled) {
+  // D-107: the per-class marker is the sole opt-in, resolved here exactly as
+  // `Registry.discoverMultiClass` resolves it. A marker on a class that does
+  // not implement Module opts nothing in.
+  const enabled = qualifying.some(c => c.multiClass === true);
+  if (!enabled) {
     return [{ moduleId: baseId, className: qualifying[0].name }];
   }
 

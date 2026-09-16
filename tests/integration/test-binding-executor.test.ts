@@ -132,7 +132,7 @@ describe('Binding + Registry + Executor', () => {
     const spans = exporter.getSpans();
     expect(spans).toHaveLength(1);
     expect(spans[0].status).toBe('ok');
-    expect(spans[0].attributes['moduleId']).toBe('test.traced');
+    expect(spans[0].attributes['module_id']).toBe('test.traced');
 
     // Verify metrics recorded
     const snap = metrics.snapshot();

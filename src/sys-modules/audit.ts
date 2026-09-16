@@ -63,19 +63,35 @@ export function buildAuditEntry(
   };
 }
 
-/** Identity attribute substrings treated as x-sensitive in audit payloads. */
+/**
+ * Identity attribute substrings treated as x-sensitive in audit payloads.
+ *
+ * This list is deliberately a SUPERSET of the canonical
+ * `obs.redaction.sensitive_keys`, so bearer tokens, signed cookies and
+ * credentials can never leak through the contextual-audit channel even when
+ * global redaction is disabled. It must stay byte-identical to
+ * apcore-python `_IDENTITY_SENSITIVE_SUBSTRINGS` and apcore-rust
+ * `IDENTITY_SENSITIVE_SUBSTRINGS`.
+ *
+ * It previously enumerated compounds -- `api_key`, `apikey`, `access_key`,
+ * `private_key`, `authorization` -- in place of the bare `key`, `auth` and
+ * `session` the peers carry. Enumerating compounds only catches the spellings
+ * someone thought of: `signing_key`, `auth_header` and `session_id` matched
+ * none of them, so Python and Rust redacted those three and TypeScript
+ * published them verbatim on the event bus, reaching every subscriber, log
+ * sink and audit store attached to it. A bare substring is the point of a
+ * substring list.
+ */
 const SENSITIVE_IDENTITY_ATTR_SUBSTRINGS = [
   'token',
   'secret',
   'password',
   'passwd',
+  'key',
+  'auth',
   'credential',
-  'api_key',
-  'apikey',
-  'access_key',
-  'private_key',
-  'authorization',
   'cookie',
+  'session',
   'bearer',
 ];
 

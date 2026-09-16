@@ -27,6 +27,7 @@ import { buildStrategyFromConfigSync } from './pipeline-config.js';
 // Node-only code into the browser dependency graph.
 import { type EventEmitter, createEvent } from './events/emitter.js';
 import { Context } from './context.js';
+import { governanceUnion } from './schema/annotations.js';
 import { RedactionConfig } from './observability/context-logger.js';
 import {
   ContextBindingError,
@@ -64,7 +65,7 @@ import {
   PipelineStepError,
   StrategyNotFoundError,
 } from './pipeline.js';
-import { MODULE_ID_PATTERN } from './registry/registry.js';
+import { MAX_MODULE_ID_LENGTH, MODULE_ID_PATTERN } from './registry/registry.js';
 import type { Registry } from './registry/registry.js';
 import type { ToggleState } from './sys-modules/toggle.js';
 import { propagateError } from './utils/error-propagation.js';
@@ -113,8 +114,19 @@ function warnRemovedSecuritySteps(section: Record<string, unknown>): void {
   );
 }
 
-/** Well-known context.data keys used internally by the runtime. */
+/**
+ * @deprecated Nothing reads or writes this key any more. Spec v1.50.0 D-100
+ * makes the first-class `Context.globalDeadline` field the storage for the
+ * execution budget: `data` is caller-visible, caller-writable and shared by
+ * reference with child contexts, so a budget kept there could not be read
+ * back through the documented `Context.create` parameter and could not be
+ * scoped to one call. Read `context.globalDeadline` (epoch seconds) instead.
+ * The constant is retained only so the public export does not disappear
+ * mid-major; it will be removed at 2.0.
+ */
 export const CTX_GLOBAL_DEADLINE = '_apcore.executor.global_deadline';
+
+/** Well-known context.data keys used internally by the runtime. */
 export const CTX_TRACING_SPANS = '_apcore.mw.tracing.spans';
 
 /**
@@ -455,7 +467,51 @@ export class Executor {
     Executor._strategyRegistry.set(name, strategy);
   }
 
-  /** List info for all registered strategies. */
+  /**
+   * List info for the executor's current strategy plus every strategy
+   * registered via {@link Executor.registerStrategy}.
+   *
+   * `core-executor.md` "Contract: Executor.list_strategies" specifies one
+   * entry for the executor's current strategy followed by one entry per
+   * registered strategy, deduplicated by name. That needs the instance's
+   * `_strategy`, which a static method cannot reach: because no built-in
+   * strategy is pre-seeded into the static registry, a default-constructed
+   * Executor running the built-in `standard` strategy reported an empty
+   * list where apcore-python `Executor.list_strategies` returned one entry.
+   * `design-execution-pipeline.md` section 8.2 documents this call as the
+   * input to AI strategy selection, so the empty list was not merely an
+   * introspection gap.
+   */
+  listStrategies(): StrategyInfo[] {
+    const seen = new Set<string>();
+    const result: StrategyInfo[] = [];
+
+    // Current strategy first.
+    const current = this._strategy.info();
+    result.push(current);
+    seen.add(current.name);
+
+    // Then the registered strategies, in name order so this SDK and
+    // apcore-python (which iterates `sorted(...)`) list the same sequence.
+    for (const name of [...Executor._strategyRegistry.keys()].sort()) {
+      if (seen.has(name)) continue;
+      const strategy = Executor._strategyRegistry.get(name);
+      if (strategy === undefined) continue;
+      result.push(strategy.info());
+      seen.add(name);
+    }
+
+    return result;
+  }
+
+  /**
+   * List info for the strategies in the static registry only.
+   *
+   * @deprecated Use the instance method {@link Executor#listStrategies},
+   * which also includes the executor's current strategy as the spec
+   * requires. This static overload never could: it has no instance to read
+   * `_strategy` from. Retained for callers written against the old surface.
+   */
   static listStrategies(): StrategyInfo[] {
     return [...Executor._strategyRegistry.values()].map((s) => s.info());
   }
@@ -505,11 +561,21 @@ export class Executor {
         id.startsWith('system.manifest.'),
     );
 
-    // Read the annotation through the SAME predicate the approval gate uses.
+    // Read governance through the SAME union the approval gate uses (D-96).
+    // A second, narrower reading here would be a second way for the accessor to
+    // disagree with the pipeline it describes: a control module whose
+    // requirement is declared in a metadata source, not on the instance, is
+    // gated by the pipeline and was reported here as ungated — which a
+    // serve-time adapter may act on by refusing to start.
     const allControlModulesRequireApproval =
       controlIds.length > 0 &&
       controlIds.every((id) =>
-        needsApproval(this._registry.get(id) as Record<string, unknown> | null),
+        Boolean(
+          governanceUnion(
+            (this._registry.get(id) as Record<string, unknown> | null)?.['annotations'],
+            this._registry.getDeclaredAnnotations(id),
+          )?.requiresApproval,
+        ),
       );
 
     const aclConfigured = this._acl !== null;
@@ -922,22 +988,21 @@ export class Executor {
     // This used to be called inside the chunk loop, which contradicted the
     // guarantee its own commit message stated.
     const mergeDepthCap = resolveMergeDepth(this._config);
-    // Read the canonical deadline slot written by BuiltinContextCreation
-    // (ms-since-epoch). The earlier `pipeCtx.context.globalDeadline` read was
-    // always null in the executor pipeline path because that field is a
-    // separate context attribute that the pipeline never populates — and the
-    // subsequent `Date.now() / 1000` divisor pretended the value was epoch
-    // seconds. (sync finding A-D-202.)
-    const globalDeadline =
-      (pipeCtx.context?.data?.[CTX_GLOBAL_DEADLINE] as number | undefined) ?? null;
+    // Read the first-class `Context.globalDeadline` field, which
+    // `BuiltinContextCreation` now stamps onto the context derived for this
+    // call (spec v1.50.0 D-99 / D-100). The previous private `data` slot is
+    // gone: `data` is caller-visible, caller-writable and shared by reference
+    // with child contexts, and keeping the budget there left the documented
+    // `Context.create` parameter unreadable by the pipeline.
+    const globalDeadline = pipeCtx.context?.globalDeadline ?? null;
     let chunkIndex = 0;
     try {
       for await (const chunk of outputStream) {
         // Enforce global_deadline between chunks — matches apcore-python
-        // executor.py:872-879 (sync finding A-D-014). The slot is stored as
-        // ms-since-epoch (Date.now() + globalTimeout in BuiltinContextCreation),
-        // so compare against Date.now() directly.
-        if (globalDeadline !== null && Date.now() > globalDeadline) {
+        // executor.py:872-879 (sync finding A-D-014). D-99: the deadline is
+        // epoch SECONDS, so the wall clock is scaled to match rather than the
+        // deadline being read as milliseconds.
+        if (globalDeadline !== null && Date.now() / 1000 > globalDeadline) {
           throw new ModuleTimeoutError(moduleId, 0);
         }
         // Enforce stream-chunk shape BEFORE merge and BEFORE yield (D10-001 /
@@ -1003,14 +1068,24 @@ export class Executor {
       try {
         await this._pipelineEngine.run(postStrategy, pipeCtx);
       } catch (exc) {
-        if (exc instanceof ExecutionCancelledError) throw exc;
         // Chunks are already delivered to the caller and cannot be recalled.
         // Swallow the phase-3 error and log a warning — matches apcore-python
         // executor.py which emits an ApCoreEvent("apcore.stream.post_validation_failed")
         // and does NOT re-raise (sync finding A-D-012 / A-D-006).
+        //
+        // STR-4 / CAN-002: cancellation is the ONE exception (D-20 — a
+        // cancellation must never be swallowed), and the check has to run on
+        // the UNWRAPPED error. The engine wraps every step failure in
+        // `PipelineStepError` (pipeline.ts:1109), so an
+        // `ExecutionCancelledError` raised inside a phase-3 step arrived here
+        // already wrapped and the guard — which used to sit above this unwrap
+        // — never matched. The one error that must always reach the caller was
+        // being swallowed with all the others, invisibly, because the guard
+        // that says otherwise was still right there in the source.
         const ctxObj = pipeCtx.context;
         const unwrappedPost =
           exc instanceof PipelineStepError ? (exc.cause instanceof Error ? exc.cause : exc) : exc;
+        if (unwrappedPost instanceof ExecutionCancelledError) throw unwrappedPost;
         const wrapped = propagateError(unwrappedPost as Error, moduleId, ctxObj);
         // A-D-006: when an EventEmitter is wired, emit the post-validation-failed
         // event so observers/trace exporters surface the failure (mirrors
@@ -1152,6 +1227,17 @@ export class Executor {
     let requiresApproval = false;
     if (pipeCtx.module != null) {
       const mod = pipeCtx.module as Record<string, unknown>;
+      // §7.9.5 binds this to the verdict the Step-5 gate will enforce, so it
+      // MUST read the same governance source: the D-96 union of the live
+      // instance and the registry's DECLARED annotations. Reading the instance
+      // alone reported "no approval needed" for a requirement an operator
+      // declared in a `*_meta.yaml` / `metadata` source — and the gate, now
+      // reading the union, would stop the call the preflight waved through.
+      // That disagreement is the one thing this method exists to prevent.
+      const governance = governanceUnion(
+        mod['annotations'],
+        this._registry.getDeclaredAnnotations(moduleId),
+      );
       if (this._policy !== null) {
         // Policy overrides win over declared annotations (apcore#76), so
         // preflight reports the same verdict the gate will enforce.
@@ -1161,14 +1247,14 @@ export class Executor {
         // inside Step 5. Leaving it in place puts a token into the audit trail
         // and the apcore.policy.override payload.
         const { _approval_token: _policyToken, ...policyArguments } = effectiveInputs;
-        requiresApproval = this._policy.resolve(moduleId, mod['annotations'], {
+        requiresApproval = this._policy.resolve(moduleId, governance, {
           // §7.9.6: preflight resolves against the same call site the gate
           // will see, so the reported verdict matches the enforced one.
           arguments: policyArguments,
           context: validateCtx,
         }).needsApproval;
       } else {
-        requiresApproval = this._needsApproval(mod);
+        requiresApproval = Boolean(governance?.requiresApproval);
       }
     }
     // §7.9.5 — report the GOVERNANCE-effective requirement, the union of §6.9
@@ -1312,6 +1398,18 @@ export class Executor {
     if (!moduleId || !MODULE_ID_PATTERN.test(moduleId)) {
       throw new InvalidInputError(
         `Invalid module ID: '${moduleId}'. Must match pattern: ${MODULE_ID_PATTERN.source}`,
+        undefined,
+        ErrorCodes.INVALID_MODULE_ID,
+      );
+    }
+    // The length bound is part of this entry guard, not only of the registry:
+    // core-executor.md "Contract: Executor.call" requires empty / over-length /
+    // malformed IDs to be rejected *before* the PipelineContext is constructed.
+    // Enforcing it in the registry alone let a 300-character well-formed ID
+    // build a context and come back as MODULE_NOT_FOUND (spec v1.49.0, D-75).
+    if (moduleId.length > MAX_MODULE_ID_LENGTH) {
+      throw new InvalidInputError(
+        `Module ID exceeds maximum length of ${MAX_MODULE_ID_LENGTH}: ${moduleId.length}`,
         undefined,
         ErrorCodes.INVALID_MODULE_ID,
       );

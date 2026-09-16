@@ -4,8 +4,9 @@
 
 import * as fs from 'node:fs';
 import type { ApCoreEvent, EventSubscriber } from './emitter.js';
-import { DEFAULT_RETRY, fnmatch } from './retry.js';
+import { DEFAULT_RETRY } from './retry.js';
 import type { RetryConfig } from './retry.js';
+import { matchGlob } from '../utils/pattern.js';
 
 const SEVERITY_ORDER: Record<string, number> = { info: 0, warn: 1, error: 2, fatal: 3 };
 
@@ -369,10 +370,10 @@ export class FilterSubscriber implements EventSubscriber {
 
   private _matches(eventType: string): boolean {
     if (this._includeEvents !== null) {
-      return this._includeEvents.some((pattern) => fnmatch(eventType, pattern));
+      return this._includeEvents.some((pattern) => matchGlob(pattern, eventType));
     }
     if (this._excludeEvents !== null) {
-      return !this._excludeEvents.some((pattern) => fnmatch(eventType, pattern));
+      return !this._excludeEvents.some((pattern) => matchGlob(pattern, eventType));
     }
     return true;
   }

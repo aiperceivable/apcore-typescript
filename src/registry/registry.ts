@@ -19,6 +19,7 @@ import { detectIdConflicts } from './conflicts.js';
 import { resolveDependencies } from './dependencies.js';
 import { resolveEntryPoint } from './entry-point.js';
 import { mergeModuleMetadata, parseDependencies } from './metadata-pure.js';
+import { governanceUnion } from '../schema/annotations.js';
 import { _discoverMultiClass } from './multi-class.js';
 import { getSchema } from './schema-export.js';
 import { toStrictSchema } from '../schema/strict.js';
@@ -110,10 +111,18 @@ function warnMultiClassEnabledDeprecated(): void {
 
 /**
  * Standard registry event names.
+ *
+ * The set is **closed** (spec v1.49.0, D-80): `on`/`off` reject anything outside
+ * it, and — the half that was missing here — an implementation MUST accept every
+ * name it can itself emit. `file_changed` is emitted by {@link Registry.watch},
+ * which is notify-only in this SDK, so it belongs in the set; while it was
+ * absent, `on("file_changed", ...)` threw and every hot-reload notification was
+ * fired into an empty callback list.
  */
 export const REGISTRY_EVENTS = Object.freeze({
   REGISTER: "register",
   UNREGISTER: "unregister",
+  FILE_CHANGED: "file_changed",
 } as const);
 
 /**
@@ -231,6 +240,14 @@ export interface ModuleValidator {
   validate(module: unknown): string[] | Promise<string[]>;
 }
 
+/**
+ * Registry event callback.
+ *
+ * The second argument is the module instance for `register` / `unregister`. For
+ * `file_changed` it is the change payload (`{ filePath }`) — no module instance
+ * exists, because the whole point of that event is that this SDK's notify-only
+ * `watch()` did not construct one (spec v1.49.0, D-80).
+ */
 type EventCallback = (moduleId: string, module: unknown) => void;
 
 /** First non-empty `dependencies` list among the merged views. */
@@ -333,6 +350,7 @@ export class Registry {
   private _callbacks: Map<string, EventCallback[]> = new Map([
     [REGISTRY_EVENTS.REGISTER, []],
     [REGISTRY_EVENTS.UNREGISTER, []],
+    [REGISTRY_EVENTS.FILE_CHANGED, []],
   ]);
   private _idMap: Record<string, Record<string, unknown>> = {};
   private _lowercaseMap: Map<string, string> = new Map();
@@ -344,6 +362,16 @@ export class Registry {
   private _customValidator: ModuleValidator | null = null;
   private _idMapPath: string | null = null;
   private _idMapLoaded = false;
+
+  /**
+   * `<moduleId>@<version>` keys already warned about by
+   * {@link _warnModuleDeprecated}. `getDefinition` is a read that callers
+   * make repeatedly, so the notice is emitted once per module version per
+   * registry rather than once per call — apcore-python routes its warning
+   * through `logger.warning`, which a host filters by level; `console.warn`
+   * has no such control.
+   */
+  private _deprecationWarned: Set<string> = new Set();
 
   // Safe hot-reload state (F09 / Algorithm A21)
   private _refCounts: Map<string, number> = new Map();
@@ -874,7 +902,7 @@ export class Registry {
     // agent-synthesized code; we soft-warn but never refuse.
     const ephemeral = isEphemeralModuleId(moduleId);
     if (ephemeral) {
-      this._warnIfMissingApproval(moduleId, module);
+      this._warnIfMissingApproval(moduleId, module, metadata);
     }
 
     // 2. Module-structure validation (sync — preserves .toThrow() compat).
@@ -885,37 +913,23 @@ export class Registry {
     // declaring `streaming: true` without `stream()` reported
     // DuplicateModuleIdError in TypeScript where Python and Rust report
     // StreamingInterfaceError.
-    const modForStreaming = module as Record<string, unknown>;
-    const annForStreaming = modForStreaming['annotations'];
-    if (annForStreaming != null && typeof annForStreaming === 'object') {
-      const streamingFlag = (annForStreaming as Record<string, unknown>)['streaming'];
-      if (streamingFlag === true) {
-        const hasStreamMethod = typeof modForStreaming['stream'] === 'function';
-        const hasMarker = (modForStreaming as unknown as Record<symbol, unknown>)[Symbol.for('apcore.streaming')] === true;
-        if (!isStreamingModule(module as unknown as import('../module.js').Module)) {
-          throw new StreamingInterfaceError(moduleId, true, hasStreamMethod, hasMarker);
-        }
-      }
-    }
+    this._assertStreamingInterface(moduleId, module);
 
-    // 3. Duplicate detection (sync — preserves backward compat with `.toThrow()` tests)
-    const conflict = detectIdConflicts(
-      moduleId,
-      new Set([...this._modules.keys(), ...this._inFlight.keys()]),
-      RESERVED_WORDS,
-      this._lowercaseMap,
-    );
-    if (conflict !== null) {
-      if (conflict.severity === 'error') {
-        if (conflict.type === 'duplicate_id') {
-          throw new DuplicateModuleIdError(moduleId);
-        }
-        throw new InvalidInputError(conflict.message);
-      }
-      console.warn(`[apcore:registry] ID conflict: ${conflict.message}`);
-    }
-
-    // 4. Custom validator (may be async)
+    // 3. Custom validator (may be async).
+    //
+    // Runs BEFORE duplicate detection, matching apcore-python
+    // (registry.py:1305) and apcore-rust (registry.rs:1094). With the order
+    // inverted, `setValidator(v)` rejecting a module and then
+    // `register(existingId, module)` reported DuplicateModuleIdError here
+    // where Python reported InvalidInputError and Rust ModuleLoadError —
+    // three codes for one call — and a stateful validator was invoked on
+    // Python/Rust but skipped here.
+    //
+    // The duplicate check below stays SYNCHRONOUS for the no-validator and
+    // sync-validator cases, which is what the `.toThrow()` callers depend on.
+    // Only an async validator defers it into the returned Promise, and that
+    // path already deferred everything after it (including onLoad failures),
+    // so no caller that throws synchronously today stops doing so.
     if (this._customValidator !== null) {
       const result = this._customValidator.validate(module);
       if (result instanceof Promise) {
@@ -923,6 +937,7 @@ export class Registry {
           if (errors.length > 0) {
             throw new InvalidInputError(`Custom validator rejected module '${moduleId}': ${errors.join('; ')}`);
           }
+          this._assertNoIdConflict(moduleId);
           return this._registerWithOnLoad(moduleId, module, version, metadata, options, ephemeral);
         });
       }
@@ -931,7 +946,35 @@ export class Registry {
       }
     }
 
+    // 4. Duplicate detection (sync — preserves backward compat with `.toThrow()` tests)
+    this._assertNoIdConflict(moduleId);
+
     return this._registerWithOnLoad(moduleId, module, version, metadata, options, ephemeral);
+  }
+
+  /**
+   * Algorithm A03 conflict detection for the public `register()` path.
+   *
+   * Extracted so the sync and async-validator branches run the identical
+   * check: the duplicate set is `_modules ∪ _inFlight` (the reservation rule),
+   * and a `duplicate_id` conflict is reported as DuplicateModuleIdError while
+   * every other error-severity conflict is InvalidInputError.
+   */
+  private _assertNoIdConflict(moduleId: string): void {
+    const conflict = detectIdConflicts(
+      moduleId,
+      new Set([...this._modules.keys(), ...this._inFlight.keys()]),
+      RESERVED_WORDS,
+      this._lowercaseMap,
+    );
+    if (conflict === null) return;
+    if (conflict.severity === 'error') {
+      if (conflict.type === 'duplicate_id') {
+        throw new DuplicateModuleIdError(moduleId);
+      }
+      throw new InvalidInputError(conflict.message);
+    }
+    console.warn(`[apcore:registry] ID conflict: ${conflict.message}`);
   }
 
   /**
@@ -1078,18 +1121,7 @@ export class Registry {
 
     // Streaming annotation validation: if module declares streaming=true it must
     // implement the StreamingModule interface (has stream() + STREAMING_MARKER).
-    const modForStreaming = module as Record<string, unknown>;
-    const annForStreaming = modForStreaming['annotations'];
-    if (annForStreaming != null && typeof annForStreaming === 'object') {
-      const streamingFlag = (annForStreaming as Record<string, unknown>)['streaming'];
-      if (streamingFlag === true) {
-        const hasStreamMethod = typeof modForStreaming['stream'] === 'function';
-        const hasMarker = (modForStreaming as unknown as Record<symbol, unknown>)[Symbol.for('apcore.streaming')] === true;
-        if (!isStreamingModule(module as unknown as import('../module.js').Module)) {
-          throw new StreamingInterfaceError(moduleId, true, hasStreamMethod, hasMarker);
-        }
-      }
-    }
+    this._assertStreamingInterface(moduleId, module);
 
     // A-D-REG-003 / spec REG-003: deferred-publish for the discover path.
     // Reserve the slot in metadata + lowercase index (for conflict detection)
@@ -1101,6 +1133,21 @@ export class Registry {
     this._moduleMeta.set(moduleId, mergeModuleMetadata(modObj, metadataOverrides));
     this._lowercaseMap.set(moduleId.toLowerCase(), moduleId);
 
+    // Reserve the ID for the whole of onLoad so a re-entrant registration sees
+    // it as taken, exactly as `register()` (A-D-013), `_registerInOrder` and
+    // `registerInternal` (A-D-001) already do. This path was the one
+    // registration path that never reserved: `register()` computes its
+    // duplicate set as `_modules ∪ _inFlight`, so while a custom discoverer's
+    // module ran its sync onLoad the ID was in neither set. A re-entrant
+    // `register('<its own id>', otherModule)` was therefore accepted,
+    // published `otherModule` and fired a `register` event — and the
+    // `this._modules.set(moduleId, module)` below then overwrote it
+    // last-writer-wins, orphaning `otherModule` with its onLoad already run,
+    // its register event already delivered and its onUnload permanently
+    // unreachable. registry-system.md: "SDKs MUST NOT create per-path
+    // exceptions". Released on every exit path below.
+    this._inFlight.set(moduleId, Promise.resolve());
+
     // Call onLoad if available (sync only in this discover() path)
     if (typeof modObj['onLoad'] === 'function') {
       let onLoadResult: unknown;
@@ -1109,6 +1156,7 @@ export class Registry {
       } catch (e) {
         // Rollback the reservation: nothing was published, so observers
         // never saw the module.
+        this._inFlight.delete(moduleId);
         this._moduleMeta.delete(moduleId);
         this._lowercaseMap.delete(moduleId.toLowerCase());
         this._emitModuleLoadFailed(moduleId, e);
@@ -1121,6 +1169,7 @@ export class Registry {
           `[apcore:registry] Module '${moduleId}' has async onLoad in discover() path ` +
           `— async onLoad is not supported here; use Registry.register() instead. Module skipped.`,
         );
+        this._inFlight.delete(moduleId);
         this._moduleMeta.delete(moduleId);
         this._lowercaseMap.delete(moduleId.toLowerCase());
         onLoadResult.catch(() => {}); // prevent unhandled rejection
@@ -1128,7 +1177,10 @@ export class Registry {
       }
     }
 
-    // onLoad succeeded — now commit the module to the visible map.
+    // onLoad succeeded — now commit the module to the visible map. The
+    // in-flight reservation is released first so the publish below is the
+    // single source of truth for the ID.
+    this._inFlight.delete(moduleId);
     this._modules.set(moduleId, module);
 
     this._triggerEvent(REGISTRY_EVENTS.REGISTER, moduleId, module);
@@ -1351,6 +1403,32 @@ export class Registry {
     return { ...(this._moduleMeta.get(moduleId) ?? {}) };
   }
 
+  /**
+   * Return the merged (descriptor) annotations for a module, or `null`.
+   *
+   * The SECOND governance source PROTOCOL_SPEC §7.4 (D-96) unions with the live
+   * module instance. It is not a duplicate of the instance's own `annotations`:
+   * `mergeModuleMetadata` folds a `*_meta.yaml` / `metadata` declaration into
+   * this slot with YAML > code precedence, so an operator can declare
+   * governance HERE that the instance never carries.
+   *
+   * Reading it is what closes a bypass: before this existed, a metadata source
+   * declaring `requires_approval: true` reached `getDefinition()` and the
+   * manifest, and reached no gate — the module executed ungated with an
+   * approval handler configured.
+   *
+   * Cheap by design: one map read, because the approval gate consults it on
+   * every call. Callers union it with the instance's annotations via
+   * `governanceUnion`; they MUST NOT use it alone, since the merge's
+   * YAML > code precedence would let a metadata `false` cancel a module that
+   * asks to be gated.
+   */
+  getDeclaredAnnotations(moduleId: string): ModuleAnnotations | null {
+    const meta = this._moduleMeta.get(moduleId);
+    if (meta === undefined) return null;
+    return (meta['annotations'] as ModuleAnnotations | null) ?? null;
+  }
+
   getDefinition(moduleId: string, _versionHint?: string | null): ModuleDescriptor | null {
     // `_versionHint` accepted for cross-language API parity with apcore-python
     // (sync finding A-002 / §5.4). Ignored under the single-version registry;
@@ -1373,6 +1451,23 @@ export class Registry {
     // of the merged metadata payload.
     const meta = this._moduleMeta.get(moduleId) ?? {};
     const mod = module as Record<string, unknown>;
+    const effectiveMetadata = (meta['metadata'] as Record<string, unknown>) ?? {};
+    const version = (meta['version'] as string) ?? '1.0.0';
+
+    // `sunsetDate` is derived from the `x-deprecation` extension block, which
+    // is where a module declares it — `mergeModuleMetadata` never writes a
+    // top-level `sunsetDate` key, so reading one returned null for every
+    // module ever registered and no deprecation notice was ever emitted.
+    // Mirrors apcore-python `Registry.get_definition` /
+    // `_log_deprecation_warning`.
+    const deprecation = effectiveMetadata['x-deprecation'];
+    let sunsetDate: string | null = null;
+    if (deprecation != null && typeof deprecation === 'object') {
+      const dep = deprecation as Record<string, unknown>;
+      const declared = dep['sunset_date'];
+      sunsetDate = typeof declared === 'string' ? declared : null;
+      this._warnModuleDeprecated(moduleId, version, dep);
+    }
 
     return {
       moduleId,
@@ -1381,12 +1476,12 @@ export class Registry {
       documentation: (meta['documentation'] as string | null) ?? null,
       inputSchema: (mod['inputSchema'] as Record<string, unknown>) ?? {},
       outputSchema: (mod['outputSchema'] as Record<string, unknown>) ?? {},
-      version: (meta['version'] as string) ?? '1.0.0',
+      version,
       tags: (meta['tags'] as string[]) ?? [],
       annotations: (meta['annotations'] as ModuleAnnotations | null) ?? null,
       examples: (meta['examples'] as ModuleExample[]) ?? [],
-      metadata: (meta['metadata'] as Record<string, unknown>) ?? {},
-      sunsetDate: (meta['sunsetDate'] as string | null) ?? null,
+      metadata: effectiveMetadata,
+      sunsetDate,
       // Parsed once here so consumers get typed DependencyInfo rather than
       // re-deriving `{module_id, version?, optional?}` from raw JSON at every
       // call site (PROTOCOL_SPEC §12.2; sync finding A-D-004).
@@ -1401,16 +1496,60 @@ export class Registry {
     };
   }
 
+  /**
+   * Warn that a module version is deprecated, once per `<moduleId>@<version>`.
+   *
+   * Message shape mirrors apcore-python `Registry._log_deprecation_warning`
+   * so an operator reading two SDKs' logs sees the same sentence.
+   */
+  private _warnModuleDeprecated(
+    moduleId: string,
+    version: string,
+    deprecation: Record<string, unknown>,
+  ): void {
+    const key = `${moduleId}@${version}`;
+    if (this._deprecationWarned.has(key)) return;
+    this._deprecationWarned.add(key);
+
+    const deprecatedSince = (deprecation['deprecated_since'] as string) ?? 'unknown';
+    const sunsetVersion = (deprecation['sunset_version'] as string) ?? 'unknown';
+    const migrationGuide = (deprecation['migration_guide'] as string) ?? '';
+    let msg =
+      `[apcore:registry] Module '${moduleId}' v${version} is deprecated ` +
+      `(since ${deprecatedSince}, sunset in ${sunsetVersion}).`;
+    if (migrationGuide) {
+      msg += ` Migration: ${migrationGuide}`;
+    }
+    console.warn(msg);
+  }
+
   describe(moduleId: string): string {
     const module = this.get(moduleId);
     if (module === null) {
       throw new ModuleNotFoundError(moduleId);
     }
 
-    // Check for custom describe method
+    // Module-supplied override (spec v1.49.0, D-77 — "Contract: Registry.describe").
+    //
+    // `Module.describe()` is declared as returning a `ModuleDescription` mapping
+    // (possibly a Promise of one), so passing its result straight through a
+    // method this class types as `string` handed callers an object or a Promise
+    // and broke the first `.split('\n')` they wrote. Only a genuine string is
+    // the author's deliberate override; anything else — a structured return, a
+    // Promise this synchronous method cannot resolve, null/undefined — falls
+    // through to the generated envelope. Never stringify the mapping:
+    // `get_definition` is already the structured accessor.
     const modObj = module as Record<string, unknown>;
     if (typeof modObj['describe'] === 'function') {
-      return (modObj['describe'] as () => string)();
+      const result = (modObj['describe'] as () => unknown).call(module);
+      if (typeof result === 'string') {
+        return result;
+      }
+      // A Promise we are about to discard must not become an unhandled
+      // rejection — the caller never had a handle on it to attach one.
+      if (result != null && typeof (result as PromiseLike<unknown>).then === 'function') {
+        void Promise.resolve(result).catch(() => undefined);
+      }
     }
 
     // Auto-generate from descriptor
@@ -1595,7 +1734,7 @@ export class Registry {
     // emitted a 'register' event with a null module, which crashed any
     // consumer that accessed fields on the module argument.
     this._triggerEvent(
-      "file_changed",
+      REGISTRY_EVENTS.FILE_CHANGED,
       moduleId ?? basename(filePath, extname(filePath)),
       { filePath },
     );
@@ -1637,6 +1776,31 @@ export class Registry {
    * Aligned with apcore-python `Registry.register_internal` and apcore-rust
    * `Registry::register_internal`.
    */
+  /**
+   * Refuse a module that declares `streaming: true` without implementing the
+   * streaming interface (a `stream()` method plus the `apcore.streaming`
+   * marker).
+   *
+   * Shared by every registration door. `register()` and the discovery path
+   * `_registerImpl` each had their own copy and `registerInternal` had none
+   * (STR-5), so a sys/internal module could advertise streaming it cannot do
+   * and the failure moved to the first `stream()` call. `registerInternal`'s
+   * own contract is that it "bypasses **only** the reserved word check";
+   * apcore-python's `register_internal` runs this check and apcore-rust's
+   * `register_core` is reached by both doors.
+   */
+  private _assertStreamingInterface(moduleId: string, module: unknown): void {
+    const mod = module as Record<string, unknown>;
+    const ann = mod['annotations'];
+    if (ann == null || typeof ann !== 'object') return;
+    if ((ann as Record<string, unknown>)['streaming'] !== true) return;
+    if (isStreamingModule(module as unknown as import('../module.js').Module)) return;
+    const hasStreamMethod = typeof mod['stream'] === 'function';
+    const hasMarker =
+      (mod as unknown as Record<symbol, unknown>)[Symbol.for('apcore.streaming')] === true;
+    throw new StreamingInterfaceError(moduleId, true, hasStreamMethod, hasMarker);
+  }
+
   registerInternal(moduleId: string, module: unknown): void {
     // RFC `apcore/docs/spec/rfc-ephemeral-modules.md` "register_internal()
     // interaction": ephemeral.* IDs MUST be rejected here. Namespace →
@@ -1652,6 +1816,11 @@ export class Registry {
       );
     }
     validateModuleId(moduleId, true);
+
+    // STR-5: module-structure validation, before duplicate detection — the
+    // order registry-system.md's "Side Effects (ordered)" states and D-86
+    // settles (module_id -> structure/streaming -> validator -> duplicate).
+    this._assertStreamingInterface(moduleId, module);
 
     // D11-007: route duplicate detection through detectIdConflicts (with an
     // empty reserved-words set so the bypass for system.* prefixes is
@@ -1806,8 +1975,10 @@ export class Registry {
       // `multiClass` field is the source of truth. We intentionally ignore
       // `multiClassEnabled` and recompute from the descriptors below.
     }
-    const enabled = classes.some((c) => c.implementsModule && c.multiClass === true);
-    return _discoverMultiClass(filePath, classes, extensionsRoot, enabled);
+    // The free function now resolves the per-class opt-in itself (spec
+    // v1.50.0 D-107), so the boolean is not forwarded — forwarding it would
+    // trip its own deprecation notice on every call through this method.
+    return _discoverMultiClass(filePath, classes, extensionsRoot);
   }
 
   /**
@@ -1957,14 +2128,23 @@ export class Registry {
    * human gates execution. The registry only warns; it does not refuse
    * the registration.
    */
-  private _warnIfMissingApproval(moduleId: string, module: unknown): void {
-    const ann = (module as { annotations?: unknown })?.annotations;
-    let requiresApproval = false;
-    if (ann != null && typeof ann === 'object') {
-      const rec = ann as Record<string, unknown>;
-      requiresApproval = rec['requiresApproval'] === true || rec['requires_approval'] === true;
-    }
-    if (!requiresApproval) {
+  private _warnIfMissingApproval(
+    moduleId: string,
+    module: unknown,
+    metadata?: Record<string, unknown> | null,
+  ): void {
+    // The two sources are unioned (PROTOCOL_SPEC §7.4, D-96) because that is
+    // what the approval gate reads: a requirement declared in the `metadata` /
+    // `*_meta.yaml` source gates the module just as a code-level one does.
+    // Reading the instance alone advised an author to set something they had
+    // already set, in the one place the registry itself records it — an
+    // advisory that fires against correct configuration is one operators learn
+    // to ignore.
+    const effective = governanceUnion(
+      (module as { annotations?: unknown })?.annotations,
+      metadata?.['annotations'],
+    );
+    if (effective === null || !effective.requiresApproval) {
       console.warn(
         `[apcore:registry] ephemeral.* module '${moduleId}' registered without ` +
         `requiresApproval=true. The apcore RFC docs/spec/rfc-ephemeral-modules.md ` +

@@ -6,6 +6,81 @@ import type { Registry } from '../registry/registry.js';
 import type { Config } from '../config.js';
 import { InvalidInputError, ModuleNotFoundError } from '../errors.js';
 import type { ModuleDescriptor } from '../registry/types.js';
+import type { ModuleAnnotations } from '../module.js';
+import { annotationsToJSON } from '../module.js';
+import { governanceUnion } from '../schema/annotations.js';
+
+/**
+ * SYS-5: emit `annotations` in the snake_case WIRE shape.
+ *
+ * The manifest modules used to hand `descriptor.annotations` — the camelCase
+ * `ModuleAnnotations` STRUCT — straight to the caller, so a consumer reading
+ * `requires_approval` / `open_world` / `cache_ttl` off a TypeScript host got
+ * `undefined` where apcore-python and apcore-rust answered. The spec's own
+ * output example (system-modules.md:196-202) is snake_case, and this repo
+ * already exported `annotationsToJSON` for exactly this and never called it.
+ *
+ * A descriptor with no annotations still emits `null`, unchanged: the output
+ * schema and `sys-manifest-module.schema.json` both allow it.
+ */
+/**
+ * Project the annotations an agent will actually be held to.
+ *
+ * The two governance flags come from the D-96 union of the live module instance
+ * and the registry's declared annotations — the same source the approval gate
+ * reads. Everything else is the descriptor's, unchanged.
+ *
+ * The manifest is what an agent reads to decide whether to call a module, so
+ * advertising a governance value the gate does not enforce is worse than
+ * advertising none: the descriptor alone could say `requires_approval: false`
+ * for a module whose instance declares it, and `true` for one the gate lets
+ * straight through.
+ */
+function governanceWire(
+  registry: Registry,
+  moduleId: string,
+  annotations: ModuleAnnotations | null | undefined,
+): Record<string, unknown> | null {
+  const wire = annotationsWire(annotations);
+  if (wire === null) return null;
+  const effective = governanceUnion(
+    (registry.get(moduleId) as Record<string, unknown> | null)?.['annotations'],
+    registry.getDeclaredAnnotations(moduleId),
+  );
+  if (effective !== null) {
+    wire['requires_approval'] = Boolean(effective.requiresApproval);
+    wire['destructive'] = Boolean(effective.destructive);
+  }
+  return wire;
+}
+
+function annotationsWire(
+  annotations: ModuleAnnotations | null | undefined,
+): Record<string, unknown> | null {
+  return annotations == null ? null : annotationsToJSON(annotations);
+}
+
+/**
+ * Emit the descriptor's parsed dependencies in the snake_case wire shape.
+ *
+ * This read `descriptor.metadata['dependencies']`, which was empty in this
+ * SDK for every module — `mergeModuleMetadata` extracts `dependencies` as a
+ * canonical field, so it never appeared under `metadata`. `system.manifest.*`
+ * therefore reported `dependencies: []` for a module that declared them,
+ * while apcore-python reported the real list. Now reads the typed
+ * `descriptor.dependencies` field (sync finding A-D-004).
+ *
+ * Shared by both manifest modules (SYS-8): `sys-manifest-full.schema.json`
+ * `$ref`s `sys-manifest-module.schema.json`, so one emitter is what keeps the
+ * two entry shapes from drifting apart again.
+ */
+function dependenciesWire(descriptor: ModuleDescriptor): unknown[] {
+  return (descriptor.dependencies ?? []).map((d) => ({
+    module_id: d.moduleId,
+    ...(d.version != null ? { version: d.version } : {}),
+    ...(d.optional ? { optional: true } : {}),
+  }));
+}
 
 /** @internal */
 export class ManifestModule {
@@ -65,29 +140,11 @@ export class ManifestModule {
       source_path: sourcePath,
       input_schema: descriptor.inputSchema,
       output_schema: descriptor.outputSchema,
-      annotations: descriptor.annotations,
+      annotations: governanceWire(this._registry, descriptor.moduleId, descriptor.annotations),
       tags: descriptor.tags,
-      dependencies: this._dependenciesWire(descriptor),
+      dependencies: dependenciesWire(descriptor),
       metadata: descriptor.metadata ?? {},
     };
-  }
-
-  /**
-   * Emit the descriptor's parsed dependencies in the snake_case wire shape.
-   *
-   * This read `descriptor.metadata['dependencies']`, which was empty in this
-   * SDK for every module — `mergeModuleMetadata` extracts `dependencies` as a
-   * canonical field, so it never appeared under `metadata`. `system.manifest.*`
-   * therefore reported `dependencies: []` for a module that declared them,
-   * while apcore-python reported the real list. Now reads the typed
-   * `descriptor.dependencies` field (sync finding A-D-004).
-   */
-  private _dependenciesWire(descriptor: ModuleDescriptor): unknown[] {
-    return (descriptor.dependencies ?? []).map((d) => ({
-      module_id: d.moduleId,
-      ...(d.version != null ? { version: d.version } : {}),
-      ...(d.optional ? { optional: true } : {}),
-    }));
   }
 
   private _computeSourcePath(moduleId: string): string | null {
@@ -154,8 +211,13 @@ export class ManifestFullModule {
         source_path: sourcePath,
         input_schema: includeSchemas ? descriptor.inputSchema : null,
         output_schema: includeSchemas ? descriptor.outputSchema : null,
-        annotations: descriptor.annotations,
+        annotations: governanceWire(this._registry, descriptor.moduleId, descriptor.annotations),
         tags: descriptor.tags,
+        // SYS-8: `dependencies` was emitted by `manifest.module` and omitted
+        // here, but `sys-manifest-full.schema.json` `$ref`s
+        // `sys-manifest-module.schema.json` — one entry shape, so a consumer
+        // written against either must be able to read both.
+        dependencies: dependenciesWire(descriptor),
         metadata: descriptor.metadata ?? {},
       });
     }

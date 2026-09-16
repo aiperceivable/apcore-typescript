@@ -14,7 +14,7 @@ import { Value } from '@sinclair/typebox/value';
 import { Executor } from '../src/executor.js';
 import { FunctionModule } from '../src/decorator.js';
 import { Registry } from '../src/registry/registry.js';
-import { TChange } from '../src/module.js';
+import { TChange, TPreviewResult } from '../src/module.js';
 import type {
   Change,
   Module,
@@ -284,5 +284,53 @@ describe('Module.preview() / PreflightResult.predictedChanges', () => {
       random_key: 'no',
     };
     expect(Value.Check(TChange, bogus)).toBe(false);
+  });
+
+  it('validates a whole PreviewResult envelope against TPreviewResult', async () => {
+    // TPreviewResult is the wire-format schema for the public `PreviewResult`
+    // type — the envelope around TChange. It is exercised the same way its
+    // sibling is: a positive case that starts from a real preview() payload
+    // as it leaves Executor.validate(), plus the negative cases that show the
+    // envelope is actually checked rather than merely present.
+    const mod: Module = {
+      inputSchema,
+      outputSchema,
+      description: 'Preview envelope validated against TPreviewResult',
+      execute: () => ({ ok: true }),
+      preview: (): PreviewResult => ({
+        changes: [
+          { action: 'write', target: 'row:1', summary: 'update row', 'x-confidence': 0.5 },
+          { action: 'delete', target: 'row:2', summary: 'drop row', before: { v: 1 }, after: null },
+        ],
+      }),
+    };
+    const executor = buildExecutor('preview.envelope', mod);
+    const result = await executor.validate('preview.envelope', { id: 'x' });
+
+    // 1. Positive: the envelope carrying the changes that survived
+    //    Executor.validate() checks clean, x-* keys and all.
+    const envelope: PreviewResult = { changes: result.predictedChanges as Change[] };
+    expect(Value.Check(TPreviewResult, envelope)).toBe(true);
+
+    // 2. Positive: an empty changes list is a valid prediction ("nothing
+    //    would change"), not a malformed envelope.
+    expect(Value.Check(TPreviewResult, { changes: [] })).toBe(true);
+
+    // 3. Negative: `changes` is required.
+    expect(Value.Check(TPreviewResult, {})).toBe(false);
+
+    // 4. Negative: `changes` must be an array, not a bare Change.
+    expect(
+      Value.Check(TPreviewResult, {
+        changes: { action: 'a', target: 't', summary: 's' },
+      }),
+    ).toBe(false);
+
+    // 5. Negative: the element schema is enforced through the envelope — a
+    //    change missing `summary` fails, so TPreviewResult is not merely
+    //    checking that `changes` holds objects.
+    expect(
+      Value.Check(TPreviewResult, { changes: [{ action: 'a', target: 't' }] }),
+    ).toBe(false);
   });
 });
