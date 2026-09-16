@@ -8,6 +8,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Deprecated
+
+- **`Registry.get(moduleId, versionHint)` — the version hint is ignored and will be removed at 2.0**
+  (spec v1.55.0, D-126). This SDK does not implement §5.4 multi-version coexistence: `register`
+  refuses a second registration of the same `module_id`, so only one version can ever be present and
+  there is nothing to resolve against. The parameter was accepted and discarded — `_versionHint`
+  appeared exactly once in the source, in the signature. It is **inert**, not wrong: the single
+  registered module is returned either way, and that is unchanged. But a caller writing
+  `get(id, '1.0.0')` believes it has pinned a version and has not, which is the §9.1.3 shape the spec
+  forbids for configuration keys — a declared surface that reaches no mechanism — applied to a method
+  parameter. apcore-rust makes the same refusal at compile time (`get(&self, name)` takes no hint);
+  apcore-python is the only SDK that resolves. Passing a hint now warns once per module ID per
+  registry instance (D-89's cadence — `get` is a read hosts call in loops). Deprecated rather than
+  removed, following D-121: removal is a compile error for every caller that passes one, and the
+  warning carries the same information without breaking the build.
+
+  *Found by verifying the spec's inaction-licensing claims about other SDKs, the sweep that also
+  produced D-125.*
+
 ### Tests
 
 - **`shutdown()`'s best-effort cancellation is now pinned** (spec v1.52.0 [D-122], async-tasks.md).

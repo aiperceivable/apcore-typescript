@@ -1237,9 +1237,43 @@ export class Registry {
    *   regardless of the hint. When multi-version registration lands, this
    *   parameter will gate semver-range matching.
    */
-  get(moduleId: string, _versionHint?: string | null): unknown | null {
+  get(moduleId: string, versionHint?: string | null): unknown | null {
     if (moduleId === '') {
       throw new ModuleNotFoundError('');
+    }
+    // DEPRECATED (spec v1.55.0, D-126): `versionHint` is accepted and does
+    // nothing. This SDK does not implement §5.4 multi-version coexistence --
+    // `register` rejects a second registration of the same module_id with
+    // `DuplicateModuleIdError` -- so only one version can ever be present and
+    // there is nothing to resolve against. The parameter is INERT, not wrong:
+    // the single registered module is returned either way.
+    //
+    // It is still the §9.1.3 shape the spec forbids for configuration keys, a
+    // declared surface that reaches no mechanism, applied to a method
+    // parameter. A caller writing `get(id, '1.0.0')` believes it has pinned a
+    // version and has not. apcore-rust makes the same refusal at compile time
+    // (`get(&self, name)` takes no hint at all), which is the honest end of
+    // this spectrum; apcore-python is the only SDK that resolves.
+    //
+    // Deprecated rather than removed, following D-121: removing it now is a
+    // compile error for every caller that passes one, and the warning gets
+    // them the same information without breaking the build. Removal at 2.0.
+    //
+    // Warned once per module ID per registry instance (D-89 cadence): `get` is
+    // a read that hosts call in loops, and an advisory whose volume is
+    // proportional to traffic is one operators learn to filter out.
+    if (versionHint != null && versionHint !== '') {
+      const key = `version-hint:${moduleId}`;
+      if (!this._deprecationWarned.has(key)) {
+        this._deprecationWarned.add(key);
+        console.warn(
+          `[apcore:registry] get('${moduleId}', '${versionHint}'): the version hint is ` +
+          `ignored by this SDK and will be removed at 2.0 (spec D-126). ` +
+          `Multi-version coexistence (spec §5.4) is optional and not implemented here, ` +
+          `so the single registered module is returned regardless of the hint. ` +
+          `Drop the argument, or use apcore-python if you need version resolution.`,
+        );
+      }
     }
     // In-flight modules are not yet visible — spec #65: module MUST NOT be
     // observable via get() until onLoad completes. Cross-SDK canonical
