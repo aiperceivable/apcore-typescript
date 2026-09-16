@@ -2741,9 +2741,12 @@ describe('apcore Conformance Suite (TypeScript)', () => {
       const results = await store.list(tc.status_filter as TaskStatus);
       expect(results.length).toBe(tc.expected.count);
       const ids = results.map(t => t.taskId);
-      for (const expectedId of tc.expected.task_ids) {
-        expect(ids).toContain(expectedId);
-      }
+      // D-82: insertion order is normative, so compare the list AS ORDERED.
+      // This used to loop `expect(ids).toContain(expectedId)`, which asserts the
+      // order away by construction — the case could not have caught a reordering
+      // no matter how many tasks it seeded, and apcore-rust was the only driver
+      // of the three actually enforcing the decision.
+      expect(ids).toEqual(tc.expected.task_ids);
     });
 
     // --- 5. retry_scheduled_on_failure ---
