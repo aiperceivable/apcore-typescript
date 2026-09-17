@@ -919,6 +919,26 @@ describe('apcore Conformance Suite (TypeScript)', () => {
   describe('Annotations Extra Round-trip', () => {
     annotationsFixture.test_cases.forEach((tc: any) => {
       it(tc.id, () => {
+        // D-115: the malformed-value cases assert that the REST survives, which
+        // `expected_deserialized_extra` alone cannot say — an SDK that rejected
+        // the whole descriptor never reaches the assertion, and one that dropped
+        // everything would satisfy it.
+        if (tc.expected_survivors) {
+          const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+          const ann = annotationsFromJSON(tc.input_serialized) as unknown as Record<
+            string,
+            unknown
+          >;
+          const warned = warn.mock.calls.length > 0;
+          warn.mockRestore();
+          expect(ann['extra']).toEqual(tc.expected_deserialized_extra);
+          for (const [wireKey, want] of Object.entries(tc.expected_survivors)) {
+            const field = wireKey === 'cache_ttl' ? 'cacheTtl' : wireKey;
+            expect(ann[field]).toEqual(want);
+          }
+          if (tc.expected_warning === false) expect(warned).toBe(false);
+          return;
+        }
         if (tc.id === 'deserialize_legacy_flattened_form' || tc.id === 'nested_takes_precedence_over_flattened') {
           // Deserialize from wire format (may include legacy flattened keys)
           const ann = annotationsFromJSON(tc.input_serialized);

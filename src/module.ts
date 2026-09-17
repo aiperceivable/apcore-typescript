@@ -129,14 +129,41 @@ export function annotationsToJSON(a: ModuleAnnotations): Record<string, unknown>
  *   overflow key, the nested value wins (§4.4.1 rule 7).
  */
 export function annotationsFromJSON(data: Record<string, unknown>): ModuleAnnotations {
-  const explicitExtra = (data['extra'] as Record<string, unknown>) ?? {};
+  // D-115: `extra` is declared an object; a scalar there is neither an object
+  // nor a reason to discard the module. Dropped with a warning. This is the
+  // SECOND door into an annotations value — `mergeAnnotations` is the other —
+  // and tolerance living in one of two doors is exactly the shape the decision
+  // was recorded from: apcore-python's `from_dict` coerced while its merge path
+  // raised, which is why the status quo said "coerced" and the registration
+  // path rejected.
+  const rawExtra = data['extra'];
+  if (rawExtra !== undefined && rawExtra !== null &&
+      (typeof rawExtra !== 'object' || Array.isArray(rawExtra))) {
+    console.warn(
+      `[apcore:annotations] ModuleAnnotations.extra must be an object, got ` +
+        `${Array.isArray(rawExtra) ? 'array' : typeof rawExtra}; dropping it (D-115).`,
+    );
+  }
+  const explicitExtra =
+    rawExtra !== undefined && rawExtra !== null && typeof rawExtra === 'object' &&
+    !Array.isArray(rawExtra)
+      ? (rawExtra as Record<string, unknown>)
+      : {};
   const overflow: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(data)) {
     if (!KNOWN_WIRE_KEYS.has(k)) overflow[k] = v;
   }
 
   let cacheTtl = (data['cache_ttl'] as number) ?? 0;
-  if (cacheTtl < 0) {
+  if (typeof cacheTtl !== 'number' || !Number.isInteger(cacheTtl)) {
+    // D-115: dropped rather than rejected — one bad value must not remove an
+    // entire module.
+    console.warn(
+      `[apcore:annotations] cache_ttl must be an integer, got ${typeof cacheTtl}; ` +
+        `dropping it (D-115).`,
+    );
+    cacheTtl = 0;
+  } else if (cacheTtl < 0) {
     console.warn(`[apcore:annotations] cache_ttl ${cacheTtl} is negative, clamping to 0`);
     cacheTtl = 0;
   }

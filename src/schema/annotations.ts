@@ -155,7 +155,46 @@ export function mergeAnnotations(
     Object.assign(values, camelOnly, wire);
   }
 
-  return values as unknown as ModuleAnnotations;
+  return sanitizeAnnotationValues(values) as unknown as ModuleAnnotations;
+}
+
+/**
+ * D-115: a malformed annotation value is TOLERATED and dropped, the rest
+ * survives, and it warns.
+ *
+ * `extra` is declared an object; a string there is neither an object nor a
+ * reason to discard the module. Keeping the string is worse than lenient — it
+ * then reads as a real declaration to everything downstream, which is invented
+ * data indistinguishable from a declaration the author actually wrote. And
+ * `cacheTtl: -5` silently survived, so a negative TTL reached the cache layer.
+ *
+ * Applied at the single point every merge returns through, rather than at each
+ * caller: the same value arriving by a second door is how this kind of
+ * tolerance ends up existing in one path and not the other.
+ */
+function sanitizeAnnotationValues(values: Record<string, unknown>): Record<string, unknown> {
+  const extra = values['extra'];
+  if (extra !== undefined && (typeof extra !== 'object' || extra === null || Array.isArray(extra))) {
+    console.warn(
+      `[apcore:annotations] ModuleAnnotations.extra must be an object, got ` +
+        `${Array.isArray(extra) ? 'array' : typeof extra}; dropping it (D-115).`,
+    );
+    values['extra'] = {};
+  }
+  const ttl = values['cacheTtl'];
+  if (typeof ttl !== 'number' || !Number.isInteger(ttl)) {
+    if (ttl !== undefined) {
+      console.warn(
+        `[apcore:annotations] cacheTtl must be an integer, got ${typeof ttl}; ` +
+          `dropping it (D-115).`,
+      );
+    }
+    values['cacheTtl'] = 0;
+  } else if (ttl < 0) {
+    console.warn(`[apcore:annotations] cacheTtl ${ttl} is negative, clamping to 0 (D-115).`);
+    values['cacheTtl'] = 0;
+  }
+  return values;
 }
 
 export function mergeExamples(

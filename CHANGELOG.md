@@ -47,6 +47,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A malformed annotation value is dropped rather than kept or ignored (spec v1.51.0, D-115).**
+  A string in `extra` survived as a string — worse than lenient, because it then reads as a real
+  declaration to everything downstream — and `cacheTtl: -5` reached the cache layer unclamped.
+  Both are now dropped with a warning, in `mergeAnnotations` AND `annotationsFromJSON`: the
+  conformance case caught the second door after the first was fixed, which is the same
+  one-door-of-two shape that made this decision's status quo wrong about apcore-python.
+
 - **`system.manifest.full` reports `project_name: "apcore"` when unconfigured (spec v1.51.0,
   D-110).** It returned `""` while `system.health.summary` already returned `"apcore"` in the same
   process — two system modules disagreeing about the same fact, which is what the decision was
