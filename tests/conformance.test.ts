@@ -104,6 +104,9 @@ import {
 import type { TaskStore } from '../src/async-task.js';
 import { Executor } from '../src/executor.js';
 import { Registry } from '../src/registry/registry.js';
+import { APCore } from '../src/client.js';
+import { ManifestFullModule } from '../src/sys-modules/manifest.js';
+import { HealthSummaryModule } from '../src/sys-modules/health.js';
 import { FunctionModule } from '../src/decorator.js';
 import { Type } from '@sinclair/typebox';
 import { ModuleError } from '../src/errors.js';
@@ -2980,6 +2983,9 @@ describe('apcore Conformance Suite (TypeScript)', () => {
     'startup_fail_on_error_false_continues',
     'rust_register_returns_result',
     'reload_order_is_topological_not_alphabetical',
+    'manifest_full_project_name_defaults_to_apcore',
+    'health_summary_project_name_agrees_with_manifest_full',
+    'system_modules_declare_open_world_false',
   ];
 
   describe('System Modules Hardening (Issue #45)', () => {
@@ -3454,6 +3460,66 @@ describe('apcore Conformance Suite (TypeScript)', () => {
       if (expected['orders_differ']) {
         expect(unregisterOrder).not.toEqual(alphabetical);
       }
+    });
+
+    // --- 12-14. D-110 / D-119 ---
+    //
+    // Both are v1.51.0 policy decisions: the spec was silent and each SDK had
+    // answered reasonably, so these are written from the fixture rather than
+    // from what any implementation happens to do.
+    it('manifest_full_project_name_defaults_to_apcore', async () => {
+      const tc = sysHardeningFixture.test_cases.find(
+        (t: any) => t.id === 'manifest_full_project_name_defaults_to_apcore',
+      );
+      const mod = new ManifestFullModule(new Registry(), new Config({}));
+      const out = (await (mod as any).execute({}, null)) as Record<string, unknown>;
+      expect(out['project_name']).toBe(tc.expected.project_name);
+    });
+
+    it('health_summary_project_name_agrees_with_manifest_full', async () => {
+      // The pairing IS the decision: `manifest.full` alone could be satisfied
+      // while the two system modules still disagreed, which is the state D-110
+      // exists to remove.
+      const tc = sysHardeningFixture.test_cases.find(
+        (t: any) => t.id === 'health_summary_project_name_agrees_with_manifest_full',
+      );
+      const registry = new Registry();
+      const config = new Config({});
+      const summary = (await (
+        new HealthSummaryModule(registry, null, new ErrorHistory(), config) as any
+      ).execute({}, null)) as any;
+      const manifest = (await (new ManifestFullModule(registry, config) as any).execute(
+        {},
+        null,
+      )) as any;
+      expect(summary.project.name).toBe(tc.expected.project_name);
+      expect(summary.project.name).toBe(manifest.project_name);
+    });
+
+    it('system_modules_declare_open_world_false', async () => {
+      // Reads the DECLARED annotation, not an effective value computed with
+      // defaults applied: the language default means the opposite of the
+      // intended value, and inheriting it is how the divergence arose.
+      const tc = sysHardeningFixture.test_cases.find(
+        (t: any) => t.id === 'system_modules_declare_open_world_false',
+      );
+      const client = new APCore({
+        config: new Config({
+          version: '1.0',
+          project: { name: 'p' },
+          sys_modules: { enabled: true, control: { enabled: true } },
+        }),
+      } as any);
+      const registry = (client as any).registry ?? (client as any)._registry;
+      const systemIds = (registry.moduleIds as string[]).filter((m) => m.startsWith('system.'));
+      expect(systemIds.length).toBeGreaterThanOrEqual(tc.expected.at_least);
+      // getDefinition().annotations, not a class attribute: that is the surface
+      // system.manifest.* publishes, so it is what a consumer sees, and it is
+      // the one shape all three SDKs share.
+      const wrong = systemIds.filter(
+        (m) => (registry.getDefinition(m) as any)?.annotations?.openWorld !== tc.expected.every_value,
+      );
+      expect(wrong).toEqual([]);
     });
 
     // --- fixture case inventory ---

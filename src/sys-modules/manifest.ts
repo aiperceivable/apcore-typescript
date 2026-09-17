@@ -10,6 +10,9 @@ import type { ModuleAnnotations } from '../module.js';
 import { annotationsToJSON } from '../module.js';
 import { governanceUnion } from '../schema/annotations.js';
 
+/** D-110: the project name reported when `project.name` is not configured. */
+const DEFAULT_PROJECT_NAME = 'apcore';
+
 /**
  * SYS-5: emit `annotations` in the snake_case WIRE shape.
  *
@@ -222,7 +225,14 @@ export class ManifestFullModule {
       });
     }
 
-    const projectName = (this._config?.get('project.name', '') ?? '') as string;
+    // D-110: `"apcore"` when unconfigured, not `""`. `system.health.summary`
+    // already reported `"apcore"` here while this module reported `""`, so the
+    // two system modules disagreed about the same fact in the same process. The
+    // decision was taken on that internal consistency rather than an SDK
+    // majority — `""` would have meant changing two system modules per SDK and
+    // leaving the contradiction in place.
+    const projectName =
+      ((this._config?.get('project.name', '') ?? '') as string) || DEFAULT_PROJECT_NAME;
     return { project_name: projectName, module_count: modules.length, modules };
   }
 

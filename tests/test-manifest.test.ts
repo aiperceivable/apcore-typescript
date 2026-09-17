@@ -198,11 +198,15 @@ describe('ManifestFullModule', () => {
     expect(result['project_name']).toBe('test');
   });
 
-  it('project_name is empty string when no config', () => {
+  it('project_name defaults to "apcore" when no config (D-110)', () => {
+    // This asserted `''` until spec v1.51.0. It was pinning the half of a
+    // contradiction: `system.health.summary` already reported `"apcore"` in the
+    // same process, so the two system modules disagreed about the same fact.
+    // D-110 settled it on that internal consistency rather than an SDK majority.
     const manifest = new ManifestFullModule(registry);
     const result = manifest.execute({}, null);
 
-    expect(result['project_name']).toBe('');
+    expect(result['project_name']).toBe('apcore');
   });
 
   it('filters by prefix', () => {

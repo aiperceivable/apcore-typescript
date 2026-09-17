@@ -42,6 +42,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`system.manifest.full` reports `project_name: "apcore"` when unconfigured (spec v1.51.0,
+  D-110).** It returned `""` while `system.health.summary` already returned `"apcore"` in the same
+  process — two system modules disagreeing about the same fact, which is what the decision was
+  settled on rather than an SDK majority. `tests/test-manifest.test.ts` asserted the old `""` and is
+  updated: it had been pinning one half of that contradiction. `open_world: false` (D-119) needed no
+  change here — this SDK already declared it, and is the authority for that half.
+
 - **An empty `roles` list is omitted from the audit identity snapshot (spec v1.51.0,
   system-modules.md, D-118).** `extractAuditIdentity` emitted `roles: [...ident.roles]`
   unconditionally, so every identity carried a `roles` key whether or not it had any. The spec names
