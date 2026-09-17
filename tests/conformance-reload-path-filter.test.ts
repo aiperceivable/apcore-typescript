@@ -25,6 +25,7 @@ import * as path from 'node:path';
 import { ModuleError } from '../src/errors.js';
 import { EventEmitter } from '../src/events/emitter.js';
 import { Registry } from '../src/registry/registry.js';
+import { InMemoryAuditStore } from '../src/sys-modules/audit.js';
 import { ReloadModule } from '../src/sys-modules/control.js';
 import { findFixturesRoot } from './spec-repo.js';
 
@@ -86,7 +87,8 @@ describe('Conformance: reload_module path_filter (reload_path_filter.json)', () 
         return n;
       });
 
-      const mod = new ReloadModule(registry, new EventEmitter());
+      const auditStore = new InMemoryAuditStore();
+      const mod = new ReloadModule(registry, new EventEmitter(), auditStore);
 
       let result: Record<string, unknown> | null = null;
       let error: unknown = null;
@@ -132,6 +134,31 @@ describe('Conformance: reload_module path_filter (reload_path_filter.json)', () 
         expect([...reloaded].sort()).toEqual([...(expected['reloaded_modules_set'] as string[])].sort());
       }
 
+      if ('audit_target_module_ids_set' in expected) {
+        handled.add('audit_target_module_ids_set');
+        // D-111. Asserted as a SET of concrete ids rather than a count: an
+        // aggregate entry keyed on the glob has count 1, which a count
+        // assertion accepts whenever the glob matches one module, and its
+        // target is one `query({ moduleId })` can never find.
+        const entries = auditStore.query();
+        expect(entries.map((e) => e.targetModuleId).sort()).toEqual(
+          [...(expected['audit_target_module_ids_set'] as string[])].sort(),
+        );
+        for (const moduleId of expected['audit_target_module_ids_set'] as string[]) {
+          expect(auditStore.query({ moduleId }).map((e) => e.targetModuleId)).toEqual([moduleId]);
+        }
+      }
+
+      if (expected['audit_correlation_ids_are_equal_and_non_empty'] === true) {
+        handled.add('audit_correlation_ids_are_equal_and_non_empty');
+        // A property, not a value: the id is generated per call. All equal
+        // rejects a fresh id per entry, which groups nothing; non-empty
+        // rejects leaving the field unset.
+        const ids = new Set(auditStore.query().map((e) => e.correlationId));
+        expect(ids.size, `entries from one bulk reload must share one id`).toBe(1);
+        expect([...ids][0]).not.toBe('');
+      }
+
       // Fail loudly rather than silently pass if the fixture grows an
       // expectation this driver does not assert.
       const unhandled = Object.keys(expected).filter(
@@ -158,6 +185,8 @@ describe('Conformance: reload_module path_filter (reload_path_filter.json)', () 
       'double_star_is_two_ordinary_stars',
       // D-121: the deprecated field is accepted and changes nothing.
       'reload_dependents_is_accepted_and_inert',
+      // D-111: per-module audit entries sharing one correlation id.
+      'bulk_reload_audits_per_module_with_one_correlation_id',
     ]);
   });
 });

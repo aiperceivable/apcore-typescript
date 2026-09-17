@@ -3,6 +3,7 @@
  */
 
 import * as fs from 'node:fs';
+import { v4 as uuidv4 } from 'uuid';
 import * as yaml from 'js-yaml';
 import {
   ConfigError,
@@ -483,6 +484,15 @@ export class ReloadModule {
 
     // Collect successfully reloaded modules
     const reloadedModules: string[] = [];
+    // D-111: every entry from ONE bulk reload shares a correlation id.
+    //
+    // This SDK already wrote one entry per module — it is the decision's
+    // authority for that half, at 1-of-3 — but per-module entries alone lose
+    // the fact that they were one deploy, so "what did this deploy touch"
+    // stopped being a single query. Generated once, here, rather than per
+    // entry: a fresh id per entry groups nothing, and a constant groups every
+    // deploy together.
+    const correlationId = uuidv4();
     for (const id of matchingIds) {
       const reloaded = this._registry.get(id);
       if (reloaded === null) {
@@ -493,10 +503,13 @@ export class ReloadModule {
       } else {
         reloadedModules.push(id);
         const newVersion = String((reloaded as Record<string, unknown>)['version'] ?? '1.0.0');
-        const entry = buildAuditEntry('reload_module', id, ctx, {
-          before: previousVersions.get(id) ?? '1.0.0',
-          after: newVersion,
-        });
+        const entry = buildAuditEntry(
+          'reload_module',
+          id,
+          ctx,
+          { before: previousVersions.get(id) ?? '1.0.0', after: newVersion },
+          correlationId,
+        );
         if (this._auditStore !== null) {
           this._auditStore.append(entry);
         }
