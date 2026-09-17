@@ -42,6 +42,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **An empty `roles` list is omitted from the audit identity snapshot (spec v1.51.0,
+  system-modules.md, D-118).** `extractAuditIdentity` emitted `roles: [...ident.roles]`
+  unconditionally, so every identity carried a `roles` key whether or not it had any. The spec names
+  only `id`, `type` and optionally `display_name` for this snapshot, and both peers omit the key.
+  `roles: []` and an absent `roles` are different claims to a subscriber reading the audit trail —
+  the first says the principal was checked and carries none, the second says roles were not part of
+  this record — and emitting the first for every identity makes the distinction unavailable. A
+  non-empty list is unchanged.
+
+  *First of the fourteen v1.51.0 policy decisions to land, and the first implemented CASE-FIRST: the
+  conformance case was written and run against all three SDKs before any code changed. That order
+  mattered here — `data_contains` is a subset match, so the obvious assertion (`roles: []`) would
+  have passed against this SDK, the one that was wrong. The case had to assert key ABSENCE, which
+  the fixture could not express until `identity_must_not_contain_keys` was added for it.*
+
 - **`TaskStoreError` / `TASK_STORE_UNAVAILABLE` exist and are framework-reserved (spec v1.50.0,
   async-tasks.md, D-92).** D-92 required all three SDKs to define, register and export the type;
   it landed in apcore-python alone, and this SDK never had it. `async-tasks.md` declares

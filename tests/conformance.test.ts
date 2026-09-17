@@ -3625,6 +3625,16 @@ describe('apcore Conformance Suite (TypeScript)', () => {
             expect(k in data).toBe(false);
           }
         }
+        // D-118 needs key ABSENCE inside the identity snapshot, which
+        // `data_contains` cannot express: it is a SUBSET match, so an extra
+        // `roles: []` passes it, and asserting `roles: []` is exactly what the
+        // diverging SDK emits.
+        if (Array.isArray(tc.expected.identity_must_not_contain_keys)) {
+          const identity = (data as Record<string, unknown>)['identity'] ?? {};
+          for (const k of tc.expected.identity_must_not_contain_keys as string[]) {
+            expect(k in (identity as Record<string, unknown>)).toBe(false);
+          }
+        }
       });
     });
   });

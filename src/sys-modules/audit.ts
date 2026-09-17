@@ -120,8 +120,18 @@ export function extractAuditIdentity(
   const snapshot: Record<string, unknown> = {
     id: ident.id,
     type: ident.type,
-    roles: [...ident.roles],
   };
+  // D-118: an EMPTY roles list is omitted, not emitted as `roles: []`. The spec
+  // names only `id`, `type` and optionally `display_name` for this snapshot,
+  // and apcore-python and apcore-rust both omit the key; this SDK emitted it
+  // unconditionally. `roles: []` and an absent `roles` are different claims to a
+  // subscriber reading the audit trail — the first says the principal was
+  // checked and carries no roles, the second says roles were not part of this
+  // record at all. Emitting the first for every identity makes the distinction
+  // unavailable.
+  if (ident.roles.length > 0) {
+    snapshot['roles'] = [...ident.roles];
+  }
   // Surface display_name from attrs if present (spec #45.2 calls it out as
   // an optional first-class field on the audit identity snapshot).
   const displayName = (ident.attrs as Record<string, unknown>)['display_name'];
