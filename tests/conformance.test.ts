@@ -2400,6 +2400,61 @@ describe('apcore Conformance Suite (TypeScript)', () => {
       // method (per spec §1.5): it invokes the function side-effectfully
       expect(asyncFn instanceof Promise).toBe(false); // function ≠ Promise object
     });
+
+    // --- 10-11. D-114 — `remove` clears the duplicate-identity entry ---
+    //
+    // This SDK is the authority for the decision and already conformed; the
+    // cases exist so it cannot regress silently, which is what the coverage map
+    // is for. The registry records the FIRST registration so a later duplicate
+    // can be traced back to it, and a stale entry corrupts that record in both
+    // directions.
+    it('remove_clears_the_duplicate_identity_entry', () => {
+      const tc = middlewareHardeningFixture.test_cases.find(
+        (t: any) => t.id === 'remove_clears_the_duplicate_identity_entry',
+      );
+      const executor: any = new Executor({ registry: new Registry() });
+      const mw = { name: tc.input.middleware_name, before: async () => null };
+
+      executor.use(mw);
+      // Only the steps AFTER the first `use` are observed: the first
+      // registration never warns, and counting it would make both cases 1.
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      for (const step of (tc.input.sequence as string[]).slice(1)) {
+        if (step === 'use') executor.use(mw);
+        else if (step === 'remove') executor.remove(mw);
+        else throw new Error(`unknown step ${step}`);
+      }
+      const duplicates = warn.mock.calls.filter((c) =>
+        String(c[0]).toLowerCase().includes('duplicate'),
+      ).length;
+      warn.mockRestore();
+
+      expect(duplicates).toBe(tc.expected.duplicate_warnings);
+    });
+
+    it('use_twice_still_warns_about_the_duplicate', () => {
+      // The control. Without it an SDK that simply stopped warning passes, and
+      // the decision is about CLEARING the entry, not dropping the warning.
+      const tc = middlewareHardeningFixture.test_cases.find(
+        (t: any) => t.id === 'use_twice_still_warns_about_the_duplicate',
+      );
+      const executor: any = new Executor({ registry: new Registry() });
+      const mw = { name: tc.input.middleware_name, before: async () => null };
+
+      executor.use(mw);
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      for (const step of (tc.input.sequence as string[]).slice(1)) {
+        if (step === 'use') executor.use(mw);
+        else if (step === 'remove') executor.remove(mw);
+        else throw new Error(`unknown step ${step}`);
+      }
+      const duplicates = warn.mock.calls.filter((c) =>
+        String(c[0]).toLowerCase().includes('duplicate'),
+      ).length;
+      warn.mockRestore();
+
+      expect(duplicates).toBe(tc.expected.duplicate_warnings);
+    });
   });
 
   // ---------------------------------------------------------------------------

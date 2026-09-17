@@ -29,6 +29,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Tests
 
+- **D-114 is pinned by conformance cases.** No behaviour change — this SDK is the authority for the
+  decision and already cleared the entry on `remove`. What was missing is the case: `use` /
+  `remove` / `use` producing zero duplicate warnings, with `use` / `use` producing one as the
+  control. apcore-python and apcore-rust were red against it.
+
 - **`shutdown()`'s best-effort cancellation is now pinned** (spec v1.52.0 [D-122], async-tasks.md).
   No behaviour changed here — this SDK was the authority for the decision, and apcore-python and
   apcore-rust were changed to match it. What was missing is the test: the existing D-81 cases pin only
