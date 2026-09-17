@@ -5,9 +5,10 @@ import {
   writeFileSync,
   rmSync,
   chmodSync,
+  realpathSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, sep } from 'node:path';
+import { join, sep, isAbsolute } from 'node:path';
 import { scanExtensions, scanMultiRoot } from '../../src/registry/scanner.js';
 import { ConfigNotFoundError, ConfigError } from '../../src/errors.js';
 
@@ -170,12 +171,21 @@ describe('scanExtensions', () => {
     expect(results).toEqual([]);
   });
 
-  it('filePath is an absolute path to the discovered file', () => {
+  it('filePath is the canonical real path of the discovered file (D-127)', () => {
+    // This compared against `join(tempDir, 'mod.ts')` until spec v1.56.0.
+    // D-127 keys file identity, the module ID and visited-directory tracking on
+    // the canonical REAL path, and the reported path follows: an alias is a
+    // name, not the module, and the loader has to open the target. Under a root
+    // with a symlinked ancestor (`/var` -> `/private/var` on macOS, which is
+    // where this test's tmpdir lives) the two spellings differ, so the
+    // expectation is stated in real-path terms rather than reconstructed from
+    // the path the caller happened to pass in.
     touch('mod.ts');
 
     const results = scanExtensions(tempDir);
     expect(results).toHaveLength(1);
-    expect(results[0].filePath).toBe(join(tempDir, 'mod.ts'));
+    expect(results[0].filePath).toBe(realpathSync(join(tempDir, 'mod.ts')));
+    expect(isAbsolute(results[0].filePath)).toBe(true);
   });
 });
 

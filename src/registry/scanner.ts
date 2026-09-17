@@ -48,7 +48,17 @@ export function scanExtensions(
   // line in a YAML list means nothing by it.
   const patterns = ignorePatterns.filter((p) => p !== '');
 
-  const visitedRealPaths = new Set([realpathSync(rootResolved)]);
+  // The containment base must itself be a REAL path. `resolve()` normalises `..`
+  // and makes the path absolute; it does not resolve symlinks — so on any system
+  // whose root has a symlinked ancestor (`/tmp` -> `/private/tmp` on macOS,
+  // `/var` -> `/private/var`, a symlinked home) every `realpathSync` inside the
+  // root compared against a non-real root and was rejected as escaping. Fail-
+  // CLOSED, so not a hole, but it disabled `follow_symlinks` entirely under such
+  // a root. apcore-python (`root.resolve()`) and apcore-rust (`canonicalize()`)
+  // both canonicalise the root; this SDK canonicalised it for the visited set
+  // and not for the comparison.
+  const rootReal = realpathSync(rootResolved);
+  const visitedRealPaths = new Set([rootReal]);
   const results: DiscoveredModule[] = [];
   const seenIds = new Map<string, string>();
   const seenIdsLower = new Map<string, string>();
@@ -90,12 +100,15 @@ export function scanExtensions(
         const real = realpathSync(entryPath);
         if (visitedRealPaths.has(real)) continue;
         // Confinement check — reject symlinks that escape the extension root
-        const normalizedRoot = resolve(rootResolved);
-        if (!real.startsWith(normalizedRoot + sep) && real !== normalizedRoot) {
+        if (!real.startsWith(rootReal + sep) && real !== rootReal) {
           console.warn(`[apcore] Symlink target outside extension root, skipping: ${entryPath} -> ${real}`);
           continue;
         }
-        visitedRealPaths.add(real);
+        // D-127: only DIRECTORIES are marked visited here. A symlinked FILE is
+        // registered by the file branch below, which keys on the same real path
+        // — marking it here made the branch skip the very entry it was meant to
+        // record, and then skip the target when the traversal reached it
+        // directly, so both disappeared.
         // Resolve the symlink target to check if it's a dir or file
         let targetStat;
         try {
@@ -112,13 +125,44 @@ export function scanExtensions(
       }
 
       if (isDir) {
+        // D-127: an aliased directory whose real path was already visited is
+        // skipped — that is what both prevents a duplicate discovery and
+        // terminates a directory cycle.
+        let realDir: string;
+        try {
+          realDir = realpathSync(entryPath);
+        } catch {
+          console.warn(`[apcore:scanner] Cannot resolve directory: ${entryPath}`);
+          continue;
+        }
+        if (visitedRealPaths.has(realDir)) continue;
+        visitedRealPaths.add(realDir);
         scanDir(entryPath, depth + 1);
       } else if (isFile) {
         const ext = extname(name);
         if (!VALID_EXTENSIONS.has(ext)) continue;
         if (SKIP_SUFFIXES.some((s) => name.endsWith(s))) continue;
 
-        const rel = relative(rootResolved, entryPath);
+        // D-127: identity and the module ID are keyed on the CANONICAL REAL
+        // PATH, never on whichever alias the traversal reached first. Deriving
+        // the ID from the alias makes the registered ID depend on directory
+        // iteration order, which is not stable across filesystems or platforms.
+        let realFile: string;
+        try {
+          realFile = realpathSync(entryPath);
+        } catch {
+          console.warn(`[apcore:scanner] Cannot resolve file: ${entryPath}`);
+          continue;
+        }
+        if (visitedRealPaths.has(realFile)) continue;
+        if (!realFile.startsWith(rootReal + sep) && realFile !== rootReal) {
+          // Containment already ran before the dir/file split (D-94).
+          console.warn(`[apcore:scanner] Resolved path escapes the extension root, skipping: ${entryPath}`);
+          continue;
+        }
+        visitedRealPaths.add(realFile);
+
+        const rel = relative(rootReal, realFile);
         const canonicalId = rel
           .replace(new RegExp(`\\${sep}`, 'g'), '.')
           .replace(/\.(ts|js)$/, '');
@@ -146,7 +190,9 @@ export function scanExtensions(
         seenIds.set(canonicalId, entryPath);
         seenIdsLower.set(lowerId, canonicalId);
         results.push({
-          filePath: entryPath,
+          // D-127: the REAL path, so the loader opens the target rather than the
+          // alias — the alias is a name, not the module.
+          filePath: realFile,
           canonicalId,
           metaPath: metaPathResult,
           namespace: null,

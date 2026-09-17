@@ -47,6 +47,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A symlinked module file is discovered, once, under its real path (spec v1.56.0, D-127).**
+  `follow_symlinks` governed directories and did nothing for files, so the key did not reach its
+  mechanism. Two further defects surfaced with it, both the same shape — a path compared against a
+  root that was normalised but not canonicalised. The **containment check** measured a
+  `realpathSync` result against `resolve(root)`, so under any root with a symlinked ancestor
+  (`/tmp` → `/private/tmp` on macOS) every symlink inside the root was rejected as escaping:
+  fail-closed, but `follow_symlinks` was disabled entirely under such a root. And
+  **`id_map.overrides`** prefix-matched against the same non-canonical root, so every override was
+  **silently skipped** there — the map loads, discovery succeeds, and the IDs are not the ones the
+  operator declared. `node:fs` is reached through `ensureNodeModules`, not a top-level import: the
+  browser-entry import-graph guard caught a static one added during the fix.
+
 - **A malformed annotation value is dropped rather than kept or ignored (spec v1.51.0, D-115).**
   A string in `extra` survived as a string — worse than lenient, because it then reads as a real
   declaration to everything downstream — and `cacheTtl: -5` reached the cache layer unclamped.

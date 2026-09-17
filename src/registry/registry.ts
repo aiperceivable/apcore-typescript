@@ -631,13 +631,31 @@ export class Registry {
   private async _applyIdMapOverrides(discovered: import('./types.js').DiscoveredModule[]): Promise<void> {
     if (Object.keys(this._idMap).length === 0) return;
 
-    const { path: nodePath } = await ensureNodeModules();
+    const { fs: nodeFs, path: nodePath } = await ensureNodeModules();
     const resolvedRoots = this._extensionRoots.map((r) => nodePath.resolve(r['root'] as string));
     for (const dm of discovered) {
       for (const root of resolvedRoots) {
         try {
-          const relPath = dm.filePath.startsWith(root)
-            ? dm.filePath.slice(root.length + 1)
+          // D-127: `filePath` is a canonical REAL path, so the root it is
+          // measured against has to be one too. `resolve()` normalises `..` and
+          // makes a path absolute; it does not resolve symlinks — so under a
+          // root with a symlinked ancestor (`/var` -> `/private/var` on macOS)
+          // the prefix test failed and every override was silently skipped.
+          // A silently-skipped override is the worst shape for this surface:
+          // the map loads, the discovery succeeds, and the IDs are simply not
+          // the ones the operator declared.
+          // Loaded through `ensureNodeModules`, never a top-level `node:fs`
+          // import: this module is in the browser entry's dependency graph and
+          // a static import pulls Node-only code into it. The import-graph
+          // guard catches that, which is how this comment came to exist.
+          let rootReal: string;
+          try {
+            rootReal = nodeFs.realpathSync(root);
+          } catch {
+            rootReal = root;
+          }
+          const relPath = dm.filePath.startsWith(rootReal)
+            ? dm.filePath.slice(rootReal.length + 1)
             : null;
           if (relPath && relPath in this._idMap) {
             const rawId = this._idMap[relPath]['id'];
