@@ -156,6 +156,8 @@ describe('Conformance: reload_module path_filter (reload_path_filter.json)', () 
       'bracket_is_a_literal_and_MUST_NOT_be_rejected',
       'character_class_does_not_expand',
       'double_star_is_two_ordinary_stars',
+      // D-121: the deprecated field is accepted and changes nothing.
+      'reload_dependents_is_accepted_and_inert',
     ]);
   });
 });
