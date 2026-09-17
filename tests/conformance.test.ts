@@ -3682,6 +3682,23 @@ describe('apcore Conformance Suite (TypeScript)', () => {
           // number of recorded errors.
           expect(all[0].count).toBe(tc.expected.first_entry_count);
         }
+        if (tc.expected.timestamp_pattern !== undefined) {
+          // D-120. Asserted on the record the PRODUCER writes, not on a health
+          // summary: a reader that reformats on the way out leaves the stored
+          // record and every other consumer on the old form, which is how one
+          // SDK ended up with two forms inside itself.
+          const pattern = new RegExp(tc.expected.timestamp_pattern);
+          for (const entry of all) {
+            for (const field of tc.expected.timestamp_fields as string[]) {
+              const camel = field.replace(/_([a-z])/g, (_m, c: string) => c.toUpperCase());
+              const value = (entry as unknown as Record<string, unknown>)[camel];
+              expect(typeof value, `${field} must be a string`).toBe('string');
+              expect(value as string, `${field} must match ${tc.expected.timestamp_pattern}`).toMatch(
+                pattern,
+              );
+            }
+          }
+        }
       });
     });
   });
