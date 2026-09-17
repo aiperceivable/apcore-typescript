@@ -13,11 +13,11 @@
  * 'cancellation.<method>.<kind>.<detail>' so cross-language diffs line up by
  * exact clause id.
  *
- * NOTE (cross-language gap): the contract block names the second method
- * 'CancelToken.raise_if_cancelled', but the TypeScript SDK source
- * (src/cancel.ts) implements the cancellation check as 'check()'. There is no
- * 'raiseIfCancelled'/'raise_if_cancelled' symbol. Per the missing-symbol rule,
- * every clause under that contract is emitted as a skip documenting the gap.
+ * NOTE: the contract block names the second method
+ * 'CancelToken.raise_if_cancelled'. This SDK ships it as `raiseIfCancelled()`
+ * (idiomatic casing), delegating to the pre-existing `check()`. The clauses
+ * under that contract used to be skipped as a missing symbol; the symbol
+ * landed with spec v1.49.0 - v1.54.0 and the skips did not.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -76,23 +76,70 @@ describe('Contract: CancelToken.cancel', () => {
 // ---------------------------------------------------------------------------
 // Contract: CancelToken.raise_if_cancelled
 //
-// MISSING SYMBOL: the TypeScript SDK has no 'raiseIfCancelled' method on
-// CancelToken (the equivalent behavior is 'check()'). These clauses are
-// recorded as skips so the cross-language naming gap is documented as a skip
-// rather than a coarse import/compile failure.
+// These three clauses were `it.skip`ped with the reason "missing symbol
+// CancelToken.raiseIfCancelled (contract gap)". That was true when they were
+// written and was made false by the spec v1.49.0 - v1.54.0 implementation,
+// which added `raiseIfCancelled()` as the canonical spec-named method
+// (src/cancel.ts). Nothing turned red when the gap closed: a disabled test
+// explaining why something cannot be tested keeps explaining it after it can,
+// and the clause reads as a documented gap while going untested. These mirror
+// apcore-python's test_cancellation_spec.py, which was updated at the time.
 // ---------------------------------------------------------------------------
 
 describe('Contract: CancelToken.raise_if_cancelled', () => {
-  it.skip('cancellation.raise_if_cancelled.error.EXECUTION_CANCELLED: missing symbol CancelToken.raiseIfCancelled (contract gap) — TS SDK implements this as CancelToken.check()', () => {
-    // intentionally skipped — see file header
+  it('cancellation.raise_if_cancelled.error.EXECUTION_CANCELLED', () => {
+    const token = new CancelToken();
+    token.cancel();
+
+    let caught: unknown;
+    try {
+      token.raiseIfCancelled();
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(ExecutionCancelledError);
+    expect(caught).toBeInstanceOf(ModuleError);
+    expect((caught as ModuleError).code).toBe('EXECUTION_CANCELLED');
   });
 
-  it.skip('cancellation.raise_if_cancelled.property.thread_safe: missing symbol CancelToken.raiseIfCancelled (contract gap) — TS SDK implements this as CancelToken.check()', () => {
-    // intentionally skipped — see file header
+  it('cancellation.raise_if_cancelled.property.thread_safe', async () => {
+    // Concurrent reads of a token being cancelled elsewhere must not raise
+    // anything other than ExecutionCancelledError, and must converge.
+    const shared = new CancelToken();
+
+    const doCheck = async (): Promise<void> => {
+      await Promise.resolve();
+      try {
+        shared.raiseIfCancelled();
+      } catch (e) {
+        if (!(e instanceof ExecutionCancelledError)) throw e;
+      }
+    };
+    const doCancel = async (): Promise<void> => {
+      await Promise.resolve();
+      shared.cancel();
+    };
+
+    await Promise.all([doCancel(), ...Array.from({ length: 16 }, doCheck)]);
+    expect(shared.isCancelled).toBe(true);
   });
 
-  it.skip('cancellation.raise_if_cancelled.property.pure: missing symbol CancelToken.raiseIfCancelled (contract gap) — TS SDK implements this as CancelToken.check()', () => {
-    // intentionally skipped — see file header
+  it('cancellation.raise_if_cancelled.property.pure', () => {
+    // It only reads the flag: calling it repeatedly must not change the
+    // token's observable state.
+    const token = new CancelToken();
+    token.cancel();
+
+    for (let i = 0; i < 3; i += 1) {
+      expect(() => token.raiseIfCancelled()).toThrow(ExecutionCancelledError);
+      expect(token.isCancelled).toBe(true);
+    }
+  });
+
+  it('control: an uncancelled token raises nothing', () => {
+    // Without this, "it throws" would also be satisfied by a method that
+    // throws unconditionally.
+    expect(() => new CancelToken().raiseIfCancelled()).not.toThrow();
   });
 });
 

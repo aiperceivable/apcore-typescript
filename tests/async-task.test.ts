@@ -5,7 +5,7 @@ import type { TaskInfo } from '../src/async-task.js';
 import { Executor } from '../src/executor.js';
 import { FunctionModule } from '../src/decorator.js';
 import { Registry } from '../src/registry/registry.js';
-import { TaskLimitExceededError } from '../src/errors.js';
+import { TaskLimitExceededError, TaskStoreError } from '../src/errors.js';
 
 function createRegistry(): Registry {
   const registry = new Registry();
@@ -503,25 +503,51 @@ describe('AsyncTaskManager', () => {
       failList = false;
       failDelete = false;
 
+      // The CANONICAL type D-92 requires the SDK to define and export, which
+      // is the one type a host writing a network-backed store has to raise.
+      // These used to throw `new Error('TASK_STORE_UNAVAILABLE')` — a
+      // stand-in written before the type existed — and that left every
+      // assertion below green against a manager that swallowed
+      // `TaskStoreError` specifically while re-throwing everything else,
+      // which is exactly the failure D-81 forbids.
+      private down(operation: string): never {
+        throw new TaskStoreError(operation, 'backing store is unreachable');
+      }
+
       override async save(task: TaskInfo): Promise<void> {
-        if (this.failSave) throw new Error('TASK_STORE_UNAVAILABLE');
+        if (this.failSave) this.down('save');
         return super.save(task);
       }
 
       override async get(taskId: string): Promise<TaskInfo | null> {
-        if (this.failGet) throw new Error('TASK_STORE_UNAVAILABLE');
+        if (this.failGet) this.down('get');
         return super.get(taskId);
       }
 
       override async list(status?: TaskStatus): Promise<TaskInfo[]> {
-        if (this.failList) throw new Error('TASK_STORE_UNAVAILABLE');
+        if (this.failList) this.down('list');
         return super.list(status);
       }
 
       override async delete(taskId: string): Promise<void> {
-        if (this.failDelete) throw new Error('TASK_STORE_UNAVAILABLE');
+        if (this.failDelete) this.down('delete');
         return super.delete(taskId);
       }
+    }
+
+    /** Asserts the rejection is the store's OWN error, not merely an error. */
+    async function rejectsUnavailable(what: string, p: Promise<unknown>): Promise<void> {
+      await p.then(
+        (v) => {
+          throw new Error(`${what} absorbed a store outage into ${JSON.stringify(v)}`);
+        },
+        (e: unknown) => {
+          expect(e, `${what} must propagate the store's own error type`).toBeInstanceOf(
+            TaskStoreError,
+          );
+          expect((e as TaskStoreError).code).toBe('TASK_STORE_UNAVAILABLE');
+        },
+      );
     }
 
     function managerOver(store: UnavailableStore): AsyncTaskManager {
@@ -534,28 +560,28 @@ describe('AsyncTaskManager', () => {
       const store = new UnavailableStore();
       const manager = managerOver(store);
       store.failGet = true;
-      await expect(manager.getStatus('any')).rejects.toThrow('TASK_STORE_UNAVAILABLE');
+      await rejectsUnavailable('getStatus', manager.getStatus('any'));
     });
 
     it('cancel() rejects rather than returning false', async () => {
       const store = new UnavailableStore();
       const manager = managerOver(store);
       store.failGet = true;
-      await expect(manager.cancel('any')).rejects.toThrow('TASK_STORE_UNAVAILABLE');
+      await rejectsUnavailable('cancel', manager.cancel('any'));
     });
 
     it('listTasks() rejects rather than returning an empty list', async () => {
       const store = new UnavailableStore();
       const manager = managerOver(store);
       store.failList = true;
-      await expect(manager.listTasks()).rejects.toThrow('TASK_STORE_UNAVAILABLE');
+      await rejectsUnavailable('listTasks', manager.listTasks());
     });
 
     it('cleanup() rejects rather than reporting zero removals', async () => {
       const store = new UnavailableStore();
       const manager = managerOver(store);
       store.failList = true;
-      await expect(manager.cleanup(0)).rejects.toThrow('TASK_STORE_UNAVAILABLE');
+      await rejectsUnavailable('cleanup', manager.cleanup(0));
     });
 
     it('shutdown() rejects when a cancellation write fails', async () => {
@@ -577,7 +603,21 @@ describe('AsyncTaskManager', () => {
         maxRetries: 0,
       });
       store.failSave = true;
-      await expect(manager.shutdown()).rejects.toThrow('TASK_STORE_UNAVAILABLE');
+      await rejectsUnavailable('shutdown', manager.shutdown());
+    });
+
+    it('submit() rejects rather than reporting a task id that never persisted', async () => {
+      const store = new UnavailableStore();
+      const manager = managerOver(store);
+      store.failSave = true;
+      await rejectsUnavailable('submit', manager.submit('test.simple', {}));
+    });
+
+    it('getResult() rejects rather than reporting "not found"', async () => {
+      const store = new UnavailableStore();
+      const manager = managerOver(store);
+      store.failGet = true;
+      await rejectsUnavailable('getResult', manager.getResult('any'));
     });
 
     it('shutdown() still resolves normally when the store is healthy', async () => {

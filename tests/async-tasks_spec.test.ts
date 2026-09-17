@@ -32,7 +32,12 @@ import {
 import { Executor } from '../src/executor.js';
 import { FunctionModule } from '../src/decorator.js';
 import { Registry } from '../src/registry/registry.js';
-import { InvalidInputError, TaskLimitExceededError } from '../src/errors.js';
+import {
+  InvalidInputError,
+  ModuleError,
+  TaskLimitExceededError,
+  TaskStoreError,
+} from '../src/errors.js';
 
 // === Helper modules ===
 
@@ -560,11 +565,27 @@ describe('TaskStore.save', () => {
     expect(stored!.status).toBe(TaskStatus.COMPLETED);
   });
 
-  it.skip('async_tasks.save.error.TASK_STORE_UNAVAILABLE: missing symbol TaskStoreError/TASK_STORE_UNAVAILABLE (contract gap)', () => {
-    // No TaskStoreError class or TASK_STORE_UNAVAILABLE code exists in
-    // apcore-typescript; InMemoryTaskStore must not raise it and no
-    // network-backed store ships yet. Matches Python's skipped clause.
-    expect(true).toBe(false);
+  it('async_tasks.save.error.TASK_STORE_UNAVAILABLE: the canonical type exists and carries its code', async () => {
+    // This was `it.skip`ped with the reason "missing symbol
+    // TaskStoreError/TASK_STORE_UNAVAILABLE (contract gap)" — true when it was
+    // written, and made false by D-92, which required all three SDKs to define
+    // and export the type. Nothing turned red when the gap closed, because a
+    // disabled test explaining why something cannot be tested keeps explaining
+    // it after it can.
+    const store = new InMemoryTaskStore();
+
+    // The bundled in-memory store cannot fail, so it must not raise it.
+    await expect(
+      store.save(makeTaskInfo('t1', 'test.echo', TaskStatus.PENDING)),
+    ).resolves.toBeUndefined();
+
+    // A network-backed store has one canonical type to raise, and a caller has
+    // one type to catch.
+    const err = new TaskStoreError('save', 'connection refused');
+    expect(err).toBeInstanceOf(ModuleError);
+    expect(err.code).toBe('TASK_STORE_UNAVAILABLE');
+    expect(err.message).toContain('save');
+    expect(err.message).toContain('connection refused');
   });
 });
 
