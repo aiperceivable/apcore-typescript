@@ -1,5 +1,6 @@
 /**
- * D-99 / D-100 / D-101 — `global_deadline` clock, storage and lifetime.
+ * D-99 / D-100 / D-101 / D-102 — `global_deadline` clock, storage, lifetime
+ * and recomputation.
  *
  * See apcore `docs/features/core-executor.md`, section
  * "`global_deadline` Representation and Lifetime" (spec v1.50.0).
@@ -15,6 +16,11 @@
  * D-101 — the deadline belongs to the call tree. `context.data` is shared by
  *   reference through `child()`, so the previous "already present?" guard saw
  *   call #1's key on call #2 and a reused Context kept the first call's budget.
+ * D-102 — recomputation is UNCONDITIONAL. apcore-python gated it on an empty
+ *   `callChain`, and a Context arriving from another process carries a
+ *   non-empty one by definition, so the guard inverted the MUST exactly where
+ *   it applies. TypeScript is one of the two authorities for that rule and had
+ *   no test standing on it.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -154,6 +160,46 @@ describe('global_deadline belongs to the call tree, not the Context (D-101)', ()
 
     expect(seen).toHaveLength(2);
     expect(seen[1]).toBe(seen[0]);
+  });
+});
+
+describe('a Context off the wire recomputes the deadline (D-102)', () => {
+  it('a non-empty callChain does not gate recomputation', async () => {
+    const seen: Array<number | null> = [];
+    const { registry, executor } = build(50_000);
+    registry.registerInternal('executor.probe.read', makeProbe(seen));
+
+    // A Context arriving from another process: non-empty `callChain` by
+    // definition, and no `globalDeadline` (it does not cross the wire).
+    const wire = Context.create().child('upstream.caller').toJSON();
+    const ctx = Context.fromJSON(wire);
+    expect(ctx.callChain.length).toBeGreaterThan(0);
+    expect(ctx.globalDeadline).toBeNull();
+
+    const before = nowSeconds();
+    await executor.call('executor.probe.read', {}, ctx);
+
+    // RED if the `callChain.length === 0` conjunct is reinstated: the module
+    // would see `null` and the whole cross-process sub-tree would run with no
+    // budget at all.
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).not.toBeNull();
+    expect(seen[0] as number).toBeGreaterThanOrEqual(before + 49);
+    expect(seen[0] as number).toBeLessThanOrEqual(nowSeconds() + 51);
+  });
+
+  it('control: a root call on the same executor gets the same budget', async () => {
+    // Without this, "the deadline was computed" could hold for a reason
+    // unrelated to the call chain — e.g. a hardcoded non-null value.
+    const seen: Array<number | null> = [];
+    const { registry, executor } = build(50_000);
+    registry.registerInternal('executor.probe.read', makeProbe(seen));
+
+    const before = nowSeconds();
+    await executor.call('executor.probe.read', {}, Context.create());
+
+    expect(seen[0]).not.toBeNull();
+    expect(seen[0] as number).toBeGreaterThanOrEqual(before + 49);
   });
 });
 
