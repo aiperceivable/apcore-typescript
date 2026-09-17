@@ -29,6 +29,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Tests
 
+- **The executor's ACL step is pinned to the ASYNC path (spec v1.50.0, D-105).** No behaviour change
+  — this SDK already takes it. What was missing is the case: a whole extension point
+  (`register_async_condition`) reachable from every door except the enforcing one is invisible from
+  the door, and a registry that accepts a handler is not evidence anything calls it. `tests/test-executor-async-acl-path.test.ts`
+  registers a SYNC handler answering false and an ASYNC handler answering true for one key, so the
+  verdict separates the paths — counting invocations would not, since both invoke a handler. Verified
+  red by forcing the synchronous accessor. Each case uses its own condition key, because handlers are
+  registered into a PROCESS-level registry and a shared key let one case decide another.
+
 - **D-114 is pinned by conformance cases.** No behaviour change — this SDK is the authority for the
   decision and already cleared the entry on `remove`. What was missing is the case: `use` /
   `remove` / `use` producing zero duplicate warnings, with `use` / `use` producing one as the
