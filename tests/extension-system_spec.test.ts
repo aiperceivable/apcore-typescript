@@ -273,7 +273,51 @@ describe('ExtensionManager.unregister', () => {
     mgr.register('middleware', mw1);
     mgr.register('middleware', mw2);
     mgr.unregister('middleware', mw1);
-    expect(mgr.getAll('middleware')).toEqual([mw2]);
+    // `toEqual` is a DEEP comparison, so on two structurally identical stubs it
+    // cannot tell identity from equality — which is the whole question here.
+    // Assert the surviving REFERENCE.
+    expect(mgr.getAll('middleware')).toHaveLength(1);
+    expect(mgr.getAll('middleware')[0]).toBe(mw2);
+  });
+
+  it('D-128: removal is by identity, not structural equality', () => {
+    // apcore-python used `list.remove`, which compares with `__eq__`, so
+    // `unregister(second)` deleted `first`: a host removing the second of two
+    // identically-configured middlewares kept the one it wanted gone and lost
+    // the one it wanted kept, silently. This SDK uses `indexOf`, which is
+    // `===` — the behaviour the contract's Inputs row ("identity comparison")
+    // has always required and which apcore-python was corrected to match.
+    //
+    // The two registrations MUST be structurally equal and MUST NOT be the
+    // same reference, or the test cannot distinguish the two semantics.
+    const mgr = new ExtensionManager();
+    const first = new StubMiddleware();
+    const second = new StubMiddleware();
+    expect(first).toEqual(second);
+    expect(first).not.toBe(second);
+
+    mgr.register('middleware', first);
+    mgr.register('middleware', second);
+
+    expect(mgr.unregister('middleware', second)).toBe(true);
+    const survivors = mgr.getAll('middleware');
+    expect(survivors).toHaveLength(1);
+    expect(survivors[0]).toBe(first);
+  });
+
+  it('D-128 control: an equal but unregistered object is a no-op', () => {
+    // Without this, "removal is by identity" would also be satisfied by an
+    // implementation that removed the LAST structurally equal entry — still
+    // wrong, and still passing the test above whenever only one is registered.
+    const mgr = new ExtensionManager();
+    const registered = new StubMiddleware();
+    const neverRegistered = new StubMiddleware();
+    expect(registered).toEqual(neverRegistered);
+
+    mgr.register('middleware', registered);
+
+    expect(mgr.unregister('middleware', neverRegistered)).toBe(false);
+    expect(mgr.getAll('middleware')[0]).toBe(registered);
   });
 
   it('extension_system.unregister.error.missing_is_silent_no_op: missing extension -> false, state intact', () => {
