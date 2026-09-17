@@ -1114,6 +1114,10 @@ describe('apcore Conformance Suite (TypeScript)', () => {
 
         // Build version map
         const moduleVersions = new Map<string, string>();
+        // D-79 needs a dependency that is a KNOWN id and absent from the batch
+        // — the only way to stall Kahn's algorithm without a cycle. Cases that
+        // do not declare `known_ids` keep the default.
+        const knownIds: Set<string> | null = tc.known_ids ? new Set<string>(tc.known_ids) : null;
         for (const m of tc.modules) {
           if (m.version) moduleVersions.set(m.module_id, m.version);
         }
@@ -1123,7 +1127,7 @@ describe('apcore Conformance Suite (TypeScript)', () => {
           const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
           try {
             expect(() => {
-              loadOrder = resolveDependencies(modulesList, null, moduleVersions);
+              loadOrder = resolveDependencies(modulesList, knownIds, moduleVersions);
             }).not.toThrow();
             if (tc.expected.load_order) {
               expect(loadOrder!).toEqual(tc.expected.load_order);
@@ -1155,7 +1159,7 @@ describe('apcore Conformance Suite (TypeScript)', () => {
           // is the worst possible split for a constraint checker: an
           // implementation that always reported "satisfied" passed everything
           // this fixture actually ran.
-          const thrown = captureThrow(() => resolveDependencies(modulesList, null, moduleVersions));
+          const thrown = captureThrow(() => resolveDependencies(modulesList, knownIds, moduleVersions));
           assertWireCode(tc.id, tc.expected['error_code'], thrown);
           // The remaining `expected` fields are the error's details. Asserted
           // against the WIRE form (`toJSON().details`, snake_cased per A-D-008)
