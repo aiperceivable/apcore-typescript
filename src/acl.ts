@@ -2330,6 +2330,15 @@ export class ACL {
       // (sync finding A-D-016).
       if (conditions != null && !deepEqual(rule.conditions ?? null, conditions)) continue;
       this._rules.splice(i, 1);
+      // D-88: removing rule `i` shifts every rule after it UP by one, so a
+      // marker recorded for the old occupant of an index silences the rule that
+      // inherits it. The decision generalises to "any operation that inserts,
+      // removes or reorders rules"; this SDK was its authority and had cleared
+      // in `addRule` and `reload` only, which is the pair the status quo
+      // described. Measured before the fix: two conditional rules, warn for
+      // index 0, remove index 0, and the surviving rule's §6.5 warning was
+      // suppressed by the removed rule's marker.
+      this._warnedMissingContext.clear();
       return true;
     }
     return false;
