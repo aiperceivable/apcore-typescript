@@ -42,6 +42,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`TaskStoreError` / `TASK_STORE_UNAVAILABLE` exist and are framework-reserved (spec v1.50.0,
+  async-tasks.md, D-92).** D-92 required all three SDKs to define, register and export the type;
+  it landed in apcore-python alone, and this SDK never had it. `async-tasks.md` declares
+  `TaskStoreError(code=TASK_STORE_UNAVAILABLE)` on **eight** surfaces — every `TaskStore` method and
+  every `AsyncTaskManager` method that touches the store — so callers had eight documented places to
+  catch an error no implementation could raise. The bundled `InMemoryTaskStore` cannot fail and
+  never raises it, which is exactly why the type is **exported** rather than raised internally: the
+  hosts who need it are the ones writing the network-backed stores the contract was written for.
+  The code is now in `ERROR_CODES`, so Algorithm A17 reserves it against module registration.
+
+  *Found by `conformance/decision_coverage.json`: the case asserting the collision was added to
+  `error_codes.json` and came back red here and in apcore-rust.*
+
 - **`shutdown()` stops the reaper before it starts cancelling, not after.** All three SDKs stop the
   reaper during shutdown; only the ORDER differed — apcore-python (`await self.stop_reaper()`) and
   apcore-rust (`self.stop_reaper()`) make it their first statement, this SDK ran it once the

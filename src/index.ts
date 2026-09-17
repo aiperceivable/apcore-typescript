@@ -152,6 +152,7 @@ export {
   ConfigBindError,
   ErrorFormatterDuplicateError,
   TaskLimitExceededError,
+  TaskStoreError,
   VersionConstraintError,
   ModuleIdConflictError,
   InvalidSegmentError,

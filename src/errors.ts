@@ -1189,6 +1189,56 @@ export class TaskLimitExceededError extends ModuleError {
   }
 }
 
+/**
+ * Raised when a `TaskStore` backend is unreachable or refuses an operation.
+ *
+ * Spec v1.50.0, D-92. `async-tasks.md` declares
+ * `TaskStoreError(code=TASK_STORE_UNAVAILABLE)` on eight surfaces — every
+ * `TaskStore` method and every `AsyncTaskManager` method that touches the
+ * store — and no SDK defined it, so no caller could ever catch it. A declared
+ * error type that no implementation can raise is the "declared surface reaches
+ * no mechanism" shape PROTOCOL_SPEC §9.1.3 forbids for configuration keys, here
+ * applied to an error contract.
+ *
+ * The bundled {@link InMemoryTaskStore} cannot fail and therefore never raises
+ * this; that is exactly why the type is **exported** rather than merely raised
+ * internally. The hosts who need it are the ones writing the network-backed
+ * stores the contract was written for: they raise it, and `AsyncTaskManager`
+ * propagates it (D-81) rather than mapping a store outage onto "task not found"
+ * / an empty list / a `cancel` that returns true for a save that never landed.
+ *
+ * Landed here late: D-92 was implemented in apcore-python in the v1.50.0 wave
+ * and missed in this SDK and apcore-rust. Nothing noticed until
+ * `error_codes.json` gained a case asserting that the code is framework-reserved
+ * — an SDK that has never defined it does not collide, so the case is red for
+ * exactly the state the decision corrects.
+ */
+export class TaskStoreError extends ModuleError {
+  static override readonly DEFAULT_RETRYABLE: boolean | null = true;
+
+  constructor(operation = '', reason = '', options?: ErrorOptions) {
+    let detail = operation
+      ? `TaskStore operation '${operation}' failed`
+      : 'TaskStore is unavailable';
+    if (reason) detail = `${detail}: ${reason}`;
+    const details: Record<string, unknown> = {};
+    if (operation) details['operation'] = operation;
+    if (reason) details['reason'] = reason;
+    super(
+      'TASK_STORE_UNAVAILABLE',
+      detail,
+      Object.keys(details).length > 0 ? details : undefined,
+      options?.cause,
+      options?.traceId,
+      options?.retryable,
+      options?.aiGuidance,
+      options?.userFixable,
+      options?.suggestion,
+    );
+    this.name = 'TaskStoreError';
+  }
+}
+
 export class VersionConstraintError extends ModuleError {
   static override readonly DEFAULT_RETRYABLE: boolean | null = false;
 
@@ -1510,6 +1560,7 @@ export const ErrorCodes = Object.freeze({
   DEPENDENCY_NOT_FOUND: 'DEPENDENCY_NOT_FOUND',
   DEPENDENCY_VERSION_MISMATCH: 'DEPENDENCY_VERSION_MISMATCH',
   TASK_LIMIT_EXCEEDED: 'TASK_LIMIT_EXCEEDED',
+  TASK_STORE_UNAVAILABLE: 'TASK_STORE_UNAVAILABLE',
   VERSION_CONSTRAINT_INVALID: 'VERSION_CONSTRAINT_INVALID',
   MODULE_ID_CONFLICT: 'MODULE_ID_CONFLICT',
   INVALID_SEGMENT: 'INVALID_SEGMENT',
