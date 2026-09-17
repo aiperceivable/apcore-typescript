@@ -485,3 +485,48 @@ describe('path-typed configuration keys (PROTOCOL_SPEC §9.2.1)', () => {
     expect(Config.pathTypedKeys()).toEqual(EXPECTED);
   });
 });
+
+// ---------------------------------------------------------------------------
+// D-74 (spec v1.49.0) — `Config.get('')` is not an error
+// ---------------------------------------------------------------------------
+
+describe('D-74: an empty key is not an error', () => {
+  // The `Config.get` Inputs row said an empty key "is rejected with
+  // ValueError/ConfigInvalidError". The same block's Errors row said "No
+  // errors raised under normal operation", and no SDK had ever rejected it —
+  // apcore-rust's `get` has no error channel at all. The clause described
+  // behaviour that never existed, and a conformance case written from it would
+  // have failed on all three. It was deleted: an empty key resolves no value
+  // and returns the default, like any other absent key.
+  //
+  // Two assertions, because "does not throw" alone is satisfied by a
+  // short-circuit `if (!key) return undefined`, which ignores a caller-supplied
+  // default and is NOT "like any other absent key".
+
+  it('does not throw', () => {
+    const cfg = new Config({ a: { b: 1 } });
+    expect(() => cfg.get('')).not.toThrow();
+    expect(cfg.get('')).toBeUndefined();
+  });
+
+  it('takes the ordinary absent-key path, honouring the default', () => {
+    const cfg = new Config({ a: { b: 1 } });
+    expect(cfg.get('', 'SENTINEL')).toBe('SENTINEL');
+  });
+
+  it('control: a present key is unaffected', () => {
+    // Without this, an implementation returning the default for EVERY key
+    // satisfies both assertions above.
+    const cfg = new Config({ a: { b: 1 } });
+    expect(cfg.get('a.b')).toBe(1);
+    expect(cfg.get('a.b', 'SENTINEL')).toBe(1);
+  });
+
+  it('control: an absent non-empty key behaves identically', () => {
+    // "Like any other absent key" is the decision's own wording, so the two
+    // paths are asserted to AGREE rather than each being checked alone.
+    const cfg = new Config({ a: { b: 1 } });
+    expect(cfg.get('')).toBe(cfg.get('no.such.key'));
+    expect(cfg.get('', 'SENTINEL')).toBe(cfg.get('no.such.key', 'SENTINEL'));
+  });
+});
