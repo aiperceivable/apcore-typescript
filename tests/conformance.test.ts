@@ -3152,6 +3152,8 @@ describe('apcore Conformance Suite (TypeScript)', () => {
     'reload_order_is_topological_not_alphabetical',
     'manifest_full_project_name_defaults_to_apcore',
     'health_summary_project_name_agrees_with_manifest_full',
+    'error_rate_threshold_moves_only_the_healthy_boundary',
+    'the_error_boundary_stays_at_the_table_value',
     'system_modules_declare_open_world_false',
   ];
 
@@ -3642,6 +3644,46 @@ describe('apcore Conformance Suite (TypeScript)', () => {
       const out = (await (mod as any).execute({}, null)) as Record<string, unknown>;
       expect(out['project_name']).toBe(tc.expected.project_name);
     });
+
+    // D-109: `error_rate_threshold` moves the HEALTHY/DEGRADED boundary only.
+    // The degraded/error boundary is the classification table's fixed 0.10.
+    //
+    // This SDK computed it as `healthyThreshold * 10`, so with a threshold of
+    // 0.001 a module erroring 5% of the time was `error` here and `degraded` on
+    // apcore-rust — same module, same metrics, same configuration.
+    for (const caseId of [
+      'error_rate_threshold_moves_only_the_healthy_boundary',
+      'the_error_boundary_stays_at_the_table_value',
+    ]) {
+      it(caseId, async () => {
+        const tc = sysHardeningFixture.test_cases.find((t: any) => t.id === caseId);
+        expect(tc).toBeDefined();
+
+        const observed = tc.action.observed;
+        const moduleId = observed.module_id as string;
+
+        const registry = new Registry();
+        registry.registerInternal(moduleId, {
+          inputSchema: { type: 'object' as const },
+          outputSchema: { type: 'object' as const },
+          description: 'health probe',
+          execute: async () => ({}),
+        });
+
+        const metrics = new MetricsCollector();
+        for (let i = 0; i < observed.total_calls; i++) {
+          metrics.incrementCalls(moduleId, i < observed.error_calls ? 'error' : 'success');
+        }
+
+        const summary = (await (
+          new HealthSummaryModule(registry, metrics, new ErrorHistory(), new Config({})) as any
+        ).execute({ ...tc.action.input }, null)) as any;
+
+        const entry = (summary.modules as any[]).find((m) => m.module_id === moduleId);
+        expect(entry, `${moduleId} missing from the summary`).toBeDefined();
+        expect(entry.status).toBe(tc.expected.module_status);
+      });
+    }
 
     it('health_summary_project_name_agrees_with_manifest_full', async () => {
       // The pairing IS the decision: `manifest.full` alone could be satisfied

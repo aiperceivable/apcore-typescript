@@ -64,7 +64,17 @@ export class HealthSummaryModule {
 
   execute(inputs: Record<string, unknown>, _context: unknown): Record<string, unknown> {
     const healthyThreshold = Number(inputs['error_rate_threshold'] ?? DEFAULT_HEALTHY_THRESHOLD);
-    const degradedThreshold = healthyThreshold * 10;
+    // D-109: `error_rate_threshold` moves the FIRST boundary only. The
+    // degraded/error boundary is the classification table's fixed 0.10.
+    //
+    // This used to be `healthyThreshold * 10`, which silently gave the caller a
+    // second knob the table does not define: with `error_rate_threshold: 0.001`
+    // a module erroring 5% of the time was classified `error` here and
+    // `degraded` by apcore-rust, which reads the table. The consequence is
+    // recorded in the contract because it surprises — at 0.001, `degraded`
+    // spans 0.1%-10% — and a caller wanting a stricter ERROR boundary is asking
+    // for a knob that deliberately does not exist.
+    const degradedThreshold = DEFAULT_DEGRADED_THRESHOLD;
     const includeHealthy = inputs['include_healthy'] !== false && inputs['include_healthy'] !== 'false';
 
     const moduleIds = this._registry.list();
