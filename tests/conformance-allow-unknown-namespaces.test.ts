@@ -25,8 +25,11 @@ interface AllowUnknownCase {
   readonly id: string;
   readonly input: {
     readonly mode: 'namespace' | 'legacy';
-    readonly config: Record<string, unknown> | null;
-    readonly namespace: string | null;
+    readonly config?: Record<string, unknown> | null;
+    readonly namespace?: string | null;
+    /** D-117: the case declares a REGISTERED namespace rather than a document one. */
+    readonly registered_namespace?: { readonly name: string; readonly defaults: Record<string, unknown> };
+    readonly key?: string;
   };
   readonly expected: Record<string, unknown>;
 }
@@ -37,14 +40,59 @@ const fixture: { test_cases: readonly AllowUnknownCase[] } = JSON.parse(
 
 const BASE = { version: '1.0', project: { name: 'allow-unknown-probe' } };
 
+/**
+ * D-117: a registered namespace's defaults answer only in NAMESPACE mode.
+ *
+ * A legacy document has no namespaces, so a declaration ABOUT a namespace has
+ * nothing to say about one. The key is absent from the file by construction —
+ * if it were present the document would be answering, not the registration.
+ */
+function driveRegisteredNamespaceDefault(testCase: AllowUnknownCase): void {
+  const { input, expected } = testCase;
+  const registration = input.registered_namespace!;
+  // Namespace registration is process-wide and permanent (§9.6.3 point 5), so
+  // each case registers under its own name rather than racing the other.
+  const name = `${registration.name}_${testCase.id.slice(0, 12)}`;
+  try {
+    Config.registerNamespace({ name, defaults: { ...registration.defaults } });
+  } catch {
+    // Already registered by a previous run in this process.
+  }
+
+  const doc: Record<string, unknown> =
+    input.mode === 'namespace' ? { apcore: { ...BASE } } : { ...BASE };
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'apcore-d117-'));
+  const file = path.join(dir, 'apcore.yaml');
+  fs.writeFileSync(file, yaml.dump(doc), 'utf-8');
+
+  const config = Config.load(file);
+  const key = input.key!.replace(registration.name, name);
+  const value = config.get(key);
+
+  expect(
+    value !== undefined && value !== null,
+    `${testCase.id}: get(${key}) -> ${JSON.stringify(value)}; the registration ` +
+      'must answer in namespace mode and stay silent for a legacy document',
+  ).toBe(expected['value_readable']);
+  if ('value' in expected) {
+    expect(value).toBe(expected['value']);
+  }
+}
+
 describe('allow_unknown_namespaces.json', () => {
   for (const testCase of fixture.test_cases) {
     it(testCase.id, () => {
       const { input, expected } = testCase;
+
+      if (input.registered_namespace !== undefined) {
+        driveRegisteredNamespaceDefault(testCase);
+        return;
+      }
+
       const doc: Record<string, unknown> =
         input.mode === 'namespace' ? { apcore: { ...BASE } } : { ...BASE };
-      if (input.config !== null) doc['_config'] = { ...input.config };
-      if (input.namespace !== null) doc[input.namespace] = { x: 1 };
+      if (input.config != null) doc['_config'] = { ...input.config };
+      if (input.namespace != null) doc[input.namespace] = { x: 1 };
 
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'apcore-allow-unknown-'));
       const file = path.join(dir, 'apcore.yaml');
