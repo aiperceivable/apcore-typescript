@@ -76,6 +76,28 @@ const DEFAULT_MAX_PENDING = 1000;
  * - `eventPattern` (glob) filters which events a subscriber receives.
  * - `flush()` drains all in-flight async deliveries.
  */
+/**
+ * The DECLARED subscriber kind, with the DLQ path's fallback.
+ *
+ * A-D-029: prefer the declared `subscriberType` field; derive from the
+ * constructor name only when it is absent.
+ *
+ * Exported and shared because D-116 found the circuit breaker reporting a
+ * DIFFERENT value for the same subscriber — a raw constructor name, without
+ * even this normalisation — so a consumer routing on `subscriber_type` got one
+ * answer for a delivery failure and another for the circuit opening. Two copies
+ * of a default are how a surface drifts from the one it must agree with, which
+ * is why this is one function rather than two expressions.
+ */
+export function resolveSubscriberType(subscriber: {
+  subscriberType?: unknown;
+}): string {
+  if (typeof subscriber.subscriberType === 'string') return subscriber.subscriberType;
+  return ((subscriber as { constructor?: { name?: string } }).constructor?.name ?? 'unknown')
+    .replace('Subscriber', '')
+    .toLowerCase();
+}
+
 export class EventEmitter {
   private _subscribers: EventSubscriber[] = [];
   private _pending: Promise<void>[] = [];
@@ -213,14 +235,7 @@ export class EventEmitter {
     attemptCount: number,
     reason?: string,
   ): Promise<void> {
-    // A-D-029: prefer the declared `subscriberType` field; fall back to the
-    // constructor-name derivation only when it is absent.
-    const subscriberType =
-      typeof subscriber.subscriberType === 'string'
-        ? subscriber.subscriberType
-        : ((subscriber as { constructor?: { name?: string } }).constructor?.name ?? 'unknown')
-            .replace('Subscriber', '')
-            .toLowerCase();
+    const subscriberType = resolveSubscriberType(subscriber);
     const subscriberId = subscriber.subscriberId ?? this._identifySubscriber(subscriber);
 
     const dlqEvent = createEvent(

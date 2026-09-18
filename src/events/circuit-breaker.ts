@@ -1,4 +1,5 @@
 import type { EventSubscriber, ApCoreEvent } from './emitter.js';
+import { resolveSubscriberType } from './emitter.js';
 
 export enum CircuitState {
   CLOSED = 'CLOSED',
@@ -40,7 +41,13 @@ export class CircuitBreakerWrapper implements EventSubscriber {
     this._timeoutMs = config.timeoutMs ?? 5000;
     this._openThreshold = config.openThreshold ?? 5;
     this._recoveryWindowMs = config.recoveryWindowMs ?? 60000;
-    this._subscriberType = config.subscriberType ?? this._subscriber.constructor.name;
+    // D-116: the DECLARED kind, resolved exactly as the DLQ path resolves it.
+    // This used to be the raw constructor name — neither the declared kind nor
+    // the value this same SDK puts in its own `apcore.event.delivery_failed`
+    // payload, so a consumer routing on `subscriber_type` saw two answers for
+    // one subscriber. An explicit `config.subscriberType` still wins, because
+    // that is a caller override rather than a second default.
+    this._subscriberType = config.subscriberType ?? resolveSubscriberType(this._subscriber);
   }
 
   /**

@@ -67,6 +67,7 @@ import { classNameToSegment, discoverMultiClass } from '../src/registry/multi-cl
 import { ModuleIdConflictError, CircuitBreakerOpenError } from '../src/errors.js';
 import {
   CircuitBreakerWrapper,
+  resolveSubscriberType,
   CircuitState,
   FileSubscriber,
   StdoutSubscriber,
@@ -1723,6 +1724,25 @@ describe('apcore Conformance Suite (TypeScript)', () => {
 
   const eventHardeningFixture = loadFixture('event_management_hardening');
 
+  /** Every case id this file drives; checked against the fixture below. */
+  const DRIVEN_EVENT_HARDENING_CASE_IDS = [
+    'subscriber_factory_registered_type',
+    'builtin_stdout_type',
+    'builtin_file_type',
+    'builtin_filter_passes_matching',
+    'builtin_filter_discards_nonmatching',
+    'circuit_open_after_threshold',
+    'circuit_discards_in_open_state',
+    'circuit_half_open_after_window',
+    'circuit_closes_on_success',
+    'event_naming_canonical',
+    'filter_exclude_question_mark_is_a_wildcard',
+    'filter_exclude_character_class_does_not_expand',
+    'filter_include_question_mark_is_a_wildcard',
+    'circuit_event_reports_the_declared_subscriber_type',
+    'circuit_event_uses_the_dlq_default_for_an_undeclared_subscriber',
+  ];
+
   function makeTestEvent(overrides: Partial<ApCoreEvent> = {}): ApCoreEvent {
     return {
       eventType: 'test.event',
@@ -1880,6 +1900,18 @@ describe('apcore Conformance Suite (TypeScript)', () => {
       });
     }
 
+    it('every case in the fixture is driven by this file', () => {
+      // apcore-python and apcore-rust both guard this; this SDK did not, so
+      // two cases added to the fixture were driven by nobody and the suite
+      // stayed green. `check_driver_coverage.py` matches a quoted fixture-name
+      // literal, which this file satisfies by loading the fixture at all — it
+      // answers "does this SDK load it", not "does it run every case".
+      const driven = new Set(DRIVEN_EVENT_HARDENING_CASE_IDS);
+      const declared: string[] = eventHardeningFixture.test_cases.map((t: any) => t.id as string);
+      expect(declared.filter((id: string) => !driven.has(id))).toEqual([]);
+      expect([...driven].filter((id: string) => !declared.includes(id))).toEqual([]);
+    });
+
     it('builtin_filter_discards_nonmatching', async () => {
       const tc = eventHardeningFixture.test_cases.find(
         (t: any) => t.id === 'builtin_filter_discards_nonmatching',
@@ -1949,6 +1981,66 @@ describe('apcore Conformance Suite (TypeScript)', () => {
       expect(cb.consecutiveFailures).toBe(tc.expected.consecutive_failures);
       expect(emittedEventTypes).toContain(tc.expected.event_emitted);
     });
+
+    // D-116: the circuit event reports the DECLARED subscriber type.
+    //
+    // Both cases build a subscriber whose id contains a HYPHEN and whose
+    // declared kind is not a prefix of it. That is the whole discriminator:
+    // this SDK reported the raw constructor name, and apcore-rust split the id
+    // on the first hyphen so `health-alert` became `health`. An id without a
+    // hyphen, or one whose prefix equals the declared kind, is answered
+    // identically by every wrong implementation and by the right one.
+    for (const caseId of [
+      'circuit_event_reports_the_declared_subscriber_type',
+      'circuit_event_uses_the_dlq_default_for_an_undeclared_subscriber',
+    ]) {
+      it(caseId, async () => {
+        const tc = eventHardeningFixture.test_cases.find((t: any) => t.id === caseId);
+        expect(tc).toBeDefined();
+
+        const emitted: ApCoreEvent[] = [];
+        const mockEmitter = {
+          emit(ev: ApCoreEvent) {
+            emitted.push(ev);
+          },
+        };
+
+        const spec = tc.input.subscriber;
+        const failingSub: EventSubscriber = {
+          subscriberId: spec.subscriber_id,
+          ...(spec.subscriber_type !== undefined ? { subscriberType: spec.subscriber_type } : {}),
+          async onEvent() {
+            throw new Error('simulated failure');
+          },
+        };
+
+        const cb = new CircuitBreakerWrapper(failingSub, mockEmitter, {
+          openThreshold: tc.input.circuit_breaker_config.open_threshold,
+          recoveryWindowMs: tc.input.circuit_breaker_config.recovery_window_ms,
+          timeoutMs: tc.input.circuit_breaker_config.timeout_ms,
+        });
+
+        const testEvent = makeTestEvent();
+        for (const _attempt of tc.input.failure_sequence) {
+          await cb.onEvent(testEvent);
+        }
+
+        expect(cb.state).toBe(tc.expected.circuit_state as CircuitState);
+        const opened = emitted.filter((e) => e.eventType === tc.expected.event_emitted);
+        expect(opened).toHaveLength(1);
+
+        if (tc.expected.event_subscriber_type !== undefined) {
+          expect(opened[0].data['subscriber_type']).toBe(tc.expected.event_subscriber_type);
+        }
+        if (tc.expected.event_subscriber_type_equals_dlq_subscriber_type === true) {
+          // Asserted as EQUAL TO the DLQ path's value rather than as a literal:
+          // the default is a language-shaped derivation, and what is normative
+          // is that the two surfaces AGREE. All three SDKs disagreed with their
+          // own DLQ value, which is the finding.
+          expect(opened[0].data['subscriber_type']).toBe(resolveSubscriberType(failingSub));
+        }
+      });
+    }
 
     it('circuit_discards_in_open_state', async () => {
       const tc = eventHardeningFixture.test_cases.find(
