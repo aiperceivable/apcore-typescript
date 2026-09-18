@@ -364,12 +364,21 @@ export class Registry {
   private _idMapLoaded = false;
 
   /**
-   * `<moduleId>@<version>` keys already warned about by
-   * {@link _warnModuleDeprecated}. `getDefinition` is a read that callers
+   * `<moduleId>@<version>@<canonical x-deprecation>` keys already warned about
+   * by {@link _warnModuleDeprecated}. `getDefinition` is a read that callers
    * make repeatedly, so the notice is emitted once per module version per
    * registry rather than once per call — apcore-python routes its warning
    * through `logger.warning`, which a host filters by level; `console.warn`
    * has no such control.
+   *
+   * The NOTICE is part of the key (D-89, spec v1.59.0), and the key is never
+   * cleared on `unregister`. Keying on `<moduleId>@<version>` alone made this
+   * SDK swallow a genuinely new or changed deprecation block on a
+   * re-registered module — `watch()` re-runs discovery as an unregister +
+   * re-register, so the replacement's notice was silently deduped against the
+   * one it replaced. Clearing on unregister is the other wrong answer: it
+   * re-warns for every deprecated module on every hot reload, which is the
+   * traffic-proportional spam D-89 exists to prevent.
    */
   private _deprecationWarned: Set<string> = new Set();
 
@@ -1549,7 +1558,26 @@ export class Registry {
   }
 
   /**
-   * Warn that a module version is deprecated, once per `<moduleId>@<version>`.
+   * Canonical rendering of an `x-deprecation` block, for the D-89 dedupe key.
+   *
+   * Sorted keys and no incidental whitespace, so two structurally equal
+   * notices dedupe regardless of how they were built (spec v1.59.0).
+   */
+  private static _canonicalDeprecation(deprecation: Record<string, unknown>): string {
+    const sorted: Record<string, unknown> = {};
+    for (const k of Object.keys(deprecation).sort()) sorted[k] = deprecation[k];
+    try {
+      return JSON.stringify(sorted);
+    } catch {
+      // A cyclic or otherwise unserialisable notice: fall back to the key set,
+      // which is stable enough for an equality key and never throws on a read.
+      return Object.keys(sorted).join(',');
+    }
+  }
+
+  /**
+   * Warn that a module version is deprecated, once per
+   * `<moduleId>@<version>@<canonical notice>`.
    *
    * Message shape mirrors apcore-python `Registry._log_deprecation_warning`
    * so an operator reading two SDKs' logs sees the same sentence.
@@ -1559,7 +1587,7 @@ export class Registry {
     version: string,
     deprecation: Record<string, unknown>,
   ): void {
-    const key = `${moduleId}@${version}`;
+    const key = `${moduleId}@${version}@${Registry._canonicalDeprecation(deprecation)}`;
     if (this._deprecationWarned.has(key)) return;
     this._deprecationWarned.add(key);
 

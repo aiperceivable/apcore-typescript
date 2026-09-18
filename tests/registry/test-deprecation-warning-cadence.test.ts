@@ -15,11 +15,12 @@
  * version makes the version test red, keying it on something process-global
  * makes the per-instance test red.
  *
- * Two dimensions are deliberately NOT asserted here, because the three SDKs
- * disagree and D-89 settles neither: WHERE the warning fires (this SDK and
- * apcore-python warn on the read, apcore-rust on registration) and what an
- * unregister + re-register does (apcore-python re-warns, this SDK and
- * apcore-rust stay silent). See the open item beside D-89 in the decision log.
+ * Two further dimensions were left open by v1.49.0 and adjudicated at v1.59.0:
+ * the warning fires on the READ, never on registration, and the dedupe key
+ * includes the `x-deprecation` BLOCK and is never cleared on `unregister`.
+ * Both are asserted below. This SDK already fired on the read; it keyed on
+ * `<moduleId>@<version>` alone, so a re-registered module carrying a new or
+ * changed notice was silently deduped against the one it replaced.
  */
 
 import { describe, it, expect, vi, afterEach } from 'vitest';
@@ -40,9 +41,14 @@ function deprecatedModule() {
   };
 }
 
-async function register(reg: Registry, moduleId: string, version = '1.0.0'): Promise<void> {
+async function register(
+  reg: Registry,
+  moduleId: string,
+  version = '1.0.0',
+  deprecation: Record<string, string> | null = null,
+): Promise<void> {
   await reg.register(moduleId, deprecatedModule(), version, {
-    'x-deprecation': { ...DEPRECATION },
+    'x-deprecation': { ...(deprecation ?? DEPRECATION) },
   });
 }
 
@@ -136,5 +142,88 @@ describe('D-89: the deprecation warning fires once per (moduleId, version)', () 
         reg.getDefinition('cadence.versions');
       }),
     ).toBe(1);
+  });
+
+  it('the warning fires on the READ, not on registration', async () => {
+    // D-89 / spec v1.59.0. Registration runs at startup, frequently before the
+    // host has installed its log handling; a registration-time warning is then
+    // lost with no later chance to re-emit, because the dedupe entry has
+    // already been written. apcore-rust emitted at registration and its reads
+    // never warned at all.
+    const reg = new Registry();
+
+    let atRegistration = 0;
+    const spy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await reg.register('cadence.read_path', deprecatedModule(), '1.0.0', {
+        'x-deprecation': { ...DEPRECATION },
+      });
+      atRegistration = spy.mock.calls.filter((c) =>
+        String(c[0]).includes('is deprecated'),
+      ).length;
+    } finally {
+      spy.mockRestore();
+    }
+    expect(atRegistration).toBe(0);
+
+    expect(countWarnings(() => reg.getDefinition('cadence.read_path'))).toBe(1);
+  });
+
+  it('a re-registration carrying the SAME notice stays silent', async () => {
+    // D-89 / spec v1.59.0. `watch()` re-runs discovery as an unregister +
+    // re-register, so clearing the dedupe on unregister re-warns for every
+    // deprecated module on every hot reload — the traffic-proportional spam
+    // D-89 exists to prevent, through the door its wording did not close.
+    const reg = new Registry();
+    await register(reg, 'cadence.same_notice');
+
+    expect(countWarnings(() => reg.getDefinition('cadence.same_notice'))).toBe(1);
+
+    await reg.unregister('cadence.same_notice');
+    await register(reg, 'cadence.same_notice');
+
+    expect(countWarnings(() => reg.getDefinition('cadence.same_notice'))).toBe(0);
+  });
+
+  it('a re-registration carrying a CHANGED notice warns again', async () => {
+    // The other half, and the control for the test above: without it, "stays
+    // silent" is equally satisfied by an implementation that never warns for a
+    // re-registered module at all — which is what this SDK did, swallowing a
+    // genuinely new notice.
+    const reg = new Registry();
+    await register(reg, 'cadence.changed_notice');
+
+    expect(countWarnings(() => reg.getDefinition('cadence.changed_notice'))).toBe(1);
+
+    await reg.unregister('cadence.changed_notice');
+    await register(reg, 'cadence.changed_notice', '1.0.0', {
+      deprecated_since: '1.0.0',
+      sunset_version: '2.0.0', // brought forward
+      migration_guide: 'Use mod.new instead.',
+    });
+
+    const spy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      reg.getDefinition('cadence.changed_notice');
+      const messages = spy.mock.calls
+        .map((c) => String(c[0]))
+        .filter((m) => m.includes('is deprecated'));
+      expect(messages).toHaveLength(1);
+      expect(messages[0]).toContain('sunset in 2.0.0');
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('a notice ADDED on re-registration warns', async () => {
+    const reg = new Registry();
+    await reg.register('cadence.added_notice', deprecatedModule(), '1.0.0');
+
+    expect(countWarnings(() => reg.getDefinition('cadence.added_notice'))).toBe(0);
+
+    await reg.unregister('cadence.added_notice');
+    await register(reg, 'cadence.added_notice');
+
+    expect(countWarnings(() => reg.getDefinition('cadence.added_notice'))).toBe(1);
   });
 });
