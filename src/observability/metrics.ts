@@ -6,7 +6,11 @@ import type { Context } from '../context.js';
 import { ModuleError } from '../errors.js';
 import { Middleware } from '../middleware/base.js';
 import { InMemoryObservabilityStore, type ObservabilityStore } from './store.js';
-import { InMemoryStorageBackend, type StorageBackend } from './storage.js';
+import {
+  InMemoryStorageBackend,
+  STORAGE_NAMESPACE_METRICS,
+  type StorageBackend,
+} from './storage.js';
 
 const DESCRIPTIONS: Record<string, string> = {
   apcore_module_calls_total: 'Total module calls',
@@ -122,6 +126,16 @@ export class MetricsCollector {
     // +Inf bucket
     const infKey = `${name}|${lk}|Inf`;
     this._histogramBuckets.set(infKey, (this._histogramBuckets.get(infKey) ?? 0) + 1);
+
+    // D-113: persist under the canonical `metrics` namespace. The backend was
+    // constructed here and written to by nothing. Not awaited — `observe` is
+    // synchronous and a backend failure must not break the in-memory snapshot,
+    // which is what every reader uses.
+    void this._storage.save(STORAGE_NAMESPACE_METRICS, key, {
+      name,
+      labels: { ...labels },
+      value,
+    });
   }
 
   snapshot(): Record<string, unknown> {

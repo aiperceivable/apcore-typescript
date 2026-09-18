@@ -6,7 +6,11 @@
 import { createHash } from 'node:crypto';
 import { ModuleError } from '../errors.js';
 import { InMemoryObservabilityStore, type ObservabilityStore } from './store.js';
-import { InMemoryStorageBackend, type StorageBackend } from './storage.js';
+import {
+  InMemoryStorageBackend,
+  STORAGE_NAMESPACE_ERROR_HISTORY,
+  type StorageBackend,
+} from './storage.js';
 
 export interface ErrorEntry {
   readonly moduleId: string;
@@ -199,6 +203,23 @@ export class ErrorHistory {
     this._evictModule(moduleId);
     this._evictTotal();
     this._store.recordError(entry);
+
+    // D-113: persist under the canonical `error_history` namespace. The
+    // `storage` option was accepted here and read by nothing — one of the five
+    // collector/SDK combinations of nine where the MUST reached no mechanism.
+    // `save` is async and `record` is not, so the result is deliberately not
+    // awaited; a backend failure must not break the in-memory path, which is
+    // the authoritative one for `get`/`getAll`.
+    void this._storage.save(STORAGE_NAMESPACE_ERROR_HISTORY, fp, {
+      module_id: entry.moduleId,
+      code: entry.code,
+      message: entry.message,
+      timestamp: entry.timestamp,
+      count: entry.count,
+      first_occurred: entry.firstOccurred,
+      last_occurred: entry.lastOccurred,
+      fingerprint: entry.fingerprint,
+    });
   }
 
   get(moduleId: string, limit?: number): ErrorEntry[] {

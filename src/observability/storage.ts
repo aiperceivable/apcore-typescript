@@ -20,6 +20,18 @@
  * Namespaces partition the key space (e.g. "errors", "usage", "metrics") so
  * a single backend instance can be shared by multiple collectors safely.
  */
+/**
+ * The namespace each bundled collector writes under (D-113).
+ *
+ * §1.1 made the `StorageBackend` argument a MUST and never named these, so of
+ * nine collector/SDK combinations only four wrote anything and the two that
+ * wrote ErrorHistory records used different names. A namespace IS the key a
+ * caller queries by, so an unnamed one is an argument that cannot be read back.
+ */
+export const STORAGE_NAMESPACE_METRICS = 'metrics';
+export const STORAGE_NAMESPACE_USAGE = 'usage';
+export const STORAGE_NAMESPACE_ERROR_HISTORY = 'error_history';
+
 export interface StorageBackend {
   save(
     namespace: string,

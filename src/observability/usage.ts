@@ -4,7 +4,11 @@
 
 import { Middleware } from '../middleware/base.js';
 import type { Context } from '../context.js';
-import { InMemoryStorageBackend, type StorageBackend } from './storage.js';
+import {
+  InMemoryStorageBackend,
+  STORAGE_NAMESPACE_USAGE,
+  type StorageBackend,
+} from './storage.js';
 
 export interface UsageRecord {
   readonly timestamp: string;
@@ -139,6 +143,18 @@ export class UsageCollector {
       console.warn(`[apcore:usage] Record buffer full for module '${moduleId}' bucket '${bk}' (max ${this._maxRecordsPerBucket}) — record dropped`);
     }
     this._cleanupExpired(moduleId);
+
+    // D-113: persist under the canonical `usage` namespace. The backend was
+    // constructed here and written to by nothing. Not awaited — `record` is
+    // synchronous and a backend failure must not break the in-memory
+    // aggregation, which is what `getSummary` reads.
+    void this._storage.save(STORAGE_NAMESPACE_USAGE, `${moduleId}:${ts}`, {
+      module_id: moduleId,
+      timestamp: ts,
+      caller_id: callerId,
+      latency_ms: latencyMs,
+      success,
+    });
   }
 
   getSummary(period: string = '24h'): ModuleUsageSummary[] {

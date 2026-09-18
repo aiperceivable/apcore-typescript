@@ -23,7 +23,15 @@ import { describe, expect, it } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
-import { InMemoryStorageBackend } from '../src/observability/storage.js';
+import {
+  InMemoryStorageBackend,
+  STORAGE_NAMESPACE_ERROR_HISTORY,
+  type StorageBackend,
+} from '../src/observability/storage.js';
+import { MetricsCollector } from '../src/observability/metrics.js';
+import { UsageCollector } from '../src/observability/usage.js';
+import { ErrorHistory } from '../src/observability/error-history.js';
+import { ModuleError } from '../src/errors.js';
 import { findFixturesRoot } from './spec-repo.js';
 
 // ---------------------------------------------------------------------------
@@ -41,7 +49,10 @@ interface StorageOp {
 interface StorageCase {
   readonly id: string;
   readonly description: string;
-  readonly input: { readonly operations: readonly StorageOp[] };
+  readonly input?: { readonly operations: readonly StorageOp[] };
+  /** D-113: the case drives the bundled COLLECTORS, not the backend directly. */
+  readonly collectors?: readonly string[];
+  readonly omit_backend?: boolean;
   readonly expected: Record<string, unknown>;
 }
 
@@ -132,10 +143,68 @@ const EXPECTATION_ASSERTIONS: Record<
   },
 };
 
+/**
+ * D-113: which namespace each bundled collector writes, and the omitted default.
+ *
+ * Drives all named collectors through ONE backend so the assertion is the SET
+ * of namespaces the surface produces, not three independent behaviours — an SDK
+ * writing two of three would otherwise read as a partial gap rather than a
+ * wrong surface.
+ */
+async function driveCollectorCase(tc: StorageCase): Promise<void> {
+  if (tc.omit_backend === true) {
+    // The observable is READABILITY: a record written with no backend supplied
+    // is still there to read. Asserting a class name would pin this SDK's
+    // spelling, which the decision does not.
+    const history = new ErrorHistory();
+    history.record('mod.x', new ModuleError('E1', 'boom'));
+    await new Promise((r) => setTimeout(r, 20));
+    const stored = await history.storage.list(STORAGE_NAMESPACE_ERROR_HISTORY);
+    expect(
+      stored.length > 0,
+      `${tc.id}: an omitted backend must be the in-memory one, not 'no storage'`,
+    ).toBe(tc.expected['records_readable']);
+    return;
+  }
+
+  const seen = new Set<string>();
+  const recording: StorageBackend = {
+    async save(namespace: string) {
+      seen.add(namespace);
+    },
+    async get() {
+      return null;
+    },
+    async list() {
+      return [];
+    },
+    async delete() {},
+  };
+
+  for (const collector of tc.collectors ?? []) {
+    if (collector === 'metrics') {
+      new MetricsCollector({ storage: recording }).observeDuration('mod.x', 0.01);
+    } else if (collector === 'usage') {
+      new UsageCollector({ storage: recording }).record('mod.x', 'caller', 12, true);
+    } else if (collector === 'error_history') {
+      new ErrorHistory({ storage: recording }).record('mod.x', new ModuleError('E1', 'boom'));
+    } else {
+      throw new Error(`${tc.id}: unknown collector '${collector}'`);
+    }
+  }
+  await new Promise((r) => setTimeout(r, 20));
+
+  expect([...seen].sort()).toEqual([...(tc.expected['namespaces_written'] as string[])].sort());
+}
+
 describe('Conformance: StorageBackend four-method contract (storage_backend.json)', () => {
   fixture.test_cases.forEach((tc) => {
     it(tc.id, async () => {
-      const result = await runOperations(tc.input.operations);
+      if (tc.collectors !== undefined) {
+        await driveCollectorCase(tc);
+        return;
+      }
+      const result = await runOperations(tc.input!.operations);
 
       const keys = Object.keys(tc.expected).filter((k) => !k.startsWith('_'));
       const unhandled = keys.filter((k) => !(k in EXPECTATION_ASSERTIONS));
@@ -165,6 +234,9 @@ describe('Conformance: StorageBackend four-method contract (storage_backend.json
       'delete_idempotent',
       'namespace_isolation',
       'save_overwrites_existing',
+      // D-113: the collector surface, not the backend contract.
+      'each_collector_writes_its_declared_namespace',
+      'an_omitted_backend_is_the_in_memory_one',
     ]);
   });
 });
