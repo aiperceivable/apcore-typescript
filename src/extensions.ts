@@ -8,6 +8,7 @@
 
 import type { ACL } from './acl.js';
 import type { ApprovalHandler } from './approval.js';
+import { InvalidInputError } from './errors.js';
 import type { Executor } from './executor.js';
 import { Middleware } from './middleware/index.js';
 import { TracingMiddleware } from './observability/tracing.js';
@@ -151,18 +152,34 @@ export class ExtensionManager {
   }
 
   /**
-   * Register an extension for the given extension point.
+   * Return the named extension point, or throw if it is not registered.
    *
-   * @throws Error if point_name is unknown.
-   * @throws Error if extension does not satisfy the type constraint.
+   * D-108: an UNKNOWN point name is an error; an EMPTY point is not. The
+   * distinction used to be blurred by the contract's `### Errors: No errors
+   * raised` row, which was written about the empty case — one SDK read it as
+   * covering the unknown case too and answered a misspelled name with a
+   * silent null/[]/false, so `get('middlewares')` wired nothing and first
+   * surfaced as a bug at `apply()`. A bare `Error` carries no `code`, so a
+   * caller could not tell this apart from any other failure either.
    */
-  register(pointName: string, extension: unknown): void {
+  private requirePoint(pointName: string): InternalExtensionPoint {
     const point = this._points.get(pointName);
     if (point === undefined) {
-      throw new Error(
+      throw new InvalidInputError(
         `Unknown extension point: '${pointName}'. Available: ${[...this._points.keys()].sort().join(', ')}`,
       );
     }
+    return point;
+  }
+
+  /**
+   * Register an extension for the given extension point.
+   *
+   * @throws InvalidInputError if point_name is unknown.
+   * @throws TypeError if extension does not satisfy the type constraint.
+   */
+  register(pointName: string, extension: unknown): void {
+    const point = this.requirePoint(pointName);
 
     if (!point.typeCheck(extension)) {
       throw new TypeError(
@@ -179,33 +196,36 @@ export class ExtensionManager {
 
   /**
    * Return the single extension for a non-multiple point, or null.
+   *
+   * @throws InvalidInputError if pointName is not a registered point. A point
+   * that exists but holds nothing returns null (D-108).
    */
   get(pointName: string): unknown | null {
-    if (!this._points.has(pointName)) {
-      throw new Error(`Unknown extension point: '${pointName}'`);
-    }
+    this.requirePoint(pointName);
     const exts = this._extensions.get(pointName)!;
     return exts.length > 0 ? exts[0] : null;
   }
 
   /**
    * Return all extensions for a multiple-type point.
+   *
+   * @throws InvalidInputError if pointName is not a registered point. A point
+   * that exists but holds nothing returns [] (D-108).
    */
   getAll(pointName: string): unknown[] {
-    if (!this._points.has(pointName)) {
-      throw new Error(`Unknown extension point: '${pointName}'`);
-    }
+    this.requirePoint(pointName);
     return [...this._extensions.get(pointName)!];
   }
 
   /**
    * Remove a specific extension from an extension point.
    * Returns true if found and removed, false otherwise.
+   *
+   * @throws InvalidInputError if pointName is not a registered point. An
+   * extension the point does not hold returns false (D-108).
    */
   unregister(pointName: string, extension: unknown): boolean {
-    if (!this._points.has(pointName)) {
-      throw new Error(`Unknown extension point: '${pointName}'`);
-    }
+    this.requirePoint(pointName);
     const exts = this._extensions.get(pointName)!;
     const idx = exts.indexOf(extension);
     if (idx === -1) return false;

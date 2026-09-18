@@ -15,6 +15,8 @@ import { describe, it, expect, vi } from 'vitest';
 import { ExtensionManager } from '../src/extensions.js';
 import { Middleware } from '../src/middleware/index.js';
 import { ACL } from '../src/acl.js';
+import { InvalidInputError } from '../src/errors.js';
+import type { ModuleError } from '../src/errors.js';
 import { TracingMiddleware, InMemoryExporter } from '../src/observability/tracing.js';
 import type { Registry } from '../src/registry/registry.js';
 import type { Executor } from '../src/executor.js';
@@ -83,7 +85,10 @@ describe('ExtensionManager.register', () => {
     } catch (e) {
       caught = e;
     }
-    expect(caught).toBeInstanceOf(Error);
+    // D-108: `Error` is satisfied by every throw in the language. Assert the
+    // declared code, which is the thing a caller can branch on.
+    expect(caught).toBeInstanceOf(InvalidInputError);
+    expect((caught as ModuleError).code).toBe('GENERAL_INVALID_INPUT');
     expect((caught as Error).message).toContain('Unknown extension point');
   });
 

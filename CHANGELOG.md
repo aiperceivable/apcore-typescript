@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **An unknown extension point throws `InvalidInputError`, not a bare `Error` (spec v1.51.0, extension-system.md, D-108).** `ExtensionManager.register` / `get` / `getAll` / `unregister` threw `new Error(...)` for a point name that is not registered. The behaviour was right — this SDK was the one that had always rejected — but a bare `Error` carries no `code`, so a caller could not tell a misspelled point name from any other failure, and the test that covered it could only assert `toThrow('Unknown extension point')`, a message-text match that would survive any change to the type. All four doors now throw `InvalidInputError` (`code: 'GENERAL_INVALID_INPUT'`) through one `requirePoint` path. A registered point holding nothing is still not an error: `get` returns `null`, `getAll` returns `[]`, `unregister` returns `false`.
+
 ### Deprecated
 
 - **`Registry.get(moduleId, versionHint)` — the version hint is ignored and will be removed at 2.0**

@@ -3,6 +3,8 @@ import { ExtensionManager } from '../src/extensions.js';
 import type { ExtensionPoint } from '../src/extensions.js';
 import { Middleware } from '../src/middleware/index.js';
 import { ACL } from '../src/acl.js';
+import { InvalidInputError } from '../src/errors.js';
+import type { ModuleError } from '../src/errors.js';
 import { Registry } from '../src/registry/registry.js';
 import { Executor } from '../src/executor.js';
 import { TracingMiddleware, InMemoryExporter } from '../src/observability/tracing.js';
@@ -151,14 +153,25 @@ describe('ModuleValidator extension', () => {
   });
 });
 
+/** The `code` carried by whatever `fn` throws, or undefined for an untyped throw. */
+function codeOfThrow(fn: () => unknown): string | undefined {
+  try {
+    fn();
+  } catch (e) {
+    return (e as ModuleError).code;
+  }
+  return undefined;
+}
+
 // ---------------------------------------------------------------------------
 // Tests: validation errors
 // ---------------------------------------------------------------------------
 
 describe('Validation', () => {
-  it('unknown point throws on register', () => {
+  it('unknown point throws InvalidInputError on register', () => {
     const mgr = new ExtensionManager();
-    expect(() => mgr.register('nonexistent', {})).toThrow('Unknown extension point');
+    expect(() => mgr.register('nonexistent', {})).toThrow(InvalidInputError);
+    expect(codeOfThrow(() => mgr.register('nonexistent', {}))).toBe('GENERAL_INVALID_INPUT');
   });
 
   it('wrong type throws TypeError on register', () => {
@@ -166,19 +179,34 @@ describe('Validation', () => {
     expect(() => mgr.register('middleware', 'not_a_middleware')).toThrow(TypeError);
   });
 
-  it('get unknown point throws', () => {
+  // D-108: the code is the assertion. A bare `Error` carries none, so a caller
+  // could not tell a misspelled point name from any other failure, and every
+  // cross-language assertion had to fall back to matching on message text.
+  it('get unknown point throws InvalidInputError', () => {
     const mgr = new ExtensionManager();
-    expect(() => mgr.get('nonexistent')).toThrow('Unknown extension point');
+    expect(() => mgr.get('nonexistent')).toThrow(InvalidInputError);
+    expect(codeOfThrow(() => mgr.get('nonexistent'))).toBe('GENERAL_INVALID_INPUT');
   });
 
-  it('getAll unknown point throws', () => {
+  it('getAll unknown point throws InvalidInputError', () => {
     const mgr = new ExtensionManager();
-    expect(() => mgr.getAll('nonexistent')).toThrow('Unknown extension point');
+    expect(() => mgr.getAll('nonexistent')).toThrow(InvalidInputError);
+    expect(codeOfThrow(() => mgr.getAll('nonexistent'))).toBe('GENERAL_INVALID_INPUT');
   });
 
-  it('unregister unknown point throws', () => {
+  it('unregister unknown point throws InvalidInputError', () => {
     const mgr = new ExtensionManager();
-    expect(() => mgr.unregister('nonexistent', {})).toThrow('Unknown extension point');
+    expect(() => mgr.unregister('nonexistent', {})).toThrow(InvalidInputError);
+    expect(codeOfThrow(() => mgr.unregister('nonexistent', {}))).toBe('GENERAL_INVALID_INPUT');
+  });
+
+  it('a registered point holding nothing does not throw', () => {
+    // D-108's other half, and the control for the three above: if the rejection
+    // were "throw for anything not holding an extension", these would be red.
+    const mgr = new ExtensionManager();
+    expect(mgr.get('acl')).toBeNull();
+    expect(mgr.getAll('middleware')).toEqual([]);
+    expect(mgr.unregister('middleware', {})).toBe(false);
   });
 
   it('discoverer rejects wrong type', () => {
