@@ -264,14 +264,17 @@ describe('Contract: Config.load', () => {
 // ===========================================================================
 
 describe('Contract: Config.get', () => {
-  it.skip(
-    'config_bus.get.input.key.empty: spec/impl divergence — spec says empty key is rejected, ' +
-      'but this TS SDK returns the default for an empty key instead of raising (config.ts Config.get)',
-    () => {
-      const config = Config.fromDefaults();
-      expect(() => config.get('')).toThrow();
-    },
-  );
+  it('config_bus.get.input.key.empty: an empty key returns the default, it is not an error', () => {
+    // D-74: an empty key resolves no value and returns the default, exactly
+    // like any other absent key. This was skipped in all three SDKs with the
+    // reason "spec says empty key is rejected" — written before D-74 deleted
+    // that row and recorded that it "described behaviour no SDK has ever had".
+    // A symmetric skip is invisible to the skip-asymmetry guard.
+    const config = Config.fromDefaults();
+    expect(config.get('')).toBeUndefined();
+    const sentinel = Symbol('sentinel');
+    expect(config.get('', sentinel)).toBe(sentinel);
+  });
 
   it('config_bus.get.input.default.missing_key: missing key returns provided default (no error)', () => {
     const config = Config.fromDefaults();
