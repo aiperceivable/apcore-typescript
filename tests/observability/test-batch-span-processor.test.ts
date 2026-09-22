@@ -7,13 +7,9 @@
  *  - onSpan enqueues without exporting eagerly,
  *  - queue-full backpressure: spans are dropped and spansDropped increments,
  *  - timed/interval background flush exports buffered spans,
+ *  - forceFlush drains the queue synchronously (from the caller's point of view),
  *  - shutdown flushes remaining spans,
  *  - shutdown is idempotent.
- *
- * NOTE: the Python case `test_force_flush_drains_queue_synchronously` is NOT
- * ported — the TypeScript `BatchSpanProcessor` exposes no public `forceFlush`
- * (flushing is private `_flush`, driven only by the interval timer and
- * `shutdown`). Testing it would require a non-existent API.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
@@ -73,6 +69,36 @@ describe('BatchSpanProcessor queue full', () => {
     } finally {
       await proc.shutdown();
     }
+  });
+});
+
+describe('BatchSpanProcessor forceFlush', () => {
+  it('drains the queue synchronously (from the caller\'s point of view)', async () => {
+    const exporter = new InMemoryExporter();
+    const proc = new BatchSpanProcessor({
+      exporter,
+      maxQueueSize: 10,
+      scheduleDelayMs: 60_000,
+    });
+    try {
+      for (let i = 0; i < 3; i++) {
+        proc.onSpan(makeSpan());
+      }
+      expect(proc.queueSize).toBe(3);
+      const drained = await proc.forceFlush(2000);
+      expect(drained).toBe(true);
+      expect(proc.queueSize).toBe(0);
+      expect(exporter.getSpans()).toHaveLength(3);
+    } finally {
+      await proc.shutdown();
+    }
+  });
+
+  it('is safe to call on an already-shut-down processor', async () => {
+    const exporter = new InMemoryExporter();
+    const proc = new BatchSpanProcessor({ exporter, scheduleDelayMs: 60_000 });
+    await proc.shutdown();
+    await expect(proc.forceFlush(1000)).resolves.toBe(true);
   });
 });
 

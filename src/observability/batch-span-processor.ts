@@ -93,6 +93,32 @@ export class BatchSpanProcessor implements SpanProcessor {
     }
   }
 
+  /**
+   * Synchronously (from the caller's point of view) drain the queue,
+   * exporting all currently buffered spans.
+   *
+   * Unlike `shutdown()`, the processor stays alive after this call; new
+   * spans can continue to be enqueued. Resolves `true` once the queue is
+   * empty, or `false` if `timeoutMs` elapses first. Safe to call on an
+   * already-shut-down processor — `_flush()` only touches the queue and the
+   * exporter, neither of which `shutdown()` tears down.
+   *
+   * Mirrors apcore-python's `BatchSpanProcessor.force_flush`.
+   */
+  async forceFlush(timeoutMs = 30000): Promise<boolean> {
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    const timeoutPromise = new Promise<void>((resolve) => {
+      timeoutId = setTimeout(resolve, timeoutMs);
+    });
+
+    try {
+      await Promise.race([this._flush(), timeoutPromise]);
+    } finally {
+      if (timeoutId !== null) clearTimeout(timeoutId);
+    }
+    return this._queue.length === 0;
+  }
+
   private _startTimer(): void {
     this._timer = setInterval(() => {
       void this._flush();

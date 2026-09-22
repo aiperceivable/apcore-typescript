@@ -8,7 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`BatchSpanProcessor.forceFlush(timeoutMs = 30000): Promise<boolean>` (observability.md "Contract: BatchSpanProcessor.force_flush", A-C-001).** apcore-python has always exposed `force_flush`; this SDK had no way to drain the queue before exit, so spans buffered at shutdown could be silently lost. Mirrors the Python semantics: drains the queue, resolves `true` once empty or `false` if the deadline elapses first, and stays safe to call on an already-shut-down processor since it only touches the queue and the exporter.
+
 ### Changed
+
+- **`AsyncTaskManager.startReaper` throws `ModuleError(code: 'REAPER_ALREADY_RUNNING')` instead of a bare `Error` on a double start (async-tasks.md "Contract: AsyncTaskManager.start_reaper", A-C-005).** apcore-rust already threw a typed `ModuleError` with `ErrorCode::ReaperAlreadyRunning`; this SDK threw an untyped `Error`, so `catch (e: ModuleError)` caught Rust and silently missed TypeScript. The spec's Errors section previously read "None" for `start_reaper`, which all three SDKs already contradicted; it has been corrected to document the double-start guard. **Caller-visible type change:** code catching a bare `Error` around `startReaper` should check `error instanceof ModuleError && error.code === 'REAPER_ALREADY_RUNNING'` instead.
 
 - **The `config_bus.get.input.key.empty` contract test asserted a rule D-74 deleted (spec, D-74).** It was `it.skip`ped with "spec says empty key is rejected, but this TS SDK returns the default", a reason written before D-74 removed that row and recorded that it "described behaviour no SDK has ever had". `Config.get` was already correct; the test was asserting the retracted rule. It now asserts the D-74 behaviour. All three SDKs skipped this clause symmetrically, which is the one shape the skip-asymmetry guard cannot see — it needs a live peer as its oracle.
 

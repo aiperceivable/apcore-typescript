@@ -5,7 +5,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import { CancelToken } from './cancel.js';
 import type { Context } from './context.js';
-import { TaskLimitExceededError } from './errors.js';
+import { ErrorCodes, ModuleError, TaskLimitExceededError } from './errors.js';
 import type { Executor } from './executor.js';
 
 export enum TaskStatus {
@@ -456,7 +456,8 @@ export class AsyncTaskManager {
   /**
    * Start a background reaper that periodically deletes expired terminal tasks.
    *
-   * Returns a handle to stop the reaper. Throws if a reaper is already running.
+   * Returns a handle to stop the reaper. Throws `ModuleError` with code
+   * `REAPER_ALREADY_RUNNING` if a reaper is already running.
    *
    * Spec `docs/features/async-tasks.md` "Contract: AsyncTaskManager.start_reaper"
    * (decision D-11) names `await manager.startReaper(...) -> Promise<ReaperHandle>`
@@ -477,7 +478,10 @@ export class AsyncTaskManager {
    */
   startReaper(opts: { ttlSeconds?: number; sweepIntervalMs?: number } = {}): Promise<ReaperHandle> {
     if (this._reaper !== null) {
-      throw new Error('[apcore:async-task] Reaper already running; call stop() before starting again');
+      throw new ModuleError(
+        ErrorCodes.REAPER_ALREADY_RUNNING,
+        '[apcore:async-task] Reaper already running; call stop() before starting again',
+      );
     }
 
     const ttlSeconds = opts.ttlSeconds ?? 3600;

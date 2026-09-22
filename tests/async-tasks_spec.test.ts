@@ -501,14 +501,21 @@ describe('AsyncTaskManager.startReaper', () => {
     await manager.shutdown();
   });
 
-  it('async_tasks.start_reaper.property.idempotent_false: starting a second reaper while one runs throws', async () => {
+  it('async_tasks.start_reaper.property.idempotent_false: starting a second reaper while one runs throws ModuleError(REAPER_ALREADY_RUNNING)', async () => {
     const { manager } = createManager();
     const handle = await manager.startReaper({ ttlSeconds: 3600, sweepIntervalMs: 300000 });
     // The idempotency guard still throws SYNCHRONOUSLY (before any Promise is
     // created) — startReaper() is not declared `async`, precisely so this
     // guard is not silently turned into an unhandled rejection for a caller
     // who does not await the second call.
-    expect(() => manager.startReaper({ ttlSeconds: 3600, sweepIntervalMs: 300000 })).toThrow();
+    let caught: unknown;
+    try {
+      manager.startReaper({ ttlSeconds: 3600, sweepIntervalMs: 300000 });
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(ModuleError);
+    expect((caught as ModuleError).code).toBe('REAPER_ALREADY_RUNNING');
     await handle.stop();
     await manager.shutdown();
   });
