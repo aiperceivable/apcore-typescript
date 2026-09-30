@@ -1,6 +1,6 @@
 /**
  * Unit + binding-path regression tests for OpenAI strict-mode compatibility
- * detection (DECLARATIVE_CONFIG_SPEC.md §6.2 / §6.6).
+ * detection (protocol-spec §5.12.5).
  *
  * Before this feature existed, `BindingStrictSchemaIncompatibleError` was
  * defined and exported but no code path ever threw it — `auto_schema: strict`
@@ -144,7 +144,7 @@ describe('assertOpenAiStrictCompatible', () => {
     expect(err.details['featuresListed']).toEqual(['input:$.s.minLength']);
     expect(err.message).toContain("binding 'demo.mod' uses auto_schema: strict");
     expect(err.message).toContain('input:$.s.minLength');
-    expect(err.message).toContain('DECLARATIVE_CONFIG_SPEC.md §6.2');
+    expect(err.message).toContain('See protocol-spec §5.12.5');
   });
 });
 

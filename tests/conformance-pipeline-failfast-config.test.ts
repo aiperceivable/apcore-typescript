@@ -25,7 +25,7 @@
  * ----------------------------
  * `match_modules`, `ignore_errors`, `pure`, `timeout_ms` — and nothing else.
  * `schemas/apcore-config.schema.json` `$defs/ConfigurableStepFields` is
- * `additionalProperties: false`; DECLARATIVE_CONFIG_SPEC.md §4.2 says so in
+ * `additionalProperties: false`; protocol-spec §5.16.1 says so in
  * words. `requires` / `provides` were accepted by this SDK until apcore#89.
  * Measured here before the fix: `configure` set them as own properties on the
  * built step and `ExecutionStrategy._validateDependencies` read the rewritten

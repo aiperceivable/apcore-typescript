@@ -1,6 +1,6 @@
 /**
  * Cross-language conformance driver for openai_strict_compat.json
- * (DECLARATIVE_CONFIG_SPEC.md §6.2 / §6.6).
+ * (protocol-spec §5.12.5).
  *
  * Fixture source: apcore/conformance/fixtures/openai_strict_compat.json
  * (single source of truth). See that fixture's `driver_contract`.

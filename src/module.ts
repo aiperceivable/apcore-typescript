@@ -43,8 +43,8 @@ export interface ModuleAnnotations {
    * `Registry.find()`, manifest export, MCP `tools/list`). Defaults to `true`
    * so existing modules remain visible. Setting `false` keeps the module
    * callable by exact ID but hides it from discovery — `ephemeral.*` modules
-   * SHOULD set this to `false` per PROTOCOL_SPEC §4.4 / RFC
-   * `apcore/docs/spec/rfc-ephemeral-modules.md`.
+   * SHOULD set this to `false` per PROTOCOL_SPEC §4.4 / protocol-spec
+   * §2.5.1.
    *
    * Optional on the interface so v0.20.x callers building `ModuleAnnotations`
    * literals keep compiling; absent values default to `true` per spec when
@@ -228,8 +228,8 @@ export interface PreflightResult {
   /**
    * Optional. Module-self-reported structured prediction of the changes that
    * executing the call would produce, populated by `Executor.validate()` when
-   * the target module implements `preview()` (see RFC
-   * `apcore/docs/spec/rfc-preview-method.md`, currently Draft / RFC).
+   * the target module implements `preview()` (see protocol-spec §5.6 /
+   * §12.8.5.1).
    *
    * - Absent (or empty) when the module does not implement `preview()` or
    *   when `preview()` returned `null`.
@@ -257,8 +257,7 @@ export function createPreflightResult(
 
 /**
  * Structured prediction of a single side-effect that executing a module call
- * would produce. Per RFC `apcore/docs/spec/rfc-preview-method.md`
- * (Draft / RFC, target acceptance v0.21.0).
+ * would produce. Per protocol-spec §12.8.5.1.
  *
  * `action`, `target`, and `summary` are required; module authors define their
  * own free-form taxonomy for `action` (e.g. "write", "delete", "send",
@@ -308,8 +307,8 @@ export interface PreviewResult {
  * so a `Type.Object({...}, { additionalProperties: false })` form would
  * incorrectly reject `x-*` keys; and `Type.Intersect([Object, Record])`
  * loses `additionalProperties: false` precision. The cross-SDK
- * schema-encoding table in `apcore/docs/spec/rfc-preview-method.md`
- * ("Change.x-* extension fields") prescribes the `Type.Unsafe` escape hatch.
+ * `Change` encoding rule in protocol-spec §12.8.5.1
+ * (`x-*` extension keys) prescribes the `Type.Unsafe` escape hatch.
  *
  * To make the schema usable with `Value.Check` (which routes by `[Kind]`), we
  * register a custom `'apcore:Change'` kind whose checker enforces the same
@@ -340,7 +339,7 @@ if (!TypeRegistry.Has(CHANGE_KIND)) {
 /**
  * TypeBox schema mirroring `Change`. Exported alongside the TypeScript type
  * for runtime validation / wire-format use. Mirrors the JSON Schema sketch in
- * `apcore/docs/spec/rfc-preview-method.md`. The raw JSON Schema body
+ * protocol-spec §12.8.5.1. The raw JSON Schema body
  * (`type`, `required`, `properties`, `patternProperties`,
  * `additionalProperties: false`) is the canonical cross-SDK wire format; the
  * `[Kind]` field routes `Value.Check` to the registered checker above.
@@ -401,7 +400,7 @@ export interface Module {
    * produce. Invoked by `Executor.validate()` after the standard validation
    * pipeline succeeds, only on modules that implement it.
    *
-   * Per RFC `apcore/docs/spec/rfc-preview-method.md` (currently Draft / RFC):
+   * Per protocol-spec §5.6:
    * - MUST NOT have side effects.
    * - Returning `null` (or omitting the method) means "no predicted changes".
    * - Throwing / rejecting is treated as advisory and does NOT fail validation.

@@ -2,8 +2,8 @@
  * Tests for the optional `Module.preview()` method and
  * `PreflightResult.predictedChanges` field.
  *
- * Speculative implementation tracking the upstream apcore RFC at
- * `apcore/docs/spec/rfc-preview-method.md` (currently `Draft / RFC`).
+ * Implementation of protocol-spec §5.6 (`preview()`) and §12.8.5.1
+ * (`PreviewResult` / `Change`).
  *
  * Cross-references issue aiperceivable/apcore-typescript#27.
  */
@@ -233,8 +233,7 @@ describe('Module.preview() / PreflightResult.predictedChanges', () => {
   });
 
   it('preserves Change.x-* extension fields end-to-end and validates against TChange', async () => {
-    // Per upstream RFC `apcore/docs/spec/rfc-preview-method.md` ("Change.x-*
-    // extension fields — cross-SDK schema-encoding note"), TChange uses
+    // Per protocol-spec §12.8.5.1 (`Change` `x-*` extension keys), TChange uses
     // `patternProperties: { "^x-": {} }` + `additionalProperties: false`.
     // This test is the litmus check: x-* keys round-trip through
     // Executor.validate(), Value.Check(TChange, ...) accepts them, and

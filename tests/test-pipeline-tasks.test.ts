@@ -287,8 +287,8 @@ describe('Executor introspection', () => {
   // executor's current strategy plus one per registered strategy. The static
   // overload cannot satisfy it — no built-in is seeded into the static
   // registry, so a default-constructed Executor reported [] where
-  // apcore-python reported one entry, and design-execution-pipeline.md §8.2
-  // feeds this call to AI strategy selection.
+  // apcore-python reported one entry, and docs/features/execution-pipeline.md
+  // (Introspection) documents this call as returning the current strategy.
   it('instance listStrategies() includes the executor current strategy', () => {
     const executor = new Executor({ registry });
     const names = executor.listStrategies().map((s) => s.name);

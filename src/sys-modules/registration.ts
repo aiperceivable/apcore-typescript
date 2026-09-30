@@ -544,8 +544,7 @@ export function registerSysModules(
 
     // Wire the EventEmitter on the registry so ephemeral.* register /
     // unregister calls emit the rich D-35 contextual audit payload directly
-    // (RFC `apcore/docs/spec/rfc-ephemeral-modules.md` "Audit-event
-    // single-emit rule"). Non-ephemeral modules continue to flow through
+    // (protocol-spec §2.5.1 "Audit events"). Non-ephemeral modules continue to flow through
     // the bridge below with empty payloads for backward compatibility.
     registry.setEventEmitter(eventEmitter);
 
@@ -558,9 +557,8 @@ export function registerSysModules(
     // canonical event with the full D-35 contextual payload. We
     // short-circuit the empty-payload bridge for ephemeral.* IDs to avoid
     // dual emission for the same event_type. Mirrors apcore-python
-    // `_bridge_registry_events`. See apcore RFC
-    // `apcore/docs/spec/rfc-ephemeral-modules.md` "Audit-event single-emit
-    // rule".
+    // `_bridge_registry_events`. See protocol-spec
+    // §2.5.1 "Audit events".
     registry.on('register', (moduleId: string) => {
       if (moduleId.startsWith('ephemeral.')) return;
       eventEmitter.emit(createEvent(

@@ -148,8 +148,7 @@ export const RESERVED_WORDS = new Set(['system', 'internal', 'core', 'apcore', '
 
 /**
  * Namespace prefix reserved for programmatically-registered modules
- * synthesized at runtime (PROTOCOL_SPEC §2.5; RFC
- * `apcore/docs/spec/rfc-ephemeral-modules.md`). IDs in this namespace MUST
+ * synthesized at runtime (protocol-spec §2.5.1). IDs in this namespace MUST
  * be registered through {@link Registry.register} only — the filesystem
  * discoverer rejects matching IDs because the namespace has no
  * directory-rooted source of truth, and {@link Registry.registerInternal}
@@ -397,8 +396,7 @@ export class Registry {
 
   /**
    * Optional EventEmitter for the ephemeral.* registry-side audit emits
-   * (RFC `apcore/docs/spec/rfc-ephemeral-modules.md` "Audit-event single-emit
-   * rule"). Set via {@link setEventEmitter}; when null, ephemeral audit
+   * (protocol-spec §2.5.1 "Audit events"). Set via {@link setEventEmitter}; when null, ephemeral audit
    * events are warn-logged so they never silently disappear.
    *
    * Mirrors apcore-python `Registry._event_emitter` /
@@ -531,7 +529,7 @@ export class Registry {
         continue;
       }
 
-      // RFC `apcore/docs/spec/rfc-ephemeral-modules.md`: filesystem /
+      // protocol-spec §2.5.1: filesystem /
       // discoverer paths MUST reject `ephemeral.*` IDs. The custom
       // discoverer is functionally a discovery path too, so the same
       // contract applies — ephemeral.* must land via Registry.register().
@@ -539,7 +537,7 @@ export class Registry {
         console.warn(
           `[apcore:registry] Skipping custom-discovered module '${moduleId}': ` +
           `'ephemeral.*' is reserved for programmatic registration via ` +
-          `Registry.register(); see docs/spec/rfc-ephemeral-modules.md.`,
+          `Registry.register(). See protocol-spec §2.5.1`,
         );
         continue;
       }
@@ -610,8 +608,7 @@ export class Registry {
    * Reject filesystem-derived IDs that fall in the reserved `ephemeral.*`
    * namespace.
    *
-   * Per the apcore ephemeral-modules RFC pilot (`apcore/docs/spec/
-   * rfc-ephemeral-modules.md`), `ephemeral.*` is reserved for
+   * Per protocol-spec §2.5.1, `ephemeral.*` is reserved for
    * programmatically-registered modules synthesized at runtime. Any
    * filesystem layout that produces such an ID is a configuration error —
    * either the directory is misnamed or the namespace prefix is being
@@ -924,8 +921,8 @@ export class Registry {
 
     // ephemeral.* registrations only land via this programmatic path —
     // the filesystem discoverer rejects matching IDs upstream (see
-    // `_rejectEphemeralDiscoveries`). When invoked here the RFC pilot
-    // recommends `requires_approval=true` so a human gates execution of
+    // `_rejectEphemeralDiscoveries`). When invoked here protocol-spec
+    // §2.5.1 recommends `requires_approval=true` so a human gates execution of
     // agent-synthesized code; we soft-warn but never refuse.
     const ephemeral = isEphemeralModuleId(moduleId);
     if (ephemeral) {
@@ -1324,8 +1321,7 @@ export class Registry {
    * `prefix` / `tags`.
    *
    * Modules whose `ModuleAnnotations.discoverable === false` are excluded
-   * by default per PROTOCOL_SPEC §4.4 (RFC
-   * `apcore/docs/spec/rfc-ephemeral-modules.md`). Pass
+   * by default per PROTOCOL_SPEC §4.4 (protocol-spec §2.5.1). Pass
    * `includeHidden: true` to enumerate every registered module — useful
    * for introspection tools, debug consoles, and tests.
    */
@@ -1882,17 +1878,15 @@ export class Registry {
   }
 
   registerInternal(moduleId: string, module: unknown): void {
-    // RFC `apcore/docs/spec/rfc-ephemeral-modules.md` "register_internal()
-    // interaction": ephemeral.* IDs MUST be rejected here. Namespace →
+    // protocol-spec §2.5.1: ephemeral.* IDs MUST be rejected here. Namespace →
     // registration-mechanism is a 1:1 mapping; mixing blurs the audit-trail
     // distinction between framework-emitted (`system.*`) and caller-emitted
     // (`ephemeral.*`) modules.
     if (isEphemeralModuleId(moduleId)) {
       throw new InvalidInputError(
         `ephemeral.* module IDs must be registered via Registry.register(), ` +
-        `not registerInternal() (got: '${moduleId}'). See apcore ` +
-        `docs/spec/rfc-ephemeral-modules.md "register_internal() ` +
-        `interaction" for rationale.`,
+        `not registerInternal() (got: '${moduleId}'). ` +
+        `See protocol-spec §2.5.1 for rationale.`,
       );
     }
     validateModuleId(moduleId, true);
@@ -2178,13 +2172,12 @@ export class Registry {
    *
    * Returns true if drained cleanly, false if force-unloaded after timeout.
    */
-  // ── Ephemeral namespace pilot (RFC: rfc-ephemeral-modules) ──────
+  // ── Ephemeral namespace pilot (protocol-spec §2.5.1) ──────
 
   /**
    * Wire an EventEmitter for registry-side audit emits.
    *
-   * Per the apcore RFC `apcore/docs/spec/rfc-ephemeral-modules.md`
-   * "Audit-event single-emit rule", `ephemeral.*` registrations and
+   * Per protocol-spec §2.5.1 "Audit events", `ephemeral.*` registrations and
    * unregistrations emit a single `apcore.registry.module_registered` /
    * `apcore.registry.module_unregistered` event with the D-35 contextual
    * payload. When no emitter is wired, the event is logged at INFO so it
@@ -2203,7 +2196,7 @@ export class Registry {
 
   /**
    * Soft-warn when an `ephemeral.*` module is registered without
-   * `requiresApproval: true`. Per the ephemeral-modules RFC pilot,
+   * `requiresApproval: true`. Per protocol-spec §2.5.1,
    * agent-synthesized modules SHOULD declare `requiresApproval` so a
    * human gates execution. The registry only warns; it does not refuse
    * the registration.
@@ -2227,7 +2220,7 @@ export class Registry {
     if (effective === null || !effective.requiresApproval) {
       console.warn(
         `[apcore:registry] ephemeral.* module '${moduleId}' registered without ` +
-        `requiresApproval=true. The apcore RFC docs/spec/rfc-ephemeral-modules.md ` +
+        `requiresApproval=true. The apcore protocol-spec §2.5.1 ` +
         `recommends setting ModuleAnnotations.requiresApproval=true so ` +
         `agent-synthesized code does not run unattended.`,
       );

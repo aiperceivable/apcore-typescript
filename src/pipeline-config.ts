@@ -106,8 +106,8 @@ interface StepDefinition {
  * spelling and mapped to the {@link StepDefinition} property name.
  *
  * `schemas/apcore-config.schema.json` `$defs/PipelineStep` declares exactly
- * these ten and is `additionalProperties: false`; DECLARATIVE_CONFIG_SPEC.md
- * §4.3 is the same table in words. Nothing enforced that closedness until
+ * these ten and is `additionalProperties: false`; protocol-spec §5.16.1 is
+ * the same table in words. Nothing enforced that closedness until
  * apcore#89, and the consequence was the failure mode this whole cycle is
  * about — measured on this SDK, a `steps` entry
  * `{name, type, after, tiemout_ms: 5000}` built successfully with
@@ -228,7 +228,7 @@ class ConfiguredStep implements Step {
 /**
  * Resolve a step definition dict into a Step instance.
  *
- * Resolution order (DECLARATIVE_CONFIG_SPEC.md §4):
+ * Resolution order (protocol-spec §5.16.1):
  *   1. `type` field -> look up in registry (sync, fast path)
  *   2. `handler` field -> dynamic ESM import via `await import()`
  *      Format: `"module:exportName"`. The resolved export is invoked as
@@ -365,7 +365,7 @@ interface PipelineConfig {
  * The configurable set is EXACTLY FOUR: `match_modules`, `ignore_errors`,
  * `pure`, `timeout_ms` — `schemas/apcore-config.schema.json`
  * `$defs/ConfigurableStepFields` (`additionalProperties: false`) and
- * `docs/spec/DECLARATIVE_CONFIG_SPEC.md` §4.2. They are the §4.3 step fields
+ * `docs/spec/protocol-spec.md` §5.16.1. They are the step-entry fields
  * that mean something applied to a step that already exists; the rest are
  * structural (`name`, `type`, `handler`, `after`, `before`) or constructor
  * arguments (`config`). Any other key MUST raise

@@ -484,7 +484,7 @@ describe('buildStrategyFromConfig — pipeline.configure field validation', () =
   // A step's `requires` / `provides` are its capability contract, declared by
   // the implementation. `schemas/apcore-config.schema.json`
   // `$defs/ConfigurableStepFields` is `additionalProperties: false` over four
-  // fields and DECLARATIVE_CONFIG_SPEC.md §4.2 says the same in words.
+  // fields and protocol-spec §5.16.1 says the same in words.
   //
   // Measured on this SDK before the fix: the assignment landed as an own
   // property on the built step, and `_validateDependencies` read the

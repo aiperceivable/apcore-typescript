@@ -639,7 +639,7 @@ export class BindingSchemaInferenceFailedError extends ModuleError {
         'Alternatively specify input_schema/output_schema explicitly.';
     super(
       'BINDING_SCHEMA_INFERENCE_FAILED',
-      `${loc}${modPart}auto schema inference failed for target '${target}'. ${rem} See DECLARATIVE_CONFIG_SPEC.md §6`,
+      `${loc}${modPart}auto schema inference failed for target '${target}'. ${rem} See protocol-spec §5.12.5`,
       { target, moduleId, filePath },
       options?.cause,
       options?.traceId,
@@ -654,7 +654,7 @@ export class BindingSchemaInferenceFailedError extends ModuleError {
 
 /**
  * Deprecated alias for {@link BindingSchemaInferenceFailedError}.
- * Per DECLARATIVE_CONFIG_SPEC.md §7.1, the canonical name is
+ * Per protocol-spec §5.12.8, the canonical name is
  * BindingSchemaInferenceFailedError. Emits a one-shot deprecation warning on
  * first construction.
  *
@@ -679,7 +679,7 @@ export class BindingSchemaMissingError extends BindingSchemaInferenceFailedError
       _bindingSchemaMissingWarned = true;
       console.warn(
         '[apcore:errors] BindingSchemaMissingError is deprecated and scheduled for removal in 0.20.0. ' +
-          'Use BindingSchemaInferenceFailedError instead (DECLARATIVE_CONFIG_SPEC.md §7.1).',
+          'Use BindingSchemaInferenceFailedError instead. See protocol-spec §5.12.8',
       );
     }
   }
@@ -693,7 +693,7 @@ export class BindingSchemaModeConflictError extends ModuleError {
     super(
       'BINDING_SCHEMA_MODE_CONFLICT',
       `${loc}binding '${moduleId}' specifies multiple schema modes (${modesListed.join(', ')}). ` +
-        'Choose one. See DECLARATIVE_CONFIG_SPEC.md §3.4',
+        'Choose one. See protocol-spec §5.12.2',
       { moduleId, modesListed, filePath },
       options?.cause,
       options?.traceId,
@@ -709,7 +709,7 @@ export class BindingSchemaModeConflictError extends ModuleError {
 /**
  * Raised when auto_schema: strict is requested but the inferred schema contains
  * features incompatible with strict mode (e.g., `anyOf`, `oneOf`, recursive `$ref`).
- * See DECLARATIVE_CONFIG_SPEC.md §6.2.
+ * See protocol-spec §5.12.5.
  */
 export class BindingStrictSchemaIncompatibleError extends ModuleError {
   static override readonly DEFAULT_RETRYABLE: boolean | null = false;
@@ -726,7 +726,7 @@ export class BindingStrictSchemaIncompatibleError extends ModuleError {
       'BINDING_STRICT_SCHEMA_INCOMPATIBLE',
       `${loc}binding '${moduleId}' uses auto_schema: strict but inferred schema ` +
         `contains incompatible features: ${featuresListed.join(', ')}. ` +
-        'See DECLARATIVE_CONFIG_SPEC.md §6.2',
+        'See protocol-spec §5.12.5',
       { moduleId, featuresListed, filePath, line },
       options?.cause,
       options?.traceId,

@@ -478,9 +478,9 @@ export class Executor {
    * strategy is pre-seeded into the static registry, a default-constructed
    * Executor running the built-in `standard` strategy reported an empty
    * list where apcore-python `Executor.list_strategies` returned one entry.
-   * `design-execution-pipeline.md` section 8.2 documents this call as the
-   * input to AI strategy selection, so the empty list was not merely an
-   * introspection gap.
+   * `docs/features/execution-pipeline.md` (Introspection) documents this call
+   * as returning the current strategy first, so the empty list was not merely
+   * an introspection gap.
    */
   listStrategies(): StrategyInfo[] {
     const seen = new Set<string>();
@@ -1314,7 +1314,7 @@ export class Executor {
       }
     }
 
-    // Module-level preview() (optional, RFC `rfc-preview-method.md` — Draft / RFC).
+    // Module-level preview() (optional, protocol-spec §5.6 / §12.8.5.1).
     // Invoked only after the standard validation pipeline has been processed.
     // Returning null is equivalent to omitting the method. Exceptions (sync
     // throws or async rejections) are treated as advisory warnings and do NOT

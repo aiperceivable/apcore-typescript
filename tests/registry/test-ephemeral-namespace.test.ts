@@ -4,7 +4,7 @@
  * Mirrors apcore-python PR #26 / iter-11 alignment behavior. Cross-refs:
  *   - PROTOCOL_SPEC §2.5 (reserved words / ephemeral namespace semantics)
  *   - PROTOCOL_SPEC §4.4 (`discoverable` annotation)
- *   - apcore RFC `apcore/docs/spec/rfc-ephemeral-modules.md` (Accepted)
+ *   - protocol-spec §2.5.1 (the `ephemeral.*` namespace)
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';

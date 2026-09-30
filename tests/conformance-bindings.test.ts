@@ -8,7 +8,7 @@
  * Both were previously `it.skip`'d in tests/conformance.test.ts with the
  * reason "BindingLoader requires real file I/O and dynamic imports". That
  * reason was wrong: `binding_errors` asserts error MESSAGE parity by
- * constructing the error objects directly (DECLARATIVE_CONFIG_SPEC.md §7.2),
+ * constructing the error objects directly (protocol-spec §5.12.8),
  * and `binding_yaml_canonical` asserts the YAML parses and round-trips. Both
  * apcore-python and apcore-rust drive these; this brings TypeScript to parity.
  */

@@ -897,8 +897,7 @@ describe('apcore Conformance Suite (TypeScript)', () => {
   /**
    * Pilot-tolerant comparator for the v0.21.0 `discoverable` rollout.
    *
-   * Per RFC `apcore/docs/spec/rfc-ephemeral-modules.md` "Conformance plan /
-   * Transitional fixture handling", the canonical
+   * Per the ephemeral-namespace rollout (protocol-spec §2.5.1), the canonical
    * `annotations_extra_round_trip.json` fixture MUST NOT be updated to
    * require `discoverable` until ALL three SDKs have shipped support.
    * During the rollout window, SDKs that have shipped the field strip it

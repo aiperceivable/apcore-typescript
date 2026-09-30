@@ -1,7 +1,7 @@
 /**
  * Schema extractor — multi-adapter chain for auto_schema inference.
  *
- * Implements DECLARATIVE_CONFIG_SPEC.md §6.3 (TypeScript adapter chain).
+ * Implements protocol-spec §5.12.5 (TypeScript adapter chain).
  *
  * Built-in adapters:
  *   1. TypeBox (priority 100) — detects TypeBox schema objects by symbol

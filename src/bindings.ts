@@ -242,7 +242,7 @@ export class BindingLoader {
     if (specVersion == null) {
       console.warn(
         `[apcore:bindings] ${filePath}: spec_version missing; defaulting to '1.0'. ` +
-          'spec_version will be mandatory in spec 1.1. See DECLARATIVE_CONFIG_SPEC.md §2.4',
+          'See protocol-spec §5.12.2',
       );
     } else if (!SUPPORTED_SPEC_VERSIONS.has(specVersion)) {
       console.warn(
@@ -410,7 +410,7 @@ export class BindingLoader {
     const func = await this.resolveTarget(targetString);
     const moduleId = binding['module_id'] as string;
 
-    // Detect schema mode conflicts (DECLARATIVE_CONFIG_SPEC.md §3.4)
+    // Detect schema mode conflicts (protocol-spec §5.12.2)
     const modes: string[] = [];
     if ('auto_schema' in binding) modes.push('auto_schema');
     if ('input_schema' in binding || 'output_schema' in binding)
@@ -463,7 +463,7 @@ export class BindingLoader {
         outputSchema = inferred.output;
         // auto_schema: strict promises an OpenAI/Anthropic strict-compatible
         // schema. Reject at parse time when the inferred schema cannot be made
-        // one (DECLARATIVE_CONFIG_SPEC.md §6.2 / §6.6).
+        // one (protocol-spec §5.12.5).
         if (binding['auto_schema'] === 'strict') {
           assertOpenAiStrictCompatible(inputSchema as unknown as Record<string, unknown>, {
             moduleId,

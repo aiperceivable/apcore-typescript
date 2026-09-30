@@ -169,7 +169,7 @@ describe('Error subclasses', () => {
     expect(err.name).toBe('BindingSchemaInferenceFailedError');
     expect(err.code).toBe('BINDING_SCHEMA_INFERENCE_FAILED');
     expect(err.message).toContain('some:target');
-    expect(err.message).toContain('DECLARATIVE_CONFIG_SPEC.md §6');
+    expect(err.message).toContain('See protocol-spec §5.12.5');
   });
 
   it('BindingFileInvalidError', () => {

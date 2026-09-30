@@ -162,7 +162,7 @@ export class BuiltinContextCreation implements Step {
     // `Context.create` parameter — was read nowhere in the pipeline and a
     // caller-supplied deadline was silently replaced by the config default.
     //
-    // D-99: the clock is epoch SECONDS, as design-context-annotations-acl.md
+    // D-99: the clock is epoch SECONDS, as docs/features/context-object.md
     // has said since the field was introduced, so a caller writing
     // `Date.now() / 1000 + budget` is on the same basis the pipeline is. The
     // previous `Date.now() + timeout` made the public parameter unusable: a
