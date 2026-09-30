@@ -441,7 +441,40 @@ export class Executor {
       this._strategy = strategyOpt;
     }
 
+    // PROTOCOL_SPEC 6.6.5.5 (D-129): however the strategy arrived — default,
+    // preset name, `pipeline:` section, a registered name or a pre-built
+    // instance — the executor's providers MUST end up in its built-in gates.
+    // The instance and registered-name branches above never passed them, so a
+    // deny-all ACL given here let every call through while governanceState()
+    // reported the gate as configured and wired.
+    this._bindProviders();
+
     this._pipelineEngine = new PipelineEngine();
+  }
+
+  /**
+   * Bind the executor's providers into the running strategy's built-in gate
+   * steps (PROTOCOL_SPEC 6.6.5.5, D-129).
+   *
+   * Gates are located by TYPE, as `governanceState()` detects them (6.6.5.2):
+   * a custom step that happens to be named `acl_check` is not handed the ACL.
+   * A provider the executor holds replaces the step's; a provider it does not
+   * hold leaves the step's provider untouched, so a strategy built with its
+   * own ACL keeps enforcing it.
+   *
+   * Mutates the step objects of the strategy it is given. A strategy instance
+   * shared between executors therefore carries the providers of the executor
+   * that bound it last — the same effect `setAcl()` has always had.
+   */
+  private _bindProviders(strategy: ExecutionStrategy = this._strategy): void {
+    for (const step of strategy.steps) {
+      if (step instanceof BuiltinACLCheck) {
+        if (this._acl !== null) step.setAcl(this._acl);
+      } else if (step instanceof BuiltinApprovalGate) {
+        if (this._approvalHandler !== null) step.setApprovalHandler(this._approvalHandler);
+        if (this._policy !== null) step.setPolicy(this._policy);
+      }
+    }
   }
 
   /** Build the dependency bag for strategy factories. */
@@ -545,8 +578,12 @@ export class Executor {
     // `builtinAclGateWired: true` for a gate that is not there. That is the one
     // direction this accessor must never fail in.
     const steps = this._strategy.steps;
-    const builtinAclGateWired = steps.some((step) => step instanceof BuiltinACLCheck);
-    const builtinApprovalGateWired = steps.some((step) => step instanceof BuiltinApprovalGate);
+    const aclGates = steps.filter((step): step is BuiltinACLCheck => step instanceof BuiltinACLCheck);
+    const approvalGates = steps.filter(
+      (step): step is BuiltinApprovalGate => step instanceof BuiltinApprovalGate,
+    );
+    const builtinAclGateWired = aclGates.length > 0;
+    const builtinApprovalGateWired = approvalGates.length > 0;
 
     // `visibility` must include hidden: the accessor reports what is
     // REGISTERED, and `list()` defaults to public-only. A control module
@@ -578,9 +615,21 @@ export class Executor {
         ),
       );
 
-    const aclConfigured = this._acl !== null;
-    const approvalHandlerConfigured = this._approvalHandler !== null;
-    const policyStrict = this._policy !== null && this._policy.strict === true;
+    // PROTOCOL_SPEC 6.6.5.5 requirement 3 (D-129): when a built-in gate is
+    // wired, report what that running gate HOLDS — not what the executor was
+    // given. A gate enforcing an ACL the executor never saw is configured; an
+    // executor-held provider that no running gate enforces is configured and
+    // not wired. `every` keeps a strategy with several gates from reporting a
+    // provider one of them lacks — the direction 6.6.5.2 forbids.
+    const aclConfigured = builtinAclGateWired
+      ? aclGates.every((gate) => gate.acl !== null)
+      : this._acl !== null;
+    const approvalHandlerConfigured = builtinApprovalGateWired
+      ? approvalGates.every((gate) => gate.approvalHandler !== null)
+      : this._approvalHandler !== null;
+    const policyStrict = builtinApprovalGateWired
+      ? approvalGates.every((gate) => gate.policy !== null && gate.policy.strict === true)
+      : this._policy !== null && this._policy.strict === true;
 
     // PROTOCOL_SPEC 6.6.5.1. The approval conjunct carries
     // `allControlModulesRequireApproval` because `approval_gate` is per-module
@@ -629,12 +678,13 @@ export class Executor {
   /** Set the access control provider. Updates both the executor field and the strategy's ACL step. */
   setAcl(acl: ACL): void {
     this._acl = acl;
+    // Located by type, like `_bindProviders()` and `governanceState()`
+    // (PROTOCOL_SPEC 6.6.5.2 / 6.6.5.5).
     let found = false;
     for (const step of this._strategy.steps) {
-      if (step.name === 'acl_check' && step instanceof BuiltinACLCheck) {
+      if (step instanceof BuiltinACLCheck) {
         step.setAcl(acl);
         found = true;
-        break;
       }
     }
     if (!found) {
@@ -649,10 +699,9 @@ export class Executor {
     this._approvalHandler = handler;
     let found = false;
     for (const step of this._strategy.steps) {
-      if (step.name === 'approval_gate' && step instanceof BuiltinApprovalGate) {
+      if (step instanceof BuiltinApprovalGate) {
         step.setApprovalHandler(handler);
         found = true;
-        break;
       }
     }
     if (!found) {
@@ -673,9 +722,8 @@ export class Executor {
   setPolicy(policy: ExecutionPolicy | null): void {
     this._policy = policy;
     for (const step of this._strategy.steps) {
-      if (step.name === 'approval_gate' && step instanceof BuiltinApprovalGate) {
+      if (step instanceof BuiltinApprovalGate) {
         step.setPolicy(policy);
-        break;
       }
     }
   }
@@ -829,6 +877,9 @@ export class Executor {
     versionHint?: string | null,
   ): Promise<[Record<string, unknown>, PipelineTrace]> {
     const strategy = options?.strategy ?? this._strategy;
+    // A per-call strategy is still a strategy this executor runs: its built-in
+    // gates enforce this executor's providers (PROTOCOL_SPEC 6.6.5.5, D-129).
+    if (strategy !== this._strategy) this._bindProviders(strategy);
 
     // Issue #66: auto-bind executor (see call() for rationale).
     let ctx = context ?? Context.create();

@@ -38,8 +38,8 @@ import { applyDecisionToAnnotations } from './policy.js';
 import { MiddlewareChainError, type MiddlewareManager } from './middleware/manager.js';
 import type { ModuleAnnotations } from './module.js';
 import { DEFAULT_ANNOTATIONS } from './module.js';
-import type { PipelineContext, Step, StepResult } from './pipeline.js';
-import { ExecutionStrategy } from './pipeline.js';
+import type { GovernanceGateMarker, PipelineContext, Step, StepResult } from './pipeline.js';
+import { ExecutionStrategy, GOVERNANCE_GATE } from './pipeline.js';
 import type { Registry } from './registry/registry.js';
 import { jsonSchemaToTypeBox } from './schema/loader-pure.js';
 import { SchemaValidator } from './schema/validator.js';
@@ -304,7 +304,11 @@ export class BuiltinModuleLookup implements Step {
           this._redaction,
         );
       } else {
-        ctx.context.redactedInputs = { ...ctx.inputs };
+        // No schema, so no `x-sensitive` — but the configured (or default)
+        // `sensitive_keys` / `regex_patterns` still apply at the capture point
+        // (PROTOCOL_SPEC 10.6.1 requirements 1 and 3). A raw copy here was
+        // what every logging middleware then wrote out.
+        ctx.context.redactedInputs = redactSensitive(ctx.inputs, {}, this._redaction);
       }
     }
 
@@ -327,6 +331,8 @@ export class BuiltinACLCheck implements Step {
   // dependency check rather than left to step ordering holding by habit.
   readonly requires = ['context', 'module', 'governanceProjection'] as const;
   readonly pure = true;
+  /** A governance gate: `configure` cannot weaken it (PROTOCOL_SPEC 5.16.1, D-130). */
+  readonly [GOVERNANCE_GATE]: GovernanceGateMarker = { pureIsDefault: true };
 
   private _acl: ACL | null;
   private _eventEmitter: EventEmitter | null;
@@ -339,6 +345,16 @@ export class BuiltinACLCheck implements Step {
   /** Update the ACL provider at runtime. */
   setAcl(acl: ACL): void {
     this._acl = acl;
+  }
+
+  /**
+   * The ACL this gate enforces, or `null` when it enforces none.
+   *
+   * Read by `Executor.governanceState()`, which reports what the running gate
+   * holds rather than what the executor was given (PROTOCOL_SPEC 6.6.5.5, D-129).
+   */
+  get acl(): ACL | null {
+    return this._acl;
   }
 
   async execute(ctx: PipelineContext): Promise<StepResult> {
@@ -453,6 +469,8 @@ export class BuiltinApprovalGate implements Step {
   readonly replaceable = true;
   readonly requires = ['context', 'module'] as const;
   readonly pure = false;
+  /** A governance gate: `configure` cannot weaken it (PROTOCOL_SPEC 5.16.1, D-130). */
+  readonly [GOVERNANCE_GATE]: GovernanceGateMarker = { pureIsDefault: false };
 
   private _handler: ApprovalHandler | null;
   private _policy: ExecutionPolicy | null;
@@ -477,6 +495,16 @@ export class BuiltinApprovalGate implements Step {
   /** Update the execution policy at runtime. */
   setPolicy(policy: ExecutionPolicy | null): void {
     this._policy = policy;
+  }
+
+  /** The approval handler this gate consults (PROTOCOL_SPEC 6.6.5.5, D-129). */
+  get approvalHandler(): ApprovalHandler | null {
+    return this._handler;
+  }
+
+  /** The execution policy this gate applies (PROTOCOL_SPEC 6.6.5.5, D-129). */
+  get policy(): ExecutionPolicy | null {
+    return this._policy;
   }
 
   async execute(ctx: PipelineContext): Promise<StepResult> {
@@ -752,6 +780,9 @@ export class BuiltinInputValidation implements Step {
     const mod = ctx.module as Record<string, unknown>;
     const inputSchema = resolveSchema(mod, 'inputSchema');
     if (inputSchema == null) {
+      // Refresh the capture after middleware_before, as the schema branch
+      // does, with the configured rules (PROTOCOL_SPEC 10.6.1).
+      ctx.context.redactedInputs = redactSensitive(ctx.inputs, {}, this._redaction);
       ctx.validatedInputs = ctx.inputs;
       return { action: 'continue' };
     }
@@ -1030,6 +1061,12 @@ export class BuiltinOutputValidation implements Step {
     const outputSchema = resolveSchema(mod, 'outputSchema');
     if (outputSchema == null) {
       ctx.validatedOutput = output;
+      // Capture the output with the configured rules even without a schema
+      // (PROTOCOL_SPEC 10.6.1 requirements 1 and 3), so a logging middleware
+      // has a redacted value to log and never needs the raw one (D-131).
+      if (ctx.context != null && typeof output === 'object' && !Array.isArray(output)) {
+        ctx.context.redactedOutput = redactSensitive(output, {}, this._redaction);
+      }
       return { action: 'continue' };
     }
 

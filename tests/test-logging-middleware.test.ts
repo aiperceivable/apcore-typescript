@@ -118,13 +118,14 @@ describe('LoggingMiddleware', () => {
       expect(logger.errorCalls).toHaveLength(0);
     });
 
-    it('uses raw inputs when redactedInputs is null', () => {
+    it('omits inputs rather than logging the raw ones when redactedInputs is null', () => {
+      // PROTOCOL_SPEC 10.6.1 requirement 5 (D-131): never the raw inputs.
       const logger = makeLogger();
       const mw = new LoggingMiddleware({ logger, logErrors: true });
       const ctx = makeContext();
       mw.onError('mod', { raw: 'data' }, new Error('fail'), ctx);
       const extra = logger.errorCalls[0][1] as Record<string, unknown>;
-      expect(extra['inputs']).toEqual({ raw: 'data' });
+      expect('inputs' in extra).toBe(false);
     });
   });
 

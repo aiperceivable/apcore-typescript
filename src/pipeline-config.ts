@@ -4,43 +4,18 @@
 
 import { buildStandardStrategy } from './builtin-steps.js';
 import type { StandardStrategyDeps } from './builtin-steps.js';
-import { ModuleError } from './errors.js';
-import type { ErrorOptions } from './errors.js';
-import type { PipelineContext, Step, StepResult } from './pipeline.js';
-import type { ExecutionStrategy } from './pipeline.js';
+import {
+  ConfigurationError,
+  gateWeakeningError,
+  gateWeakeningFields,
+  governanceGateOf,
+} from './pipeline.js';
+import type { ExecutionStrategy, PipelineContext, Step, StepResult } from './pipeline.js';
 
-/**
- * Raised when YAML pipeline configuration references a step or anchor that
- * does not exist (Issue #33 §1.2). Replaces the previous warn-and-continue
- * behaviour so misconfigured `apcore.yaml` files fail loudly at load time.
- *
- * Emits wire code `PIPELINE_CONFIGURATION_ERROR` — the canonical code for
- * parse-time pipeline fail-fast (D-37, see docs/features/error-system.md and
- * the `pipeline_failfast_config` fixture, whose `error_code` is normative
- * while the class name is not). `PIPELINE_CONFIG_INVALID` is a DIFFERENT
- * registry entry reserved for field-level validation failures and MUST NOT
- * be reused here. The exported class name stays `ConfigurationError` because
- * it is public API, and matches apcore-python's `ConfigurationError`
- * (src/apcore/pipeline.py) and apcore-rust's `PipelineError::Configuration`.
- */
-export class ConfigurationError extends ModuleError {
-  static override readonly DEFAULT_RETRYABLE: boolean | null = false;
-
-  constructor(message: string, options?: ErrorOptions) {
-    super(
-      'PIPELINE_CONFIGURATION_ERROR',
-      message,
-      {},
-      options?.cause,
-      options?.traceId,
-      options?.retryable,
-      options?.aiGuidance,
-      options?.userFixable,
-      options?.suggestion,
-    );
-    this.name = 'ConfigurationError';
-  }
-}
+// `ConfigurationError` lives in `pipeline.ts` so `ExecutionStrategy` can raise
+// it for a weakened governance gate (D-130); re-exported here, where it has
+// always been public.
+export { ConfigurationError } from './pipeline.js';
 
 // ---------------------------------------------------------------------------
 // Global step type registry
@@ -652,6 +627,19 @@ function applyPipelineConfigImpl(
               `'name', 'description', 'removable', 'replaceable' and 'execute' are ` +
               `deliberately NOT configurable — see CONFIGURABLE_STEP_FIELDS.`,
           );
+        }
+        // PROTOCOL_SPEC 5.16.1 (D-130): the configurable set is four fields on
+        // every step, but on a governance gate three of them can switch the
+        // gate off for some or all calls. Checked on the whole entry BEFORE any
+        // field is written, so a rejected entry leaves the step untouched.
+        const gate = governanceGateOf(step);
+        if (gate !== null) {
+          const requested: Record<string, unknown> = {};
+          for (const [key, value] of Object.entries(overrides)) {
+            requested[resolveConfigurableStepField(key) as string] = value;
+          }
+          const weakening = gateWeakeningFields(requested, gate);
+          if (weakening.length > 0) throw gateWeakeningError(stepName, weakening);
         }
         // Every key is known to be configurable — the check above rejected the
         // whole entry otherwise, so there is no per-key failure branch here.

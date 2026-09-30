@@ -24,6 +24,15 @@ const defaultLogger: Logger = {
   },
 };
 
+/**
+ * The `inputs` field of a log record: the executor's captured
+ * `context.redactedInputs`, or nothing when no capture exists (the middleware
+ * was invoked outside the pipeline). Never the raw inputs — D-131.
+ */
+function capturedInputs(context: Context): { inputs?: Record<string, unknown> } {
+  return context.redactedInputs != null ? { inputs: context.redactedInputs } : {};
+}
+
 /** @deprecated Use `ObsLoggingMiddleware` from `apcore/observability`. */
 export class LoggingMiddleware extends Middleware {
   private _logger: Logger;
@@ -46,18 +55,19 @@ export class LoggingMiddleware extends Middleware {
 
   override before(
     moduleId: string,
-    inputs: Record<string, unknown>,
+    _inputs: Record<string, unknown>,
     context: Context,
   ): null {
     context.data['_apcore.mw.logging.start_time'] = performance.now();
 
     if (this._logInputs) {
-      const redacted = context.redactedInputs ?? inputs;
+      // PROTOCOL_SPEC 10.6.1 requirement 5 (D-131): the CAPTURED inputs, never
+      // the raw argument; omitted when nothing was captured.
       this._logger.info(`[${context.traceId}] START ${moduleId}`, {
         traceId: context.traceId,
         moduleId,
         callerId: context.callerId,
-        inputs: redacted,
+        ...capturedInputs(context),
       });
     }
 
@@ -67,24 +77,22 @@ export class LoggingMiddleware extends Middleware {
   override after(
     moduleId: string,
     _inputs: Record<string, unknown>,
-    output: Record<string, unknown>,
+    _output: Record<string, unknown>,
     context: Context,
   ): null {
     const startTime = (context.data['_apcore.mw.logging.start_time'] as number) ?? performance.now();
     const durationMs = performance.now() - startTime;
 
     if (this._logOutputs) {
-      // Use the schema-aware redacted output when the executor produced one;
-      // the executor's redaction only ran on context.redactedOutput and not
-      // on the raw `output` argument.
-      const redactedOutput = context.redactedOutput ?? output;
+      // D-131: the captured output only — the raw `output` argument carries
+      // `x-sensitive` fields in clear text and is never logged.
       this._logger.info(
         `[${context.traceId}] END ${moduleId} (${durationMs.toFixed(2)}ms)`,
         {
           traceId: context.traceId,
           moduleId,
           durationMs,
-          output: redactedOutput,
+          ...(context.redactedOutput != null ? { output: context.redactedOutput } : {}),
         },
       );
     }
@@ -94,17 +102,16 @@ export class LoggingMiddleware extends Middleware {
 
   override onError(
     moduleId: string,
-    inputs: Record<string, unknown>,
+    _inputs: Record<string, unknown>,
     error: Error,
     context: Context,
   ): null {
     if (this._logErrors) {
-      const redacted = context.redactedInputs ?? inputs;
       this._logger.error(`[${context.traceId}] ERROR ${moduleId}: ${error}`, {
         traceId: context.traceId,
         moduleId,
         error: String(error),
-        inputs: redacted,
+        ...capturedInputs(context),
       });
     }
 

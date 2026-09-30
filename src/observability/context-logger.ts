@@ -595,7 +595,7 @@ export class ObsLoggingMiddleware extends Middleware {
     }
   }
 
-  override before(moduleId: string, inputs: Record<string, unknown>, context: Context): null {
+  override before(moduleId: string, _inputs: Record<string, unknown>, context: Context): null {
     const starts = (context.data['_apcore.mw.logging.obs_starts'] as number[]) ?? [];
     starts.push(performance.now());
     context.data['_apcore.mw.logging.obs_starts'] = starts;
@@ -604,8 +604,12 @@ export class ObsLoggingMiddleware extends Middleware {
       module_id: moduleId,
       caller_id: context.callerId,
     };
-    if (this._logInputs) {
-      let loggableInputs = (context.redactedInputs ?? inputs) as Record<string, unknown>;
+    // PROTOCOL_SPEC 10.6.1 requirement 5 (D-131): log the CAPTURED inputs,
+    // never the raw argument. The capture point applied `x-sensitive`, which
+    // no key-based pass here can; when nothing was captured (the middleware
+    // was invoked outside the pipeline) the inputs are omitted, not logged raw.
+    if (this._logInputs && context.redactedInputs != null) {
+      let loggableInputs = context.redactedInputs;
       if (this._redactionConfig !== null) {
         loggableInputs = this._redactionConfig.apply(loggableInputs);
       }
@@ -618,7 +622,7 @@ export class ObsLoggingMiddleware extends Middleware {
   override after(
     moduleId: string,
     _inputs: Record<string, unknown>,
-    output: Record<string, unknown>,
+    _output: Record<string, unknown>,
     context: Context,
   ): null {
     const starts = context.data['_apcore.mw.logging.obs_starts'] as number[] | undefined;
@@ -630,12 +634,10 @@ export class ObsLoggingMiddleware extends Middleware {
       module_id: moduleId,
       duration_ms: durationMs,
     };
-    if (this._logOutputs) {
-      // Prefer the executor's schema-aware redacted output so x-sensitive
-      // fields (API keys, tokens) do not leak into logs. The executor has
-      // already applied the schema; falling back to `output` preserves
-      // behavior for callers invoking the middleware outside the pipeline.
-      let loggableOutput = (context.redactedOutput ?? output) as Record<string, unknown>;
+    // D-131: the captured output only — see before(). The raw `output`
+    // argument is never logged, so it is not read here at all.
+    if (this._logOutputs && context.redactedOutput != null) {
+      let loggableOutput = context.redactedOutput;
       if (this._redactionConfig !== null) {
         loggableOutput = this._redactionConfig.apply(loggableOutput);
       }

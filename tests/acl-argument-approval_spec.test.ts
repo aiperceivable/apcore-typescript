@@ -337,11 +337,12 @@ describe('§6.1.8 the governance projection', () => {
     expect(new BuiltinACLCheck(null).requires).toContain('governanceProjection');
   });
 
-  it('is NOT context.redactedInputs — that field is a raw copy without a schema', async () => {
+  it('is NOT context.redactedInputs — that field is the logging copy', async () => {
     const registry = new Registry();
-    // No inputSchema, so redaction has no `x-sensitive` markers to work from
-    // and `redactedInputs` is a raw copy. Reusing it as the governance input
-    // would put values into the decision path.
+    // No inputSchema, so redaction has no `x-sensitive` markers to work from;
+    // `redactedInputs` carries the values the key rules leave alone, and is
+    // redacted for logging, not shaped for a decision. Reusing it as the
+    // governance input would put values into the decision path.
     registry.register('cli.git_push', {
       outputSchema: PermissiveOutput,
       annotations: createAnnotations(),
@@ -355,7 +356,9 @@ describe('§6.1.8 the governance projection', () => {
       module: null,
     };
     await new BuiltinModuleLookup(registry).execute(ctx);
-    expect(ctx.context.redactedInputs).toEqual({ token: 'sk-live-do-not-leak-me' });
+    // PROTOCOL_SPEC 10.6.1 requirement 3: no schema still means the default
+    // rules, never no redaction.
+    expect(ctx.context.redactedInputs).toEqual({ token: '***REDACTED***' });
     expect(ctx.governanceProjection).toEqual({ keys: ['token'], types: { token: 'string' } });
   });
 });

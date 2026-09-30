@@ -45,6 +45,22 @@ function ctx() {
   return Context.create() as never;
 }
 
+/**
+ * A context carrying what the executor's capture point would have filled.
+ * The middleware logs ONLY these captured values, never the raw arguments
+ * (PROTOCOL_SPEC 10.6.1 requirement 5, D-131), so a record-level test has to
+ * put the payload where the pipeline puts it.
+ */
+function capturedCtx(captured: {
+  inputs: Record<string, unknown>;
+  output?: Record<string, unknown>;
+}) {
+  const c = Context.create();
+  c.redactedInputs = captured.inputs;
+  c.redactedOutput = captured.output ?? null;
+  return c as never;
+}
+
 describe('ObsLoggingMiddleware honours the configured rules for the WHOLE record', () => {
   const payload = () => ({
     top: SECRET,
@@ -55,7 +71,7 @@ describe('ObsLoggingMiddleware honours the configured rules for the WHOLE record
   it('redacts a secret at every position of a logged input', () => {
     const rc = new RedactionConfig({ fieldPatterns: [], valuePatterns: ['sk-[A-Za-z0-9]{6,}'] });
     const { mw, emitted } = harness(rc);
-    mw.before('executor.x.y', payload(), ctx());
+    mw.before('executor.x.y', payload(), capturedCtx({ inputs: payload() }));
 
     const inputs = (emitted()[0]?.extra as Record<string, unknown>)?.['inputs'] as Record<
       string,
@@ -72,7 +88,7 @@ describe('ObsLoggingMiddleware honours the configured rules for the WHOLE record
   it('redacts a secret at every position of a logged output', () => {
     const rc = new RedactionConfig({ fieldPatterns: [], valuePatterns: ['sk-[A-Za-z0-9]{6,}'] });
     const { mw, emitted } = harness(rc);
-    const c = ctx();
+    const c = capturedCtx({ inputs: {}, output: payload() });
     mw.before('executor.x.y', {}, c);
     mw.after('executor.x.y', {}, payload(), c);
 
@@ -92,7 +108,7 @@ describe('ObsLoggingMiddleware honours the configured rules for the WHOLE record
     // back redacted from a configuration that asked for no key rule at all.
     const rc = new RedactionConfig({ fieldPatterns: [], valuePatterns: [] });
     const { mw, emitted } = harness(rc);
-    mw.before('executor.x.y', { password: 'hunter2' }, ctx());
+    mw.before('executor.x.y', { password: 'hunter2' }, capturedCtx({ inputs: { password: 'hunter2' } }));
 
     const inputs = (emitted()[0]?.extra as Record<string, unknown>)?.['inputs'] as Record<
       string,
@@ -105,7 +121,8 @@ describe('ObsLoggingMiddleware honours the configured rules for the WHOLE record
     // The other half: aligning the two passes must not disable the
     // out-of-the-box redaction that callers who configure nothing rely on.
     const { mw, emitted } = harness(null);
-    mw.before('executor.x.y', { password: 'hunter2', nested: { token: 'abc' } }, ctx());
+    const inputs0 = { password: 'hunter2', nested: { token: 'abc' } };
+    mw.before('executor.x.y', inputs0, capturedCtx({ inputs: inputs0 }));
 
     const inputs = (emitted()[0]?.extra as Record<string, unknown>)?.['inputs'] as Record<
       string,

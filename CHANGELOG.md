@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 
 
+## [Unreleased]
+
+### Security
+
+- **An executor's ACL, approval handler and policy are bound into the built-in gates of whatever strategy it runs** (D-129) — including a pre-built instance, a registered strategy name and a per-call `callWithTrace` strategy; `governanceState()` reports what the running gate holds.
+- **`acl_check` / `approval_gate` cannot be weakened** (D-130) — `ignore_errors: true`, any `match_modules` and `pure: true` on `approval_gate` raise `PIPELINE_CONFIGURATION_ERROR`, from `pipeline.configure` and from every step-entry API (`configureStep`, `replace`, `insertAfter`/`insertBefore`, the `ExecutionStrategy` constructor).
+- **`LoggingMiddleware` and `ObsLoggingMiddleware` log only `context.redactedInputs` / `redactedOutput`, never the raw values** (D-131) — `x-sensitive` now survives JSON Schema conversion, so it is honoured at the capture point, and schemaless inputs/outputs are captured with the configured rules.
+
 ## [0.31.0] - 2026-09-22
 
 ### Added

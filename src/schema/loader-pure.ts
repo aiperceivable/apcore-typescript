@@ -116,12 +116,25 @@ function _convert(schema: Record<string, unknown>, root: Record<string, unknown>
   return _annotate(isTypeUnion ? result : _withApplicators(result, schema, root), schema);
 }
 
-/** Copy the annotation keywords onto the converted node. */
+/**
+ * Copy the annotation keywords — and the `x-` extension keywords — onto the
+ * converted node.
+ *
+ * The extensions carry behaviour the executor reads off the CONVERTED schema:
+ * `resolveSchema` replaces a module's JSON Schema with this node, and the
+ * capture point redacts against it. Dropping `x-sensitive` here made every
+ * field a plain-JSON-Schema module marked sensitive reach
+ * `context.redactedInputs` / `redactedOutput` — and so every built-in logging
+ * middleware — in clear text (PROTOCOL_SPEC 10.6, 10.6.1 requirement 5, D-131).
+ * An `x-` keyword is not a validation assertion, so the validator ignores it.
+ */
 function _annotate(result: TSchema, schema: Record<string, unknown>): TSchema {
-  if (typeof schema['description'] === 'string')
-    (result as Record<string, unknown>)['description'] = schema['description'];
-  if (typeof schema['title'] === 'string')
-    (result as Record<string, unknown>)['title'] = schema['title'];
+  const node = result as Record<string, unknown>;
+  if (typeof schema['description'] === 'string') node['description'] = schema['description'];
+  if (typeof schema['title'] === 'string') node['title'] = schema['title'];
+  for (const [key, value] of Object.entries(schema)) {
+    if (key.startsWith('x-')) node[key] = value;
+  }
   return result;
 }
 

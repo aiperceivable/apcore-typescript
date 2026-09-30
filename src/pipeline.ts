@@ -339,6 +339,124 @@ export interface GovernanceState {
 }
 
 // ---------------------------------------------------------------------------
+// Governance gates cannot be weakened (PROTOCOL_SPEC 5.16.1, D-130)
+// ---------------------------------------------------------------------------
+
+/**
+ * Raised when pipeline configuration is invalid: a `remove` / `configure`
+ * target or `steps` anchor that does not exist, a key outside the closed field
+ * sets, or a value that would weaken a governance gate (D-130).
+ *
+ * Emits wire code `PIPELINE_CONFIGURATION_ERROR` — the canonical code for
+ * parse-time pipeline fail-fast (D-37, see docs/features/error-system.md and
+ * the `pipeline_failfast_config` fixture, whose `error_code` is normative
+ * while the class name is not). `PIPELINE_CONFIG_INVALID` is a DIFFERENT
+ * registry entry reserved for field-level validation failures and MUST NOT
+ * be reused here. The exported class name stays `ConfigurationError` because
+ * it is public API, and matches apcore-python's `ConfigurationError`
+ * (src/apcore/pipeline.py) and apcore-rust's `PipelineError::Configuration`.
+ *
+ * Defined here rather than in `pipeline-config.ts` (which re-exports it) so
+ * that {@link ExecutionStrategy} can raise it for a weakened gate without an
+ * import cycle through the built-in steps.
+ */
+export class ConfigurationError extends ModuleError {
+  static override readonly DEFAULT_RETRYABLE: boolean | null = false;
+
+  constructor(message: string, options?: ErrorOptions) {
+    super(
+      'PIPELINE_CONFIGURATION_ERROR',
+      message,
+      {},
+      options?.cause,
+      options?.traceId,
+      options?.retryable,
+      options?.aiGuidance,
+      options?.userFixable,
+      options?.suggestion,
+    );
+    this.name = 'ConfigurationError';
+  }
+}
+
+/**
+ * Marks a step as a built-in governance gate (`acl_check`, `approval_gate`).
+ *
+ * A symbol rather than an `instanceof` test because this module cannot import
+ * the built-in step classes at runtime without a cycle; the classes carry the
+ * marker, so a subclass of a gate is still recognised as one.
+ */
+export const GOVERNANCE_GATE: unique symbol = Symbol.for('apcore.pipeline.governanceGate');
+
+/** The value a built-in governance gate carries under {@link GOVERNANCE_GATE}. */
+export interface GovernanceGateMarker {
+  /**
+   * `true` when `pure: true` is the gate's OWN value. `acl_check` is pure in
+   * every SDK — `validate()` must run it so a denied caller learns nothing
+   * (§12.8.5.1) — and writing a field's default value is accepted. On
+   * `approval_gate` `pure: true` makes a dry run consult the ApprovalHandler.
+   */
+  readonly pureIsDefault: boolean;
+}
+
+/** The gate marker of a step, or `null` when the step is not a built-in gate. */
+export function governanceGateOf(step: Step): GovernanceGateMarker | null {
+  const marker = (step as unknown as Record<symbol, unknown>)[GOVERNANCE_GATE];
+  return marker != null && typeof marker === 'object' ? (marker as GovernanceGateMarker) : null;
+}
+
+/**
+ * The canonical names of the fields in `fields` that would weaken a
+ * governance gate (PROTOCOL_SPEC 5.16.1, D-130), in canonical order.
+ *
+ * - `ignore_errors: true` turns a denial into a warning and runs the call;
+ * - any `match_modules` exempts every module it does not match — only the
+ *   default (`null` / absent) is accepted;
+ * - `pure: true` makes `validate()` run the gate during a dry run, which on
+ *   `approval_gate` consults the ApprovalHandler.
+ *
+ * `false` for `ignore_errors` / `pure` and every `timeout_ms` stay accepted.
+ */
+export function gateWeakeningFields(
+  fields: { matchModules?: unknown; ignoreErrors?: unknown; pure?: unknown },
+  marker: GovernanceGateMarker,
+): string[] {
+  const offending: string[] = [];
+  if (fields.matchModules !== undefined && fields.matchModules !== null) {
+    offending.push('match_modules');
+  }
+  if (fields.ignoreErrors === true) offending.push('ignore_errors');
+  if (fields.pure === true && !marker.pureIsDefault) offending.push('pure');
+  return offending;
+}
+
+/** Build the D-130 rejection naming the step and every offending key. */
+export function gateWeakeningError(stepName: string, keys: readonly string[]): ConfigurationError {
+  const named = keys.map((k) => `'${k}'`).join(', ');
+  return new ConfigurationError(
+    `Pipeline step '${stepName}' is a governance gate and cannot be weakened: ` +
+      `${named} ${keys.length === 1 ? 'is' : 'are'} not configurable on it ` +
+      `(ignore_errors: true, match_modules and pure: true are rejected on ` +
+      `acl_check / approval_gate; timeout_ms stays configurable). ` +
+      `To run without the gate, remove the step explicitly — a removal is ` +
+      `visible in governanceState(), a weakened gate is not.`,
+  );
+}
+
+/**
+ * Reject a built-in governance gate that carries weakening field values
+ * (D-130). Run on every step entering an {@link ExecutionStrategy}, which is
+ * where the programmatic paths — the constructor, `insertAfter` /
+ * `insertBefore`, `replace` and `configureStep` — all meet.
+ */
+export function assertGateNotWeakened(step: Step): void {
+  const marker = governanceGateOf(step);
+  if (marker === null) return;
+  const keys = gateWeakeningFields(step, marker);
+  if (keys.length > 0) throw gateWeakeningError(step.name, keys);
+}
+
+// ---------------------------------------------------------------------------
 // ExecutionStrategy
 // ---------------------------------------------------------------------------
 
@@ -370,6 +488,7 @@ export class ExecutionStrategy {
     this._steps = [...steps];
     this._nameToIdx = new Map();
     this._seedProvides = new Set(options?.seedProvides ?? []);
+    for (const step of this._steps) assertGateNotWeakened(step);
     // Validate unique step names
     const names = this._steps.map((s) => s.name);
     const seen = new Set<string>();
@@ -431,6 +550,7 @@ export class ExecutionStrategy {
 
   /** Insert a step after the named anchor step. */
   insertAfter(anchor: string, step: Step): void {
+    assertGateNotWeakened(step);
     if (this._nameToIdx.has(step.name)) {
       throw new StepNameDuplicateError(`Step '${step.name}' already exists`);
     }
@@ -445,6 +565,7 @@ export class ExecutionStrategy {
 
   /** Insert a step before the named anchor step. */
   insertBefore(anchor: string, step: Step): void {
+    assertGateNotWeakened(step);
     if (this._nameToIdx.has(step.name)) {
       throw new StepNameDuplicateError(`Step '${step.name}' already exists`);
     }
@@ -472,6 +593,7 @@ export class ExecutionStrategy {
 
   /** Replace a step by name. Raises if the step is not replaceable. */
   replace(stepName: string, newStep: Step): void {
+    assertGateNotWeakened(newStep);
     const idx = this._nameToIdx.get(stepName);
     if (idx === undefined) {
       throw new StepNotFoundError(`Step '${stepName}' not found`);
@@ -490,6 +612,7 @@ export class ExecutionStrategy {
    * one step at that position — idempotent, never duplicates.
    */
   configureStep(stepName: string, newStep: Step): void {
+    assertGateNotWeakened(newStep);
     const idx = this._nameToIdx.get(stepName);
     if (idx === undefined) {
       throw new PipelineStepNotFoundError(stepName);
