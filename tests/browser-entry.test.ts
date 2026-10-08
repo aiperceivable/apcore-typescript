@@ -74,8 +74,7 @@ function collectStaticImports(source: string): string[] {
     /export\s+[^'"]*\s+from\s+['"]([^'"]+)['"]/g,
   ];
   for (const re of patterns) {
-    let m: RegExpExecArray | null;
-    while ((m = re.exec(code)) !== null) specifiers.push(m[1]);
+    for (const match of code.matchAll(re)) specifiers.push(match[1]);
   }
   return specifiers;
 }
@@ -108,8 +107,7 @@ function collectAllSpecifiers(source: string): string[] {
     /^await\s+import\s*\(\s*['"]([^'"]+)['"]\s*\)/gm,
   ];
   for (const re of patterns) {
-    let m: RegExpExecArray | null;
-    while ((m = re.exec(code)) !== null) specifiers.push(m[1]);
+    for (const match of code.matchAll(re)) specifiers.push(match[1]);
   }
   return specifiers;
 }
@@ -211,6 +209,7 @@ describe('browser entry point', () => {
       'createIdentity',
       'jsonSchemaToTypeBox',
       'ACL',
+      'canonicalizeName',
     ];
     for (const name of expected) {
       expect(browser, `expected "${name}" to be exported from /browser`).toHaveProperty(name);

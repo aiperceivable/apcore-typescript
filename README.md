@@ -118,6 +118,38 @@ The browser bundle **excludes** Node-only surfaces:
 
 **Available in the browser:** `Registry` programmatic `register`/`get`/`list`/`iter`/`unregister`, `Executor`, `ACL` programmatic, `Context`, middleware pipeline, schema validation, all error classes, and the utility helpers.
 
+## Canonicalizing a bare name
+
+Use `canonicalizeName()` for one CLI command, operation name, or label. It is
+available from both Node and browser entry points and returns a structured result
+for every string, without throwing. Non-ASCII input is rejected before trimming;
+ASCII edge punctuation is trimmed, camel/Pascal case becomes snake case, and each
+internal punctuation run becomes one underscore. Existing underscores remain.
+
+```typescript
+import { canonicalizeName, type CanonicalNameResult } from 'apcore-js';
+
+const valid: CanonicalNameResult = canonicalizeName('  GetHTTPResponse!  ');
+console.log(valid);
+// { originalName: '  GetHTTPResponse!  ', canonicalName: 'get_http_response', error: null }
+
+const invalid: CanonicalNameResult = canonicalizeName('7z');
+console.log(invalid);
+// { originalName: '7z', canonicalName: null, error: 'invalid_start' }
+
+if (invalid.error !== null) {
+  console.log(`Choose a different operation name: ${invalid.error}`);
+}
+```
+
+Diagnostics are `empty_name`, `non_ascii`, `invalid_start`, and `name_too_long`.
+A canonical segment starts with an ASCII lowercase letter and is at most 192
+characters after conversion. The helper never invents a prefix or truncates a
+name. Reservation and collisions are checked during registration; `system` alone
+is a valid segment. This is not full module-ID normalization:
+`normalizeToCanonicalId(localId, language)` retains its strict Algorithm A02
+behavior and language-specific path separators.
+
 ## Quick Start
 
 ### Simplified Client (Recommended)

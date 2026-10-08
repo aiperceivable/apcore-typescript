@@ -36,6 +36,36 @@ function toSnakeCase(segment: string): string {
   return words.map((w) => w.replace(/[A-Z]/g, (ch) => ch.toLowerCase())).join('_');
 }
 
+/** Structured bare-name diagnostics from protocol-spec §2.2.1. */
+export type CanonicalNameError = 'empty_name' | 'non_ascii' | 'invalid_start' | 'name_too_long';
+
+/** The original name and either its canonical segment or a diagnostic. */
+export interface CanonicalNameResult {
+  readonly originalName: string;
+  readonly canonicalName: string | null;
+  readonly error: CanonicalNameError | null;
+}
+
+/**
+ * Repair one ASCII name into a canonical segment without throwing.
+ * Non-ASCII input is rejected before trimming or case conversion. Existing
+ * underscores are preserved; punctuation runs become one underscore. Names
+ * cannot begin with a digit or underscore, and are never prefixed or truncated.
+ * Namespace reservation and collision detection belong to registration.
+ */
+export function canonicalizeName(name: string): CanonicalNameResult {
+  if (/[^\x00-\x7f]/.test(name)) {
+    return { originalName: name, canonicalName: null, error: 'non_ascii' };
+  }
+  const trimmed = name.replace(/^[^A-Za-z0-9_]+|[^A-Za-z0-9_]+$/g, '');
+  const candidate = toSnakeCase(trimmed).replace(/[^A-Za-z0-9_]+/g, '_');
+  let error: CanonicalNameError | null = null;
+  if (candidate.length === 0) error = 'empty_name';
+  else if (!/^[a-z]/.test(candidate)) error = 'invalid_start';
+  else if (candidate.length > 192) error = 'name_too_long';
+  return { originalName: name, canonicalName: error === null ? candidate : null, error };
+}
+
 /**
  * Convert a language-local module ID to Canonical ID format (Algorithm A02).
  *

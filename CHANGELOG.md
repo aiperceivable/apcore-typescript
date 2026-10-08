@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 
 
+## [Unreleased]
+
+### Added
+
+- **`canonicalizeName()` is exported from both Node and browser entry points**, with `CanonicalNameResult` and four structured `CanonicalNameError` diagnostics. It normalizes one ASCII bare name without throwing, inventing prefixes, truncating, or changing Algorithm A02; shared fixtures align the Python, TypeScript, and Rust APIs.
+
 ## [0.32.0] - 2026-10-08
 
 ### Security

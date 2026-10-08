@@ -200,7 +200,8 @@ export type { AssertOpenAiStrictOptions } from '../schema/openai-strict.js';
 
 // ---- Utility helpers (pure) ----------------------------------------------
 export { matchPattern, calculateSpecificity } from '../utils/pattern.js';
-export { normalizeToCanonicalId } from '../utils/normalize.js';
+export { canonicalizeName, normalizeToCanonicalId } from '../utils/normalize.js';
+export type { CanonicalNameError, CanonicalNameResult } from '../utils/normalize.js';
 export {
   guardCallChain,
   DEFAULT_MAX_CALL_DEPTH,

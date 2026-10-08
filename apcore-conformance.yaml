@@ -1,10 +1,10 @@
-# Conservative declaration: this report verifies the eight issue #123 fixtures.
+# Conservative declaration: issue #123 fixtures and public bare-name normalization.
 # It does not certify every fixture required by Level 1 or Level 2.
 implementation:
   name: apcore-typescript
-  version: "0.31.0"
+  version: "0.32.0"
   language: typescript
-  spec_version: "1.64.0"
+  spec_version: "1.65.0"
   maintainer: AI Perceivable
   repository: https://github.com/aiperceivable/apcore-typescript
 
@@ -12,8 +12,8 @@ conformance:
   level: 0
   date: "2026-10-08"
   fixture_results:
-    scope: issue-123-eight-new-fixtures
-    fixtures: 8
+    scope: issue-123-and-canonicalize-name
+    fixtures: 9
     fixture_names:
       - binding_file_validation
       - env_prefix_dispatch
@@ -23,16 +23,19 @@ conformance:
       - json_input_native_types
       - preflight_check_reporting
       - timeout_cancellation
-    cases: 47
-    passed: 47
+      - canonicalize_name
+    cases: 79
+    passed: 79
     failed: 0
     skipped: 0
-    report: tests/conformance-issue123.test.ts
-    command: pnpm exec vitest run tests/conformance-issue123.test.ts
+    report:
+      - tests/conformance-issue123.test.ts
+      - tests/conformance-canonicalize-name.test.ts
+    command: pnpm exec vitest run tests/conformance-issue123.test.ts tests/conformance-canonicalize-name.test.ts
   known_deviations:
     - feature: Full fixture verification
       spec: Conformance §5.3
-      reason: Only the eight issue-123 fixtures are counted in this declaration; full Level 1 and Level 2 fixture verification is not certified.
+      reason: Only the eight issue-123 fixtures and the bare-name fixture are counted; full Level 1 and Level 2 fixture verification is not certified.
       severity: major
     - feature: Version negotiation on load
       spec: §13.3

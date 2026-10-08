@@ -52,9 +52,9 @@ describe('D-151 conformance declaration', () => {
       implementation: { name: string; version: string; spec_version: string };
       conformance: { level: number; fixture_results: { fixtures: number; cases: number; passed: number; failed: number; skipped: number }; known_deviations: { feature: string; severity: string }[] };
     };
-    expect(declaration.implementation).toMatchObject({ name: 'apcore-typescript', version: '0.31.0', spec_version: '1.64.0' });
+    expect(declaration.implementation).toMatchObject({ name: 'apcore-typescript', version: '0.32.0', spec_version: '1.65.0' });
     expect(declaration.conformance.level).toBe(0);
-    expect(declaration.conformance.fixture_results).toMatchObject({ fixtures: 8, cases: 47, passed: 47, failed: 0, skipped: 0 });
+    expect(declaration.conformance.fixture_results).toMatchObject({ fixtures: 9, cases: 79, passed: 79, failed: 0, skipped: 0 });
     expect(declaration.conformance.known_deviations).toContainEqual(expect.objectContaining({ feature: 'Full fixture verification', severity: 'major' }));
   });
 });
