@@ -26,7 +26,7 @@ describe('canonicalizeName public bare-name normalization', () => {
     ['a'.repeat(193), 'name_too_long'], [`${'a'.repeat(191)}B`, 'name_too_long'],
     [`7${'a'.repeat(193)}`, 'invalid_start'], ['Éclair', 'non_ascii'],
     ['\u00a0Name', 'non_ascii'], ['Name\u2003', 'non_ascii'],
-    ['ǅName', 'non_ascii'], ['a\ud800b', 'non_ascii'], ['a\udc00b', 'non_ascii'],
+    ['\u01c5Name', 'non_ascii'], ['a\ud800b', 'non_ascii'], ['a\udc00b', 'non_ascii'],
     [`7${'a'.repeat(200)}é`, 'non_ascii'],
   ];
   for (const [name, error] of failures) {
