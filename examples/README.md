@@ -41,7 +41,7 @@ The files under [`modules/`](modules/) are reusable module definitions, not stan
 | File | Pattern shown |
 |---|---|
 | [`modules/greet.ts`](modules/greet.ts) | Minimal module with TypeBox schemas. |
-| [`modules/decorated-add.ts`](modules/decorated-add.ts) | The `@module` decorator. |
+| [`modules/decorated-add.ts`](modules/decorated-add.ts) | The `module()` factory function. |
 | [`modules/get-user.ts`](modules/get-user.ts) | Read-only module annotation. |
 | [`modules/send-email.ts`](modules/send-email.ts) | Full-featured module: `createAnnotations()`, `ModuleExample`, `x-sensitive` field redaction, `ContextLogger`. |
 
