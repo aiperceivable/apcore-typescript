@@ -6,18 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
-
-## [Unreleased]
+## [0.32.0] - 2026-10-08
 
 ### Added
 
 - **`canonicalizeName()` is exported from both Node and browser entry points**, with `CanonicalNameResult` and four structured `CanonicalNameError` diagnostics. It normalizes one ASCII bare name without throwing, inventing prefixes, truncating, or changing Algorithm A02; shared fixtures align the Python, TypeScript, and Rust APIs.
-
-### Fixed
-
-- **CI verifies declared canonical fixtures before running the full suite**, with an explicit spec `main` checkout independent of SDK branches. An incomplete snapshot reports every missing declared fixture and instructs publishing spec changes before SDK changes; missing fixtures and cases are never skipped or replaced with private copies.
-
-## [0.32.0] - 2026-10-08
 
 ### Security
 
@@ -26,7 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`LoggingMiddleware` and `ObsLoggingMiddleware` log only `context.redactedInputs` / `redactedOutput`, never the raw values** (D-131) — `x-sensitive` now survives JSON Schema conversion, so it is honoured at the capture point, and schemaless inputs/outputs are captured with the configured rules.
 
 ### Fixed
-
+- **CI verifies declared canonical fixtures before running the full suite**, with an explicit spec `main` checkout independent of SDK branches. An incomplete snapshot reports every missing declared fixture and instructs publishing spec changes before SDK changes; missing fixtures and cases are never skipped or replaced with private copies.
 - **Timeouts cancel only the timed-out call's linked cancellation scope** (D-133); parent cancellation propagates down, child deadlines do not cancel parents, and abort-listener races still report `MODULE_TIMEOUT` immediately.
 - **Preflight collects all evaluable pure checks and preserves earlier results** (D-134), with module-authored hooks withheld after ACL denial; null previews omit their check and `predictedChanges` is always an array (D-141).
 - **Binding declarations reject unknown keys, incomplete schema pairs, invalid inference modes and uninferable targets** (D-139), including implicit inference.
