@@ -62,9 +62,9 @@ export function loadIdMap(idMapPath: string): Record<string, Record<string, unkn
       console.warn(`[apcore:metadata] ID map entry missing 'file' field, skipping`);
       continue;
     }
+    // An entry carries `file` and `id` only (protocol-spec §2.2 rule 4, D-138).
     result[filePath] = {
       id: ((entry as Record<string, unknown>)['id'] as string) ?? filePath,
-      class: (entry as Record<string, unknown>)['class'] ?? null,
     };
   }
   return result;

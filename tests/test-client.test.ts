@@ -5,7 +5,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { Type } from '@sinclair/typebox';
 import { APCore } from '../src/client.js';
 import { Config } from '../src/config.js';
@@ -15,6 +15,7 @@ import { ModuleNotFoundError } from '../src/errors.js';
 import { Middleware } from '../src/middleware/index.js';
 import { Registry } from '../src/registry/registry.js';
 import type { Context } from '../src/context.js';
+import type { PipelineState, StepMiddleware } from '../src/pipeline.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -161,6 +162,47 @@ describe('APCore.register()', () => {
 
     const result = await client.call('math.add', { a: 10, b: 5 });
     expect(result).toEqual({ result: 15 });
+  });
+
+  it('returns a promise that settles only after an async onLoad has completed', async () => {
+    const client = new APCore();
+    let loaded = false;
+    const mod = {
+      inputSchema: AddInputSchema,
+      outputSchema: AddOutputSchema,
+      description: 'Add two numbers',
+      async onLoad() {
+        await new Promise((r) => setTimeout(r, 5));
+        loaded = true;
+      },
+      execute(inputs: Record<string, unknown>) {
+        return { result: (inputs.a as number) + (inputs.b as number) };
+      },
+    };
+
+    const pending = client.register('math.add', mod);
+    expect(pending).toBeInstanceOf(Promise);
+    await pending;
+
+    expect(loaded).toBe(true);
+    expect(client.registry.has('math.add')).toBe(true);
+    expect(await client.call('math.add', { a: 1, b: 2 })).toEqual({ result: 3 });
+  });
+
+  it('surfaces an async onLoad rejection to the caller', async () => {
+    const client = new APCore();
+    const mod = {
+      inputSchema: AddInputSchema,
+      outputSchema: AddOutputSchema,
+      description: 'Add two numbers',
+      async onLoad() {
+        throw new Error('load boom');
+      },
+      execute: () => ({ result: 0 }),
+    };
+
+    await expect(client.register('math.add', mod)).rejects.toThrow('load boom');
+    expect(client.registry.has('math.add')).toBe(false);
   });
 });
 
@@ -390,6 +432,59 @@ describe('APCore.useBefore()', () => {
     await client.call('math.add', { a: 1, b: 2 });
     expect(called).toBe(true);
   });
+
+  it('registering a second callback does not trigger the duplicate-middleware warning', async () => {
+    const client = new APCore();
+    registerAdd(client);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const seen: string[] = [];
+    try {
+      client.useBefore(() => {
+        seen.push('first');
+        return null;
+      });
+      client.useBefore(() => {
+        seen.push('second');
+        return null;
+      });
+      client.useAfter(() => null);
+      client.useAfter(() => null);
+
+      const duplicateWarnings = warnSpy.mock.calls.filter((c) =>
+        String(c[0]).includes('Duplicate middleware registration'),
+      );
+      expect(duplicateWarnings).toEqual([]);
+    } finally {
+      warnSpy.mockRestore();
+    }
+
+    await client.call('math.add', { a: 1, b: 2 });
+    expect(seen).toEqual(['first', 'second']);
+  });
+
+  it('registering the SAME callback twice still warns', () => {
+    const client = new APCore();
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const cb = () => null;
+      client.useBefore(cb);
+      client.useBefore(cb);
+      const duplicateWarnings = warnSpy.mock.calls.filter((c) =>
+        String(c[0]).includes('Duplicate middleware registration'),
+      );
+      expect(duplicateWarnings).toHaveLength(1);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('a registered callback wrapper can still be removed', () => {
+    const client = new APCore();
+    client.useBefore(() => null);
+    const wrapper = client.executor.middlewares[0];
+    expect(client.remove(wrapper)).toBe(true);
+    expect(client.executor.middlewares).toHaveLength(0);
+  });
 });
 
 describe('APCore.useAfter()', () => {
@@ -551,5 +646,50 @@ describe('APCore exports', () => {
     const mod = await import('../src/index.js');
     expect(mod.APCore).toBeDefined();
     expect(typeof mod.APCore).toBe('function');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Step middleware (protocol-spec §5.16 requirement 5)
+// ---------------------------------------------------------------------------
+
+describe('APCore.addStepMiddleware()', () => {
+  class RecordingStepMiddleware implements StepMiddleware {
+    readonly before: string[] = [];
+    readonly after: string[] = [];
+
+    beforeStep(stepName: string, _state: PipelineState): void {
+      this.before.push(stepName);
+    }
+
+    afterStep(stepName: string, _state: PipelineState, _result: unknown): void {
+      this.after.push(stepName);
+    }
+  }
+
+  it('returns self for chaining', () => {
+    const client = new APCore();
+    expect(client.addStepMiddleware(new RecordingStepMiddleware())).toBe(client);
+  });
+
+  it('runs around every pipeline step of a call', async () => {
+    const client = new APCore();
+    registerAdd(client);
+    const mw = new RecordingStepMiddleware();
+    client.addStepMiddleware(mw);
+
+    await client.call('math.add', { a: 1, b: 2 });
+
+    const steps = client.executor.currentStrategy.stepNames();
+    expect(mw.before).toEqual(steps);
+    expect(mw.after).toEqual(steps);
+  });
+
+  it('is exposed on the Executor as well', async () => {
+    const registry = new Registry();
+    const executor = new Executor({ registry });
+    const mw = new RecordingStepMiddleware();
+    expect(executor.addStepMiddleware(mw)).toBe(executor);
+    expect(executor.stepMiddlewares).toEqual([mw]);
   });
 });

@@ -46,16 +46,15 @@ describe('the exported free function honours the per-class marker (D-107)', () =
     expect(entries[0].moduleId).toBe('math.math_ops');
   });
 
-  it('one marked class among several is enough to opt the file in', () => {
+  it('one marked class among several opts the file in, and only it is registered (D-147)', () => {
     const mixed: ClassDescriptor[] = [
       { name: 'Addition', implementsModule: true, multiClass: true },
       { name: 'Subtraction', implementsModule: true },
     ];
     const entries = discoverMultiClass('extensions/math/math_ops.ts', mixed, 'extensions');
-    expect(entries.map((e) => e.moduleId).sort()).toEqual([
-      'math.math_ops.addition',
-      'math.math_ops.subtraction',
-    ]);
+    // Two Module classes, so rule 5 does not apply: the marked one keeps its
+    // segment, and the unmarked one receives no ID.
+    expect(entries.map((e) => e.moduleId)).toEqual(['math.math_ops.addition']);
   });
 
   it('a marker on a non-qualifying class does not opt the file in', () => {

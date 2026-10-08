@@ -161,6 +161,7 @@ export {
   ModuleReloadConflictError,
   SysModuleRegistrationError,
   SysModulesDisabledError,
+  InvalidParentIdError,
   StreamingInterfaceError,
   DuplicateModuleIdError,
   ContextBindingError,

@@ -52,7 +52,7 @@ afterEach(() => {
 function writeModule(name: string, fns: string[]): string {
   const filePath = join(tmpDir, name);
   const body = fns.map((fn) => `export function ${fn}() { return { ok: '${fn}' }; }`).join('\n');
-  writeFileSync(filePath, `${body}\n`, 'utf-8');
+  writeFileSync(filePath, `${body}\nexport const inputSchema = {type:'object'};\nexport const outputSchema = {type:'object'};\n`, 'utf-8');
   return filePath;
 }
 

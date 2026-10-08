@@ -10,6 +10,7 @@ import {
   BindingModuleNotFoundError,
   BindingCallableNotFoundError,
   BindingNotCallableError,
+  BindingSchemaInferenceFailedError,
 } from '../src/errors.js';
 
 let tmpDir: string;
@@ -26,9 +27,10 @@ afterEach(() => {
   rmSync(tmpDir, { recursive: true, force: true });
 });
 
-function writeTempModule(filename: string, content: string): string {
+function writeTempModule(filename: string, content: string, inferable: boolean = true): string {
   const filePath = join(tmpDir, filename);
-  writeFileSync(filePath, content, 'utf-8');
+  const schemas = inferable ? "\nexport const inputSchema = {type:'object'};\nexport const outputSchema = {type:'object'};\n" : '';
+  writeFileSync(filePath, content + schemas, 'utf-8');
   return filePath;
 }
 
@@ -209,17 +211,14 @@ describe('BindingLoader', () => {
       expect(results[0].version).toBe('2.0.0');
     });
 
-    it('successfully loads binding with permissive fallback (no schema)', async () => {
-      const modPath = writeTempModule('permissive_mod.mjs', 'export function loose(inputs) { return { ok: true }; }\n');
+    it('rejects implicit inference without a schema source (D-139)', async () => {
+      const modPath = writeTempModule('permissive_mod.mjs', 'export function loose(inputs) { return { ok: true }; }\n', false);
       const yamlPath = writeTempYaml(
         'permissive.binding.yaml',
         `bindings:\n  - module_id: "test.permissive"\n    target: "${modPath}:loose"\n`,
       );
-      const results = await loader.loadBindings(yamlPath, registry);
-      expect(results).toHaveLength(1);
-      expect(results[0].moduleId).toBe('test.permissive');
-      expect(results[0].inputSchema).toBeDefined();
-      expect(results[0].outputSchema).toBeDefined();
+      await expect(loader.loadBindings(yamlPath, registry)).rejects.toThrow(BindingSchemaInferenceFailedError);
+      expect(registry.has('test.permissive')).toBe(false);
     });
 
     it('registers modules in the registry', async () => {

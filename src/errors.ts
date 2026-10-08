@@ -1309,7 +1309,9 @@ export class InvalidSegmentError extends ModuleError {
 }
 
 export class CircuitBreakerOpenError extends ModuleError {
-  static override readonly DEFAULT_RETRYABLE: boolean | null = false;
+  // The circuit closes again after its recovery window, so the same call
+  // later may succeed (protocol-spec §8.6, D-135).
+  static override readonly DEFAULT_RETRYABLE: boolean | null = true;
 
   constructor(moduleId: string, callerId: string | null = null, options?: ErrorOptions) {
     super(
@@ -1418,6 +1420,38 @@ export class SysModulesDisabledError extends ModuleError {
       options?.suggestion,
     );
     this.name = 'SysModulesDisabledError';
+  }
+}
+
+/**
+ * Raised when `TraceContext.inject` gets a `parentId` override that is not 16
+ * lowercase hex characters (`^[0-9a-f]{16}$`).
+ *
+ * `userFixable` defaults to `true` on the class rather than through
+ * `USER_FIXABLE_BY_CODE`, because that map is asserted equal to
+ * `error_recovery_metadata.json`, which does not enumerate this code. The value
+ * matches apcore-python `InvalidParentIdError` and apcore-rust
+ * `user_fixable_for_code`: the caller fixes it by passing a valid span id.
+ */
+export class InvalidParentIdError extends ModuleError {
+  static override readonly DEFAULT_RETRYABLE: boolean | null = false;
+
+  constructor(parentId: string, options?: ErrorOptions) {
+    super(
+      'INVALID_PARENT_ID',
+      `Malformed parentId override: ${JSON.stringify(parentId)}. Expected 16 lowercase hex chars matching /^[0-9a-f]{16}$/.`,
+      { parentId },
+      options?.cause,
+      options?.traceId,
+      options?.retryable,
+      options?.aiGuidance ??
+        'The parentId override passed to TraceContext.inject() must be 16 lowercase hex ' +
+          'characters (^[0-9a-f]{16}$). Pass a valid span id or omit the argument to let ' +
+          'apcore derive one.',
+      options?.userFixable !== undefined ? options.userFixable : true,
+      options?.suggestion,
+    );
+    this.name = 'InvalidParentIdError';
   }
 }
 

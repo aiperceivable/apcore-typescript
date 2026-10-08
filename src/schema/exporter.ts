@@ -41,9 +41,10 @@ export class SchemaExporter {
         destructiveHint: annotations?.destructive ?? false,
         idempotentHint: annotations?.idempotent ?? false,
         openWorldHint: annotations?.openWorld ?? true,
-        streaming: annotations?.streaming ?? false,
       },
       _meta: {
+        ...(annotations?.requiresApproval ? { requiresApproval: true } : {}),
+        ...(annotations?.streaming ? { streaming: true } : {}),
         cacheable: annotations?.cacheable ?? false,
         cacheTtl: annotations?.cacheTtl ?? 0,
         cacheKeyFields: annotations?.cacheKeyFields ?? null,

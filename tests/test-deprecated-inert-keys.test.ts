@@ -55,6 +55,8 @@ const INERT_KEYS: readonly string[] = [
   'acl.audit.enabled',
   'acl.audit.include_denied',
   'acl.audit.log_level',
+  'middleware.disabled',
+  'extensions.auto_discover',
 ];
 
 /**
@@ -78,12 +80,14 @@ const INERT_KEY_VALUES: Record<string, string> = {
   'acl.audit.enabled': 'true',
   'acl.audit.include_denied': 'true',
   'acl.audit.log_level': '"info"',
+  'middleware.disabled': '["logging"]',
+  'extensions.auto_discover': 'false',
 };
 
 const MINIMAL_YAML = 'version: "0.30.0"\nproject:\n  name: inert-keys-test\n';
 
 /**
- * All eight in one document. Written out rather than assembled from `declare()`
+ * All ten in one document. Written out rather than assembled from `declare()`
  * per key, which would emit `observability:` twice and produce a
  * duplicate-mapping-key YAML error.
  */
@@ -100,6 +104,10 @@ observability:
   metrics:
     enabled: true
     exporter: "prometheus"
+middleware:
+  disabled: ["logging"]
+extensions:
+  auto_discover: false
 `;
 
 /** Render a dotted key as the nested YAML block that declares it. */
@@ -179,14 +187,14 @@ describe('the §9.2.4 inert-configuration-key notice (apcore#118)', () => {
     expect(notices).toHaveLength(1);
     expect(notices[0]).toContain(key);
     expect(notices[0]).toContain('1 key(s)');
-    // Only the declared one. A notice that named all eight would be no more
+    // Only the declared one. A notice that named all ten would be no more
     // actionable than no notice at all.
     for (const other of INERT_KEYS.filter((k) => k !== key)) {
       expect(notices[0]).not.toContain(other);
     }
   });
 
-  it('names all eight, once, in the §9.2.4 order when a configuration declares all eight', () => {
+  it('names all ten, once, in the §9.2.4 order when a configuration declares all ten', () => {
     const configPath = write('apcore.yaml', MINIMAL_YAML + ALL_INERT_YAML);
     const warn = spyOnWarn();
 
@@ -194,7 +202,7 @@ describe('the §9.2.4 inert-configuration-key notice (apcore#118)', () => {
 
     const notices = noticesFrom(warn);
     expect(notices).toHaveLength(1);
-    expect(notices[0]).toContain('8 key(s)');
+    expect(notices[0]).toContain('10 key(s)');
     // The order is part of the contract: two SDKs reporting the same document
     // must produce the same list.
     expect(notices[0]).toContain(INERT_KEYS.join(', '));
@@ -297,7 +305,7 @@ describe('the §9.2.4 inert-configuration-key notice (apcore#118)', () => {
     expect(noticesFrom(warn)).toHaveLength(3);
   });
 
-  it('changes no behaviour: all eight still parse, validate under strict, and answer get()', () => {
+  it('changes no behaviour: all ten still parse, validate under strict, and answer get()', () => {
     // §9.2.4 requirement 3. Withdrawing these keys cannot be a plain deletion
     // precisely because a configuration carrying them is valid TODAY under
     // `_config.strict: true`; deleting one would turn a currently-valid

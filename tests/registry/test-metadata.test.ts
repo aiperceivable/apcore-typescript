@@ -342,15 +342,15 @@ describe('loadIdMap', () => {
     expect(() => loadIdMap(idMapPath)).toThrow(ConfigError);
   });
 
-  it('parses valid mappings with file, id, and class fields', () => {
+  it('parses valid mappings into file -> id; an entry carries file and id only (D-138)', () => {
     const idMapPath = join(tmpDir, 'id_map.yaml');
     writeFileSync(
       idMapPath,
       ['mappings:', '  - file: module_a.ts', '    id: custom.module.a', '    class: ModuleA', '  - file: module_b.ts', '    id: custom.module.b', ''].join('\n'),
     );
     const result = loadIdMap(idMapPath);
-    expect(result['module_a.ts']).toEqual({ id: 'custom.module.a', class: 'ModuleA' });
-    expect(result['module_b.ts']).toEqual({ id: 'custom.module.b', class: null });
+    expect(result['module_a.ts']).toEqual({ id: 'custom.module.a' });
+    expect(result['module_b.ts']).toEqual({ id: 'custom.module.b' });
   });
 
   it('skips entries without file field', () => {

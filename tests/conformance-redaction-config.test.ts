@@ -84,6 +84,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 
 import { Config } from '../src/config.js';
+import { redactSensitive } from '../src/executor.js';
 import { RedactionConfig } from '../src/observability/context-logger.js';
 import { findFixturesRoot } from './spec-repo.js';
 
@@ -94,6 +95,7 @@ import { findFixturesRoot } from './spec-repo.js';
 interface RedactionCase {
   readonly id: string;
   /** Behaviour cases: literal rule values. */
+  readonly schema?: Record<string, unknown>;
   readonly redaction_config?: {
     readonly use_defaults?: boolean;
     readonly regex_patterns: readonly string[];
@@ -337,17 +339,26 @@ describe('Conformance: redaction configuration (redaction_config.json)', () => {
     // lands, instead of the day someone remembers to add its id here.
     const flat = Object.values(tc.input).every((v) => v === null || typeof v !== 'object');
 
+    // `schema_marked_fields`: a case carrying `schema` goes through the entry
+    // point the executor's input capture uses, which walks the schema's
+    // `x-sensitive` markers (D-152) before the configured rules.
+    const run = (rc: InstanceType<typeof RedactionConfig>): void => {
+      if (tc.schema !== undefined) {
+        expect(redactSensitive(structuredClone(tc.input), tc.schema, rc)).toEqual(expected);
+        return;
+      }
+      if (flat) expect(rc.apply({ ...tc.input })).toEqual(expected);
+      expect(rc.redact({ ...tc.input })).toEqual(expected);
+    };
+
     it(`${tc.id} — via obs.redaction.* config keys`, () => {
       const rc = RedactionConfig.fromConfig(configFor(tc));
       expect(rc.replacement).toBe(tc.redaction_config!.replacement);
-      if (flat) expect(rc.apply({ ...tc.input })).toEqual(expected);
-      expect(rc.redact({ ...tc.input })).toEqual(expected);
+      run(rc);
     });
 
     it(`${tc.id} — via RedactionConfig constructor`, () => {
-      const rc = constructedFor(tc);
-      if (flat) expect(rc.apply({ ...tc.input })).toEqual(expected);
-      expect(rc.redact({ ...tc.input })).toEqual(expected);
+      run(constructedFor(tc));
     });
   });
 
@@ -466,6 +477,13 @@ describe('Conformance: redaction configuration (redaction_config.json)', () => {
       // String values only — PROTOCOL_SPEC 10.6.1 requirement 2 (spec v1.40.0).
       'regex_patterns_do_not_test_non_string_values',
       'regex_patterns_still_reach_a_string_inside_a_container',
+      // `x-sensitive` inside schema combinators — PROTOCOL_SPEC 10.6 / A13 (D-152).
+      'x_sensitive_inside_an_any_of_branch_is_redacted',
+      'x_sensitive_in_any_branch_redacts_the_value_whichever_branch_it_matches',
+      'x_sensitive_in_an_all_of_branch_is_redacted',
+      'properties_declared_inside_a_branch_are_walked',
+      'a_combinator_without_a_marker_stays_visible',
+      'array_items_marked_inside_a_branch_are_redacted',
     ]);
 
     // Every case belongs to exactly one shape. A case carrying neither a
@@ -483,6 +501,12 @@ describe('Conformance: redaction configuration (redaction_config.json)', () => {
       // String values only — PROTOCOL_SPEC 10.6.1 requirement 2 (spec v1.40.0).
       'regex_patterns_do_not_test_non_string_values',
       'regex_patterns_still_reach_a_string_inside_a_container',
+      'x_sensitive_inside_an_any_of_branch_is_redacted',
+      'x_sensitive_in_any_branch_redacts_the_value_whichever_branch_it_matches',
+      'x_sensitive_in_an_all_of_branch_is_redacted',
+      'properties_declared_inside_a_branch_are_walked',
+      'a_combinator_without_a_marker_stays_visible',
+      'array_items_marked_inside_a_branch_are_redacted',
     ]);
     expect(configKeyCases.map((c) => c.id)).toEqual([
       'canonical_config_key_is_read',

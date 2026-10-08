@@ -130,7 +130,10 @@ export class CircuitBreakerWrapper implements EventSubscriber {
     if (this._state === CircuitState.HALF_OPEN) {
       this._state = CircuitState.CLOSED;
       this._consecutiveFailures = 0;
+      // subscriber_id names WHICH breaker changed state: two subscribers of
+      // one type are otherwise indistinguishable (protocol-spec §9.16.2).
       return this._makeEvent('apcore.subscriber.circuit_closed', 'info', {
+        subscriber_id: this.subscriberId ?? null,
         subscriber_type: this._subscriberType,
         recovery_attempt: true,
       });
@@ -154,6 +157,7 @@ export class CircuitBreakerWrapper implements EventSubscriber {
         error,
       );
       return this._makeEvent('apcore.subscriber.circuit_opened', 'warn', {
+        subscriber_id: this.subscriberId ?? null,
         subscriber_type: this._subscriberType,
         consecutive_failures: this._consecutiveFailures,
       });

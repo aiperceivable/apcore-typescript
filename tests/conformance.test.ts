@@ -254,6 +254,11 @@ describe('apcore Conformance Suite (TypeScript)', () => {
   describe('ID Normalization (Algorithm A02)', () => {
     normalizeFixture.test_cases.forEach((tc: any) => {
       it(tc.id, () => {
+        if (tc.expected_error) {
+          expect(() => normalizeToCanonicalId(tc.local_id, tc.language))
+            .toThrow(`Normalized ID '${tc.expected_normalized}'`);
+          return;
+        }
         expect(normalizeToCanonicalId(tc.local_id, tc.language)).toBe(tc.expected);
       });
     });
@@ -712,10 +717,10 @@ describe('apcore Conformance Suite (TypeScript)', () => {
           // A declared failure path must be the path actually reported,
           // otherwise "invalid" is proven by any unrelated rejection.
           if (!expectedValid && tc.expected_error_path !== undefined) {
-            const wanted = '/' + String(tc.expected_error_path).replace(/[.[]/g, '/').replace(/]/g, '');
+            const wanted = String(tc.expected_error_path);
             const paths = result.errors.map((e: any) => e.path);
             expect(
-              paths.some((p: string) => p.includes(wanted)),
+              paths.includes(wanted),
               `[schema_validation :: ${tc.id}] expected an error at ${wanted}, got ${JSON.stringify(paths)}`,
             ).toBe(true);
           }
@@ -964,6 +969,7 @@ describe('apcore Conformance Suite (TypeScript)', () => {
             cacheKeyFields: tc.input.cache_key_fields,
             paginated: tc.input.paginated,
             paginationStyle: tc.input.pagination_style,
+            discoverable: tc.input.discoverable,
             extra: tc.input.extra ?? {},
           });
           const serialized = annotationsToJSON(ann);
@@ -986,6 +992,7 @@ describe('apcore Conformance Suite (TypeScript)', () => {
           cacheKeyFields: tc.input.cache_key_fields,
           paginated: tc.input.paginated,
           paginationStyle: tc.input.pagination_style,
+          discoverable: tc.input.discoverable,
           extra: tc.input.extra ?? {},
         });
         const serialized = annotationsToJSON(ann);
@@ -1740,6 +1747,8 @@ describe('apcore Conformance Suite (TypeScript)', () => {
     'filter_include_question_mark_is_a_wildcard',
     'circuit_event_reports_the_declared_subscriber_type',
     'circuit_event_uses_the_dlq_default_for_an_undeclared_subscriber',
+    'circuit_opened_event_carries_the_subscriber_id',
+    'circuit_closed_event_carries_the_subscriber_id',
   ];
 
   function makeTestEvent(overrides: Partial<ApCoreEvent> = {}): ApCoreEvent {
@@ -1992,6 +2001,7 @@ describe('apcore Conformance Suite (TypeScript)', () => {
     for (const caseId of [
       'circuit_event_reports_the_declared_subscriber_type',
       'circuit_event_uses_the_dlq_default_for_an_undeclared_subscriber',
+      'circuit_opened_event_carries_the_subscriber_id',
     ]) {
       it(caseId, async () => {
         const tc = eventHardeningFixture.test_cases.find((t: any) => t.id === caseId);
@@ -2030,6 +2040,9 @@ describe('apcore Conformance Suite (TypeScript)', () => {
 
         if (tc.expected.event_subscriber_type !== undefined) {
           expect(opened[0].data['subscriber_type']).toBe(tc.expected.event_subscriber_type);
+        }
+        if (tc.expected.event_subscriber_id !== undefined) {
+          expect(opened[0].data['subscriber_id']).toBe(tc.expected.event_subscriber_id);
         }
         if (tc.expected.event_subscriber_type_equals_dlq_subscriber_type === true) {
           // Asserted as EQUAL TO the DLQ path's value rather than as a literal:
@@ -2154,6 +2167,50 @@ describe('apcore Conformance Suite (TypeScript)', () => {
       expect(cb.state).toBe(tc.expected.circuit_state as CircuitState);
       expect(cb.consecutiveFailures).toBe(tc.expected.consecutive_failures);
       expect(emittedEventTypes).toContain(tc.expected.event_emitted);
+    });
+
+    it('circuit_closed_event_carries_the_subscriber_id', async () => {
+      const tc = eventHardeningFixture.test_cases.find(
+        (t: any) => t.id === 'circuit_closed_event_carries_the_subscriber_id',
+      );
+      expect(tc).toBeDefined();
+      expect(tc.input.circuit_state).toBe('HALF_OPEN');
+      expect(tc.input.delivery_outcome).toBe('success');
+
+      vi.useFakeTimers();
+      const emitted: ApCoreEvent[] = [];
+      const mockEmitter = {
+        emit(ev: ApCoreEvent) {
+          emitted.push(ev);
+        },
+      };
+      let shouldFail = true;
+      const spec = tc.input.subscriber;
+      const sub: EventSubscriber = {
+        subscriberId: spec.subscriber_id,
+        subscriberType: spec.subscriber_type,
+        async onEvent() {
+          if (shouldFail) throw new Error('simulated failure');
+        },
+      };
+      const cb = new CircuitBreakerWrapper(sub, mockEmitter, {
+        openThreshold: 1,
+        recoveryWindowMs: 5000,
+      });
+
+      // Reach HALF_OPEN (the fixture's starting state), then succeed.
+      await cb.onEvent(makeTestEvent());
+      vi.setSystemTime(Date.now() + 6000);
+      cb.checkRecovery();
+      expect(cb.state).toBe(CircuitState.HALF_OPEN);
+      shouldFail = false;
+      await cb.onEvent(makeTestEvent());
+
+      expect(cb.state).toBe(tc.expected.circuit_state as CircuitState);
+      expect(cb.consecutiveFailures).toBe(tc.expected.consecutive_failures);
+      const closed = emitted.filter((e) => e.eventType === tc.expected.event_emitted);
+      expect(closed).toHaveLength(1);
+      expect(closed[0].data['subscriber_id']).toBe(tc.expected.event_subscriber_id);
     });
 
     it('event_naming_canonical', () => {

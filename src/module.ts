@@ -231,13 +231,13 @@ export interface PreflightResult {
    * the target module implements `preview()` (see protocol-spec §5.6 /
    * §12.8.5.1).
    *
-   * - Absent (or empty) when the module does not implement `preview()` or
+   * - Empty when the module does not implement `preview()` or
    *   when `preview()` returned `null`.
-   * - When `preview()` throws, `predictedChanges` is left unset and a
+   * - When `preview()` throws, `predictedChanges` is empty and a
    *   `module_preview` advisory check carries the warning, mirroring
    *   `preflight()` semantics (warnings do not fail validation).
    */
-  readonly predictedChanges?: Change[];
+  readonly predictedChanges: Change[];
 }
 
 export function createPreflightResult(
@@ -249,10 +249,7 @@ export function createPreflightResult(
   const errors = checks
     .filter(c => !c.passed && c.error != null)
     .map(c => c.error!);
-  if (predictedChanges !== undefined) {
-    return { valid, checks, requiresApproval, errors, predictedChanges };
-  }
-  return { valid, checks, requiresApproval, errors };
+  return { valid, checks, requiresApproval, errors, predictedChanges: predictedChanges ?? [] };
 }
 
 /**

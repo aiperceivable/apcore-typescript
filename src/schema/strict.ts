@@ -51,18 +51,18 @@ export function applyLlmDescriptions(node: unknown): void {
   }
 }
 
-export function stripExtensions(node: unknown, stripDefaults: boolean = true): void {
+export function stripExtensions(node: unknown, stripDefaults: boolean = true, nameMap: boolean = false): void {
   if (typeof node !== 'object' || node === null || Array.isArray(node)) return;
 
   const obj = node as Record<string, unknown>;
   const keysToRemove = Object.keys(obj).filter(
-    (k) => (typeof k === 'string' && k.startsWith('x-')) || (stripDefaults && k === 'default'),
+    (k) => !nameMap && (k.startsWith('x-') || (stripDefaults && k === 'default')),
   );
   for (const k of keysToRemove) {
     delete obj[k];
   }
 
-  for (const value of Object.values(obj)) {
+  for (const [key, value] of Object.entries(obj)) {
     if (typeof value === 'object' && value !== null) {
       if (Array.isArray(value)) {
         for (const item of value) {
@@ -71,7 +71,7 @@ export function stripExtensions(node: unknown, stripDefaults: boolean = true): v
           }
         }
       } else {
-        stripExtensions(value, stripDefaults);
+        stripExtensions(value, stripDefaults, !nameMap && ['properties', 'patternProperties', '$defs', 'definitions', 'dependentSchemas'].includes(key));
       }
     }
   }

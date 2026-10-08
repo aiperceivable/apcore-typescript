@@ -71,7 +71,7 @@ export interface StepResult {
 // PipelineState
 // ---------------------------------------------------------------------------
 
-/** Snapshot passed to runUntil predicates after each step completes (§1.4). */
+/** Snapshot passed to runUntil predicates after each step completes (protocol-spec §5.16 requirement 4). */
 export interface PipelineState {
   readonly stepName: string;
   readonly outputs: Record<string, unknown>;
@@ -225,7 +225,7 @@ export interface PipelineContext {
    * execute step records the fact rather than leaving it to be inferred.
    */
   executeStepRan?: boolean;
-  /** When set, pipeline halts after the first step where predicate returns true (§1.4). */
+  /** When set, pipeline halts after the first step where predicate returns true (protocol-spec §5.16 requirement 4). */
   runUntil?: ((state: PipelineState) => boolean) | null;
 
   /**
@@ -264,6 +264,8 @@ export interface StepTrace {
   decisionPoint: boolean;
   /** Reason the step was skipped: "no_match", "dry_run", or "error_ignored". */
   skipReason?: string | null;
+  /** Canonical failure details retained during an aggregate dry run. */
+  error?: { code: string; message: string };
 }
 
 // ---------------------------------------------------------------------------
@@ -506,7 +508,7 @@ export class ExecutionStrategy {
     this._validateDependencies();
   }
 
-  /** Rebuild the O(1) name→index map. Call after any mutation (§1.5). */
+  /** Rebuild the O(1) name→index map. Call after any mutation (protocol-spec §5.16 requirement 2). */
   private _rebuildIndex(): void {
     this._nameToIdx = new Map(this._steps.map((s, i) => [s.name, i]));
   }
@@ -601,12 +603,20 @@ export class ExecutionStrategy {
     if (!this._steps[idx].replaceable) {
       throw new StepNotReplaceableError(`Step '${stepName}' is not replaceable`);
     }
+    // Same guard as configureStep: a new name that belongs to a different
+    // step would leave two identically-named steps with only one indexed.
+    if (newStep.name !== stepName && this._nameToIdx.has(newStep.name)) {
+      throw new StepNameDuplicateError(
+        `Step '${newStep.name}' already exists at a different position`,
+      );
+    }
     this._steps[idx] = newStep;
     this._rebuildIndex();
   }
 
   /**
-   * Replace a step by name using replace semantics (§1.2).
+   * Replace a step by name using replace semantics (protocol-spec §5.16
+   * requirement 3).
    *
    * Calling configureStep twice with the same stepName always leaves exactly
    * one step at that position — idempotent, never duplicates.
@@ -768,7 +778,7 @@ export class StepNameDuplicateError extends ModuleError {
 }
 
 /**
- * Raised when a pipeline step fails (fail-fast, §1.1).
+ * Raised when a pipeline step fails (fail-fast, protocol-spec §5.16 requirement 1).
  *
  * Wraps the original exception from the failing step. When ignore_errors is
  * true on the step, this error is NOT raised — execution continues instead.
@@ -1027,6 +1037,7 @@ export class PipelineEngine {
     ctx.trace = trace;
 
     const stepOutputs: Record<string, unknown> = {};
+    const failedProvides = new Set<string>();
 
     let idx = 0;
     while (idx < steps.length) {
@@ -1042,6 +1053,9 @@ export class PipelineEngine {
       if (stepMatchModules !== null) {
         const matched = stepMatchModules.some((pattern) => matchPattern(pattern, ctx.moduleId));
         if (!matched) {
+          if (ctx.dryRun) {
+            for (const key of step.provides ?? []) failedProvides.add(key);
+          }
           trace.steps.push({
             name: step.name,
             durationMs: 0,
@@ -1057,6 +1071,8 @@ export class PipelineEngine {
 
       // 2 dry_run filter: skip steps with side effects
       if (ctx.dryRun && !stepPure) {
+        // Capabilities are declarations, not necessarily context attributes.
+        for (const key of step.provides ?? []) failedProvides.add(key);
         trace.steps.push({
           name: step.name,
           durationMs: 0,
@@ -1065,6 +1081,13 @@ export class PipelineEngine {
           decisionPoint: false,
           skipReason: 'dry_run',
         });
+        idx += 1;
+        continue;
+      }
+      if (ctx.dryRun && (step.requires ?? []).some((key) => failedProvides.has(key))) {
+        trace.steps.push({ name: step.name, durationMs: 0, result: { action: 'continue' },
+          skipped: true, decisionPoint: false, skipReason: 'missing_dependency' });
+        for (const key of step.provides ?? []) failedProvides.add(key);
         idx += 1;
         continue;
       }
@@ -1168,6 +1191,17 @@ export class PipelineEngine {
       } catch (exc) {
         const durationMs = performance.now() - stepStart;
         const cause = exc instanceof Error ? exc : new Error(String(exc));
+        if (ctx.dryRun) {
+          // D-134: report every evaluable pure check without converting a
+          // failed check into successful recovery output.
+          trace.steps.push({ name: step.name, durationMs,
+            result: { action: 'abort', explanation: cause.message },
+            skipped: false, decisionPoint: false,
+            error: { code: cause instanceof ModuleError ? cause.code : 'GENERAL_INTERNAL_ERROR', message: cause.message } });
+          for (const key of step.provides ?? []) failedProvides.add(key);
+          idx += 1;
+          continue;
+        }
 
         // 3 b onStepError hooks: reverse registration order (onion model),
         //     first non-null recovery wins and short-circuits the rest (§2.2).
@@ -1230,7 +1264,7 @@ export class PipelineEngine {
           idx += 1;
           continue;
         }
-        // Fail-fast (§1.1): wrap in PipelineStepError with step name and cause
+        // Fail-fast (protocol-spec §5.16 requirement 1): wrap in PipelineStepError with step name and cause
         trace.steps.push({
           name: step.name,
           durationMs,
@@ -1264,13 +1298,23 @@ export class PipelineEngine {
         skipped: false,
         decisionPoint: result.confidence != null,
       });
+      if (ctx.dryRun) {
+        if (result.action === 'abort') {
+          for (const key of step.provides ?? []) failedProvides.add(key);
+        } else {
+          for (const key of step.provides ?? []) failedProvides.delete(key);
+        }
+        stepOutputs[step.name] = ctx.output != null ? { ...ctx.output } : null;
+        idx += 1;
+        continue;
+      }
 
       // 6 Handle abort / skip_to / continue
       if (result.action === 'continue') {
-        // Snapshot output for run_until predicates (§1.4)
+        // Snapshot output for run_until predicates (protocol-spec §5.16 requirement 4)
         stepOutputs[step.name] = ctx.output != null ? { ...ctx.output } : null;
 
-        // 7 run_until: evaluate predicate after each successful continue (§1.4)
+        // 7 run_until: evaluate predicate after each successful continue (protocol-spec §5.16 requirement 4)
         if (ctx.runUntil != null) {
           const state: PipelineState = {
             stepName: step.name,
@@ -1296,7 +1340,7 @@ export class PipelineEngine {
         );
       } else if (result.action === 'skip_to') {
         const target = result.skipTo ?? '';
-        // O(1) step index lookup (§1.5)
+        // O(1) step index lookup (protocol-spec §5.16 requirement 2)
         const targetIdx = strategy.findStepIndex(target);
         if (targetIdx === undefined || targetIdx <= idx) {
           throw new StepNotFoundError(
@@ -1320,7 +1364,7 @@ export class PipelineEngine {
     }
 
     trace.totalDurationMs = performance.now() - pipelineStart;
-    trace.success = true;
+    trace.success = !trace.steps.some((step) => !step.skipped && step.result.action === 'abort');
     return [ctx.output ?? null, trace];
   }
 }

@@ -167,6 +167,7 @@ export {
   ModuleReloadConflictError,
   SysModuleRegistrationError,
   SysModulesDisabledError,
+  InvalidParentIdError,
   ContextBindingError,
   ErrorCodes,
 } from '../errors.js';

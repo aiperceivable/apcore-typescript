@@ -341,9 +341,11 @@ describe('Config namespace defaults', () => {
     const yamlPath = path.join(tmpDir, 'ns.yaml');
     fs.writeFileSync(yamlPath, 'apcore:\n  version: "1.0.0"\n');
     const cfg = Config.load(yamlPath, { validate: false });
-    // Built-in default: observability.logging.enabled = true
+    // Built-in default: observability.tracing.enabled = false. The namespace
+    // declares tracing and metrics only (D-144).
     const obs = cfg.namespace('observability');
-    expect((obs['logging'] as Record<string, unknown>)['enabled']).toBe(true);
+    expect((obs['tracing'] as Record<string, unknown>)['enabled']).toBe(false);
+    expect(Object.keys(obs).sort()).toEqual(['metrics', 'tracing']);
   });
 
   it('applies built-in sys_modules defaults in namespace mode', () => {

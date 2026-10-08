@@ -107,8 +107,9 @@ function warnMultiClassEnabledArg(): void {
  * exists for: two participating classes beside a helper class that must not
  * become a module.
  *
- * When multi-class mode is on and exactly one class qualifies, the bare
- * base_id is still returned — the single-class identity guarantee.
+ * In multi-class mode only the marked classes receive IDs, each
+ * `base_id.segment` (D-147). A file with exactly one Module class keeps the
+ * bare base_id — the single-class identity guarantee (§2.1.1 rule 5).
  *
  * @param multiClassEnabled - **Deprecated and ignored.** Retained so existing
  *   4-argument call sites keep compiling; passing it warns once per process.
@@ -145,19 +146,19 @@ export function discoverMultiClass(
   }
 
   if (qualifying.length === 1) {
-    // Single-class identity guarantee: a file with exactly one qualifying class
-    // ALWAYS yields the bare base_id, regardless of whether the class segment
-    // matches the file stem. This matches Python multi_class.py:143 and Rust
-    // derive_module_ids, and prevents a single class from being given a
-    // distinct ".class_segment" suffix.
+    // Single-class identity guarantee (§2.1.1 rule 5): a file with exactly one
+    // Module class yields the bare base_id whether or not it is marked.
     return [{ moduleId: baseId, className: qualifying[0].name }];
   }
 
-  // Multi-class path: derive IDs, detect conflicts, validate
+  // Multi-class path (D-147): only marked classes receive IDs, and a marked
+  // class's ID is always base_id.segment however many are marked — so marking
+  // a second class never renames the first, and an unmarked helper that
+  // implements Module is not registered.
   const seenSegments = new Map<string, string>(); // segment → className
   const results: MultiClassEntry[] = [];
 
-  for (const cls of qualifying) {
+  for (const cls of qualifying.filter(c => c.multiClass === true)) {
     const segment = classNameToSegment(cls.name);
 
     if (!SEGMENT_RE.test(segment)) {

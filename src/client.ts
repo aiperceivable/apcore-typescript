@@ -11,6 +11,7 @@ import { SysModulesDisabledError } from './errors.js';
 import type { ApCoreEvent, EventSubscriber } from './events/emitter.js';
 import { EventEmitter } from './events/emitter.js';
 import { Executor } from './executor.js';
+import type { StepMiddleware } from './pipeline.js';
 import type { ExecutionPolicy } from './policy.js';
 import type { Middleware } from './middleware/index.js';
 import type { ModuleAnnotations, ModuleExample, PreflightResult } from './module.js';
@@ -218,9 +219,14 @@ export class APCore {
 
   /**
    * Register a module object directly.
+   *
+   * Returns the registry's promise, which settles once an async `onLoad` has
+   * completed: a module with an async `onLoad` is not callable until then, and
+   * an `onLoad` rejection surfaces here instead of as an unhandled rejection.
+   * Validation errors are still thrown synchronously.
    */
-  register(moduleId: string, moduleObj: unknown): void {
-    this.registry.register(moduleId, moduleObj);
+  register(moduleId: string, moduleObj: unknown): Promise<void> {
+    return this.registry.register(moduleId, moduleObj);
   }
 
   /**
@@ -306,6 +312,15 @@ export class APCore {
    */
   remove(middleware: Middleware): boolean {
     return this.executor.remove(middleware);
+  }
+
+  /**
+   * Attach a step middleware to every pipeline step. Delegates to
+   * {@link Executor.addStepMiddleware}. Returns self for chaining.
+   */
+  addStepMiddleware(middleware: StepMiddleware): APCore {
+    this.executor.addStepMiddleware(middleware);
+    return this;
   }
 
   /**

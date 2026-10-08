@@ -17,6 +17,7 @@ import type { EventSubscriber } from '../events/emitter.js';
 import { createEvent, EventEmitter } from '../events/emitter.js';
 import { WebhookSubscriber, A2ASubscriber, FileSubscriber, StdoutSubscriber, FilterSubscriber } from '../events/subscribers.js';
 import type { RetryConfig } from '../events/retry.js';
+import { CircuitBreakerWrapper } from '../events/circuit-breaker.js';
 import { PlatformNotifyMiddleware } from '../middleware/platform-notify.js';
 import { HealthSummaryModule, HealthModule } from './health.js';
 import { ManifestFullModule, ManifestModule } from './manifest.js';
@@ -255,7 +256,12 @@ export function _instantiateSubscribers(
 
     try {
       const subscriber = factory(subscriberConfig);
-      eventEmitter.subscribe(subscriber);
+      const circuitConfig = (subscriberConfig['circuit_breaker'] ?? {}) as Record<string, unknown>;
+      eventEmitter.subscribe(new CircuitBreakerWrapper(subscriber, eventEmitter, {
+        timeoutMs: circuitConfig['timeout_ms'] as number | undefined,
+        openThreshold: circuitConfig['open_threshold'] as number | undefined,
+        recoveryWindowMs: circuitConfig['recovery_window_ms'] as number | undefined,
+      }));
     } catch (err: unknown) {
       console.warn('[apcore:events]', `Failed to create subscriber of type '${typeName}':`, err);
     }
@@ -560,7 +566,7 @@ export function registerSysModules(
     // `_bridge_registry_events`. See protocol-spec
     // §2.5.1 "Audit events".
     registry.on('register', (moduleId: string) => {
-      if (moduleId.startsWith('ephemeral.')) return;
+      if (moduleId === 'ephemeral' || moduleId.startsWith('ephemeral.')) return;
       eventEmitter.emit(createEvent(
         'apcore.registry.module_registered',
         moduleId,
@@ -569,7 +575,7 @@ export function registerSysModules(
       ));
     });
     registry.on('unregister', (moduleId: string) => {
-      if (moduleId.startsWith('ephemeral.')) return;
+      if (moduleId === 'ephemeral' || moduleId.startsWith('ephemeral.')) return;
       eventEmitter.emit(createEvent(
         'apcore.registry.module_unregistered',
         moduleId,

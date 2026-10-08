@@ -482,52 +482,65 @@ export class ReloadModule {
       throw new ReloadFailedError(pathFilter, String(err));
     }
 
-    // Collect successfully reloaded modules
+    // Collect successfully reloaded modules. A module discovery did not bring
+    // back is restored and fails the operation (D-112 rule 4); modules that
+    // did reload stay reloaded.
     const reloadedModules: string[] = [];
-    // D-111: every entry from ONE bulk reload shares a correlation id.
-    //
-    // This SDK already wrote one entry per module — it is the decision's
-    // authority for that half, at 1-of-3 — but per-module entries alone lose
-    // the fact that they were one deploy, so "what did this deploy touch"
-    // stopped being a single query. Generated once, here, rather than per
-    // entry: a fresh id per entry groups nothing, and a constant groups every
-    // deploy together.
-    const correlationId = uuidv4();
+    const missing: string[] = [];
     for (const id of matchingIds) {
       const reloaded = this._registry.get(id);
       if (reloaded === null) {
+        missing.push(id);
         const orig = existingModules.get(id);
         if (orig !== undefined) {
           this._registry.registerInternal(id, orig);
         }
       } else {
         reloadedModules.push(id);
-        const newVersion = String((reloaded as Record<string, unknown>)['version'] ?? '1.0.0');
-        const entry = buildAuditEntry(
-          'reload_module',
-          id,
-          ctx,
-          { before: previousVersions.get(id) ?? '1.0.0', after: newVersion },
-          correlationId,
-        );
-        if (this._auditStore !== null) {
-          this._auditStore.append(entry);
-        }
-        // Emit the same event the single-module path emits. This branch wrote
-        // to the AuditStore and stopped, so with no store configured a bulk
-        // reload left no trace at all — while system-modules.md's Contextual
-        // Auditing section makes the event bus the MINIMUM surface, precisely
-        // for the no-store case. apcore-rust emits here; apcore-python emits
-        // here and now carries the caller identity too (sync finding A-D-017).
+        // Emit the same event the single-module path emits. The event bus is
+        // the MINIMUM audit surface (system-modules.md Contextual Auditing),
+        // precisely for the no-store case, so a bulk reload emits it per
+        // module as apcore-python and apcore-rust do.
         const { caller_id, identity } = extractAuditIdentity(ctx);
         const payload: Record<string, unknown> = {
           module_id: id,
           previous_version: previousVersions.get(id) ?? '1.0.0',
-          new_version: newVersion,
+          new_version: String((reloaded as Record<string, unknown>)['version'] ?? '1.0.0'),
           caller_id,
         };
         if (identity !== null) payload['identity'] = identity;
         this._emitter.emit(createEvent('apcore.module.reloaded', id, 'info', payload));
+      }
+    }
+
+    if (missing.length > 0) {
+      throw new ReloadFailedError(
+        pathFilter,
+        `${missing.length} module(s) were not restored by re-discovery and were put back as they were: ${missing.join(', ')}`,
+      );
+    }
+
+    // D-111: one audit entry PER MODULE, and every entry from ONE bulk reload
+    // shares a correlation id so "what did this deploy touch" stays a single
+    // query. Generated once, here, rather than per entry: a fresh id per entry
+    // groups nothing, and a constant groups every deploy together. Written only
+    // once the operation has succeeded, as apcore-python and apcore-rust do.
+    if (this._auditStore !== null) {
+      const correlationId = uuidv4();
+      for (const id of reloadedModules) {
+        const after = this._registry.get(id) as Record<string, unknown> | null;
+        this._auditStore.append(
+          buildAuditEntry(
+            'reload_module',
+            id,
+            ctx,
+            {
+              before: previousVersions.get(id) ?? '1.0.0',
+              after: String(after?.['version'] ?? '1.0.0'),
+            },
+            correlationId,
+          ),
+        );
       }
     }
 

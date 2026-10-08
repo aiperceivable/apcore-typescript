@@ -23,10 +23,9 @@
 /**
  * The namespace each bundled collector writes under (D-113).
  *
- * §1.1 made the `StorageBackend` argument a MUST and never named these, so of
- * nine collector/SDK combinations only four wrote anything and the two that
- * wrote ErrorHistory records used different names. A namespace IS the key a
- * caller queries by, so an unnamed one is an argument that cannot be read back.
+ * Named here, identically in every SDK (docs/features/metrics-and-usage.md
+ * "Pluggable storage backends"), because a namespace IS the key a caller
+ * queries by: an unnamed one is an argument that cannot be read back.
  */
 export const STORAGE_NAMESPACE_METRICS = 'metrics';
 export const STORAGE_NAMESPACE_USAGE = 'usage';

@@ -56,6 +56,7 @@ import type {
   GovernanceState,
   PipelineContext,
   PipelineTrace,
+  StepMiddleware,
   StrategyInfo,
 } from './pipeline.js';
 import {
@@ -76,6 +77,27 @@ export const REDACTED_VALUE: string = '***REDACTED***';
 const SECURITY_STEPS = ['acl_check', 'approval_gate'] as const;
 
 /** The `pipeline:` block of a loaded configuration, or `null`. */
+/**
+ * A per-callback identity for the `useBefore` / `useAfter` wrappers.
+ *
+ * Every wrapper is a `BeforeMiddleware` / `AfterMiddleware`, so the manager's
+ * default identity (`constructor.name`) made the second distinct callback look
+ * like a duplicate registration. Keying on the callback instead, as
+ * apcore-python does with `id(callback)`, still warns when the SAME callback
+ * is registered twice.
+ */
+const callbackIds = new WeakMap<object, number>();
+let nextCallbackId = 0;
+
+function callbackIdentity(kind: 'before' | 'after', callback: object): string {
+  let id = callbackIds.get(callback);
+  if (id === undefined) {
+    id = nextCallbackId++;
+    callbackIds.set(callback, id);
+  }
+  return `apcore.${kind}.${id}`;
+}
+
 function pipelineSectionOf(config: Config | null): Record<string, unknown> | null {
   if (config === null) return null;
   const section = config.get('pipeline');
@@ -157,49 +179,65 @@ export function redactSensitive(
   return configured.redact(redacted) as Record<string, unknown>;
 }
 
+const COMBINATORS = ['anyOf', 'oneOf', 'allOf'] as const;
+
+/**
+ * A schema and every `anyOf` / `oneOf` / `allOf` branch beneath it.
+ *
+ * The redaction walk does not decide which branch a value matched: a value is
+ * sensitive when ANY schema describing it carries `x-sensitive`, and the
+ * properties declared in any branch are fields of the object like those
+ * declared directly (protocol-spec §10.6, A13, D-152). `Secret | None` puts the
+ * marker in `anyOf[0]`, so a walk that read only the top level logged it.
+ */
+function schemaVariants(schema: Record<string, unknown>): Record<string, unknown>[] {
+  const out: Record<string, unknown>[] = [schema];
+  for (const keyword of COMBINATORS) {
+    const branches = schema[keyword];
+    if (!Array.isArray(branches)) continue;
+    for (const branch of branches) {
+      if (branch !== null && typeof branch === 'object' && !Array.isArray(branch)) {
+        out.push(...schemaVariants(branch as Record<string, unknown>));
+      }
+    }
+  }
+  return out;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** Redact `value` as described by `schema`; returns the value to store. */
+function redactBySchema(value: unknown, schema: Record<string, unknown>): unknown {
+  if (value === null || value === undefined) return value;
+  const variants = schemaVariants(schema);
+  if (variants.some((v) => v['x-sensitive'] === true)) return REDACTED_VALUE;
+
+  if (Array.isArray(value)) {
+    for (const variant of variants) {
+      const items = variant['items'];
+      if (!isPlainObject(items)) continue;
+      for (let i = 0; i < value.length; i++) {
+        value[i] = redactBySchema(value[i], items);
+      }
+    }
+    return value;
+  }
+
+  if (isPlainObject(value)) {
+    redactFields(value, schema);
+  }
+  return value;
+}
+
 function redactFields(data: Record<string, unknown>, schemaDict: Record<string, unknown>): void {
-  const properties = schemaDict['properties'] as
-    | Record<string, Record<string, unknown>>
-    | undefined;
-  if (!properties) return;
-
-  for (const [fieldName, fieldSchema] of Object.entries(properties)) {
-    if (!(fieldName in data)) continue;
-    const value = data[fieldName];
-
-    if (fieldSchema['x-sensitive'] === true) {
-      if (value !== null && value !== undefined) {
-        data[fieldName] = REDACTED_VALUE;
-      }
-      continue;
-    }
-
-    if (
-      fieldSchema['type'] === 'object' &&
-      'properties' in fieldSchema &&
-      typeof value === 'object' &&
-      value !== null &&
-      !Array.isArray(value)
-    ) {
-      redactFields(value as Record<string, unknown>, fieldSchema);
-      continue;
-    }
-
-    if (fieldSchema['type'] === 'array' && 'items' in fieldSchema && Array.isArray(value)) {
-      const itemsSchema = fieldSchema['items'] as Record<string, unknown>;
-      if (itemsSchema['x-sensitive'] === true) {
-        for (let i = 0; i < value.length; i++) {
-          if (value[i] !== null && value[i] !== undefined) {
-            value[i] = REDACTED_VALUE;
-          }
-        }
-      } else if (itemsSchema['type'] === 'object' && 'properties' in itemsSchema) {
-        for (const item of value) {
-          if (typeof item === 'object' && item !== null) {
-            redactFields(item as Record<string, unknown>, itemsSchema);
-          }
-        }
-      }
+  for (const variant of schemaVariants(schemaDict)) {
+    const properties = variant['properties'];
+    if (!isPlainObject(properties)) continue;
+    for (const [fieldName, fieldSchema] of Object.entries(properties)) {
+      if (!(fieldName in data) || !isPlainObject(fieldSchema)) continue;
+      data[fieldName] = redactBySchema(data[fieldName], fieldSchema);
     }
   }
 }
@@ -740,7 +778,9 @@ export class Executor {
       context: Context,
     ) => Record<string, unknown> | null,
   ): Executor {
-    this._middlewareManager.add(new BeforeMiddleware(callback));
+    this._middlewareManager.add(new BeforeMiddleware(callback), {
+      identityKey: callbackIdentity('before', callback),
+    });
     return this;
   }
 
@@ -752,12 +792,33 @@ export class Executor {
       context: Context,
     ) => Record<string, unknown> | null,
   ): Executor {
-    this._middlewareManager.add(new AfterMiddleware(callback));
+    this._middlewareManager.add(new AfterMiddleware(callback), {
+      identityKey: callbackIdentity('after', callback),
+    });
     return this;
   }
 
   remove(middleware: Middleware): boolean {
     return this._middlewareManager.remove(middleware);
+  }
+
+  /**
+   * Attach a step middleware that wraps every pipeline step of every call
+   * (protocol-spec §5.16 requirement 5; docs/features/middleware-system.md
+   * "Pipeline Step Middleware"). `beforeStep` runs in registration order,
+   * `afterStep` / `onStepError` in reverse.
+   *
+   * Step middleware belongs to this executor, not to a strategy, so it also
+   * wraps a per-call strategy passed to {@link callWithTrace}.
+   */
+  addStepMiddleware(middleware: StepMiddleware): Executor {
+    this._pipelineEngine.addStepMiddleware(middleware);
+    return this;
+  }
+
+  /** The step middlewares attached to this executor, in registration order. */
+  get stepMiddlewares(): readonly StepMiddleware[] {
+    return this._pipelineEngine.stepMiddlewares;
   }
 
   async call(
@@ -792,43 +853,49 @@ export class Executor {
     // Loop iterates only when a RetrySignal is returned from middleware
     // onError; every other path returns or throws on the first attempt
     // (sync finding A-D-017).
-    while (true) {
-      try {
-        const [output, _trace] = await this._pipelineEngine.run(this._strategy, pipeCtx);
-        return (output ?? {}) as Record<string, unknown>;
-      } catch (exc) {
-        if (exc instanceof ExecutionCancelledError) throw exc;
-        // PipelineStepError is the engine-level contract (§1.1). Unwrap the cause
-        // so the executor's public API surfaces the original typed error.
-        const unwrapped =
-          exc instanceof PipelineStepError ? (exc.cause instanceof Error ? exc.cause : exc) : exc;
-        // D-20: cancellation MUST bypass on_error recovery even when the engine
-        // wrapped it in a PipelineStepError. Re-check the unwrapped cause and
-        // rethrow before any middleware onError handling runs.
-        if (unwrapped instanceof ExecutionCancelledError) throw unwrapped;
-        // MiddlewareChainError wraps the original; unwrap it so callers see the
-        // real error class/code instead of a generic MODULE_EXECUTE_ERROR.
-        const ctxObj = pipeCtx.context;
-        const underlying =
-          unwrapped instanceof MiddlewareChainError ? unwrapped.original : (unwrapped as Error);
-        const wrapped = propagateError(underlying, moduleId, ctxObj);
-        const executedMw = pipeCtx.executedMiddlewares;
-        if (executedMw && executedMw.length > 0) {
-          const recovery = await this._middlewareManager.executeOnError(
-            moduleId,
-            pipeCtx.inputs,
-            wrapped as Error,
-            ctxObj,
-            executedMw as Middleware[],
-          );
-          if (recovery instanceof RetrySignal) {
-            this._resetPipeCtxForRetry(pipeCtx, recovery.inputs);
-            continue;
+    try {
+      while (true) {
+        try {
+          const [output, _trace] = await this._pipelineEngine.run(this._strategy, pipeCtx);
+          return (output ?? {}) as Record<string, unknown>;
+        } catch (exc) {
+          if (exc instanceof ExecutionCancelledError) throw exc;
+          // PipelineStepError is the engine-level contract (protocol-spec §5.16 requirement 1). Unwrap the cause
+          // so the executor's public API surfaces the original typed error.
+          const unwrapped =
+            exc instanceof PipelineStepError ? (exc.cause instanceof Error ? exc.cause : exc) : exc;
+          // D-20: cancellation MUST bypass on_error recovery even when the engine
+          // wrapped it in a PipelineStepError. Re-check the unwrapped cause and
+          // rethrow before any middleware onError handling runs.
+          if (unwrapped instanceof ExecutionCancelledError) throw unwrapped;
+          // MiddlewareChainError wraps the original; unwrap it so callers see the
+          // real error class/code instead of a generic MODULE_EXECUTE_ERROR.
+          const ctxObj = pipeCtx.context;
+          const underlying =
+            unwrapped instanceof MiddlewareChainError ? unwrapped.original : (unwrapped as Error);
+          const wrapped = propagateError(underlying, moduleId, ctxObj);
+          const executedMw = pipeCtx.executedMiddlewares;
+          if (executedMw && executedMw.length > 0) {
+            const recovery = await this._middlewareManager.executeOnError(
+              moduleId,
+              pipeCtx.inputs,
+              wrapped as Error,
+              ctxObj,
+              executedMw as Middleware[],
+            );
+            if (recovery instanceof RetrySignal) {
+              this._resetPipeCtxForRetry(pipeCtx, recovery.inputs);
+              if (pipeCtx.context.cancelToken !== ctx.cancelToken) pipeCtx.context.cancelToken?.dispose();
+              pipeCtx.context = ctx;
+              continue;
+            }
+            if (recovery !== null) return recovery;
           }
-          if (recovery !== null) return recovery;
+          throw wrapped;
         }
-        throw wrapped;
       }
+    } finally {
+      if (pipeCtx.context.cancelToken !== ctx.cancelToken) pipeCtx.context.cancelToken?.dispose();
     }
   }
 
@@ -942,6 +1009,8 @@ export class Executor {
         }
       }
       throw wrapped;
+    } finally {
+      if (pipelineCtx.context.cancelToken !== ctx.cancelToken) pipelineCtx.context.cancelToken?.dispose();
     }
   }
 
@@ -992,176 +1061,181 @@ export class Executor {
       versionHint: versionHint ?? null,
     };
 
-    // Phase 1: Run the full pipeline. BuiltinExecute detects ctx.stream=true.
     try {
-      await this._pipelineEngine.run(this._strategy, pipeCtx);
-    } catch (exc) {
-      if (exc instanceof ExecutionCancelledError) throw exc;
-      const ctxObj = pipeCtx.context;
-      // Unwrap PipelineStepError to expose the original typed cause (§1.1).
-      const unwrapped =
-        exc instanceof PipelineStepError ? (exc.cause instanceof Error ? exc.cause : exc) : exc;
-      // D-20: a step-wrapped cancellation MUST bypass on_error recovery in
-      // stream mode too. Rethrow the unwrapped cancellation before recovery.
-      if (unwrapped instanceof ExecutionCancelledError) throw unwrapped;
-      const wrapped = propagateError(unwrapped as Error, moduleId, ctxObj);
-      if (pipeCtx.executedMiddlewares && pipeCtx.executedMiddlewares.length > 0) {
-        const recovery = await this._middlewareManager.executeOnError(
-          moduleId,
-          pipeCtx.inputs,
-          wrapped as Error,
-          ctxObj,
-          pipeCtx.executedMiddlewares as Middleware[],
-        );
-        // RetrySignal is not supported in stream mode — re-running a stream
-        // mid-flight is not well-defined. Fall through to throwing the wrapped
-        // error so the caller sees a normal failure (sync finding A-D-017).
-        if (recovery !== null && !(recovery instanceof RetrySignal)) {
-          yield recovery;
-          return;
-        }
-      }
-      throw wrapped;
-    }
-
-    // If no outputStream, pipeline already executed normally — yield single result
-    if (pipeCtx.outputStream == null) {
-      yield (pipeCtx.output ?? {}) as Record<string, unknown>;
-      return;
-    }
-
-    // Phase 2: Iterate stream, accumulate chunks
-    const outputStream = pipeCtx.outputStream as AsyncGenerator<Record<string, unknown>>;
-    const accumulated: Record<string, unknown> = {};
-    // PROTOCOL_SPEC §5: resolved ONCE per stream, not per chunk. A
-    // configuration mutated mid-stream — `system.control.update_config` can do
-    // exactly that — must not change the cap of a stream already in flight.
-    // This used to be called inside the chunk loop, which contradicted the
-    // guarantee its own commit message stated.
-    const mergeDepthCap = resolveMergeDepth(this._config);
-    // Read the first-class `Context.globalDeadline` field, which
-    // `BuiltinContextCreation` now stamps onto the context derived for this
-    // call (spec v1.50.0 D-99 / D-100). The previous private `data` slot is
-    // gone: `data` is caller-visible, caller-writable and shared by reference
-    // with child contexts, and keeping the budget there left the documented
-    // `Context.create` parameter unreadable by the pipeline.
-    const globalDeadline = pipeCtx.context?.globalDeadline ?? null;
-    let chunkIndex = 0;
-    try {
-      for await (const chunk of outputStream) {
-        // Enforce global_deadline between chunks — matches apcore-python
-        // executor.py:872-879 (sync finding A-D-014). D-99: the deadline is
-        // epoch SECONDS, so the wall clock is scaled to match rather than the
-        // deadline being read as milliseconds.
-        if (globalDeadline !== null && Date.now() / 1000 > globalDeadline) {
-          throw new ModuleTimeoutError(moduleId, 0);
-        }
-        // Enforce stream-chunk shape BEFORE merge and BEFORE yield (D10-001 /
-        // apcore-rust deep_merge_chunks_checked, D-58). A non-object chunk is
-        // rejected so it is never delivered to the consumer; deep_merge can
-        // only accumulate objects. The throw routes through the catch below
-        // (propagateError / onError) like other stream errors.
-        if (!isPlainObjectChunk(chunk)) {
-          const actualType = jsonTypeName(chunk);
-          throw new InvalidInputError(
-            `Streaming chunk at index ${chunkIndex} is not a JSON object ` +
-              `(got ${actualType}); chunks must be objects so deep_merge can ` +
-              `accumulate them.`,
-            {
-              details: {
-                code: 'STREAM_CHUNK_NOT_OBJECT',
-                chunk_index: chunkIndex,
-                actual_type: actualType,
-              },
-            },
-          );
-        }
-        deepMergeChunk(accumulated, chunk, 0, mergeDepthCap);
-        yield chunk;
-        chunkIndex += 1;
-      }
-    } catch (exc) {
-      if (exc instanceof ExecutionCancelledError) throw exc;
-      const ctxObj = pipeCtx.context;
-      const wrapped = propagateError(exc as Error, moduleId, ctxObj);
-      if (pipeCtx.executedMiddlewares && pipeCtx.executedMiddlewares.length > 0) {
-        const recovery = await this._middlewareManager.executeOnError(
-          moduleId,
-          pipeCtx.inputs,
-          wrapped as Error,
-          ctxObj,
-          pipeCtx.executedMiddlewares as Middleware[],
-        );
-        // RetrySignal not supported mid-stream (sync finding A-D-017).
-        if (recovery !== null && !(recovery instanceof RetrySignal)) {
-          yield recovery;
-          return;
-        }
-      }
-      throw wrapped;
-    }
-
-    // Phase 3: Output validation + middleware_after on accumulated result
-    pipeCtx.output = accumulated;
-    const postSteps = this._strategy.steps.filter(
-      (s) =>
-        s.name === 'output_validation' ||
-        s.name === 'middleware_after' ||
-        s.name === 'return_result',
-    );
-    if (postSteps.length > 0) {
-      // The post-stream sub-strategy starts with module + output already
-      // populated on pipeCtx (set by Phase 1 / Phase 2 above), so seed those
-      // names into the dependency check (§2.1).
-      const postStrategy = new ExecutionStrategy('post_stream', postSteps, {
-        seedProvides: ['module', 'output'],
-      });
+      // Phase 1: Run the full pipeline. BuiltinExecute detects ctx.stream=true.
       try {
-        await this._pipelineEngine.run(postStrategy, pipeCtx);
+        await this._pipelineEngine.run(this._strategy, pipeCtx);
       } catch (exc) {
-        // Chunks are already delivered to the caller and cannot be recalled.
-        // Swallow the phase-3 error and log a warning — matches apcore-python
-        // executor.py which emits an ApCoreEvent("apcore.stream.post_validation_failed")
-        // and does NOT re-raise (sync finding A-D-012 / A-D-006).
-        //
-        // STR-4 / CAN-002: cancellation is the ONE exception (D-20 — a
-        // cancellation must never be swallowed), and the check has to run on
-        // the UNWRAPPED error. The engine wraps every step failure in
-        // `PipelineStepError` (pipeline.ts:1109), so an
-        // `ExecutionCancelledError` raised inside a phase-3 step arrived here
-        // already wrapped and the guard — which used to sit above this unwrap
-        // — never matched. The one error that must always reach the caller was
-        // being swallowed with all the others, invisibly, because the guard
-        // that says otherwise was still right there in the source.
+        if (exc instanceof ExecutionCancelledError) throw exc;
         const ctxObj = pipeCtx.context;
-        const unwrappedPost =
+        // Unwrap PipelineStepError to expose the original typed cause (protocol-spec §5.16 requirement 1).
+        const unwrapped =
           exc instanceof PipelineStepError ? (exc.cause instanceof Error ? exc.cause : exc) : exc;
-        if (unwrappedPost instanceof ExecutionCancelledError) throw unwrappedPost;
-        const wrapped = propagateError(unwrappedPost as Error, moduleId, ctxObj);
-        // A-D-006: when an EventEmitter is wired, emit the post-validation-failed
-        // event so observers/trace exporters surface the failure (mirrors
-        // apcore-python executor.py:1096).
-        if (this._eventEmitter !== null) {
-          const cause = unwrappedPost instanceof Error ? unwrappedPost : (wrapped as Error);
-          this._eventEmitter.emit(
-            createEvent('apcore.stream.post_validation_failed', moduleId, 'error', {
-              error_type: cause.constructor?.name ?? 'Error',
-              message: cause.message,
-              trace_id: ctxObj?.traceId ?? null,
-            }),
+        // D-20: a step-wrapped cancellation MUST bypass on_error recovery in
+        // stream mode too. Rethrow the unwrapped cancellation before recovery.
+        if (unwrapped instanceof ExecutionCancelledError) throw unwrapped;
+        const wrapped = propagateError(unwrapped as Error, moduleId, ctxObj);
+        if (pipeCtx.executedMiddlewares && pipeCtx.executedMiddlewares.length > 0) {
+          const recovery = await this._middlewareManager.executeOnError(
+            moduleId,
+            pipeCtx.inputs,
+            wrapped as Error,
+            ctxObj,
+            pipeCtx.executedMiddlewares as Middleware[],
           );
+          // RetrySignal is not supported in stream mode — re-running a stream
+          // mid-flight is not well-defined. Fall through to throwing the wrapped
+          // error so the caller sees a normal failure (sync finding A-D-017).
+          if (recovery !== null && !(recovery instanceof RetrySignal)) {
+            yield recovery;
+            return;
+          }
         }
-        // Sync finding A-D-011: phase-3 errors must NOT invoke middleware
-        // `on_error` once chunks have already been yielded. The middleware
-        // recovery contract is "produce a recovery output before any output is
-        // visible"; running on_error after partial-output emission breaks that
-        // contract. apcore-python and apcore-rust only log/emit at this point;
-        // TS now matches.
-        console.warn(
-          `[apcore:executor] stream phase-3 failure for '${moduleId}' (chunks already delivered): ${wrapped.message}`,
-        );
-        // Do not rethrow — phase-3 errors are swallowed per spec.
+        throw wrapped;
       }
+
+      // If no outputStream, pipeline already executed normally — yield single result
+      if (pipeCtx.outputStream == null) {
+        yield (pipeCtx.output ?? {}) as Record<string, unknown>;
+        return;
+      }
+
+      // Phase 2: Iterate stream, accumulate chunks
+      const outputStream = pipeCtx.outputStream as AsyncGenerator<Record<string, unknown>>;
+      const accumulated: Record<string, unknown> = {};
+      // PROTOCOL_SPEC §5: resolved ONCE per stream, not per chunk. A
+      // configuration mutated mid-stream — `system.control.update_config` can do
+      // exactly that — must not change the cap of a stream already in flight.
+      // This used to be called inside the chunk loop, which contradicted the
+      // guarantee its own commit message stated.
+      const mergeDepthCap = resolveMergeDepth(this._config);
+      // Read the first-class `Context.globalDeadline` field, which
+      // `BuiltinContextCreation` now stamps onto the context derived for this
+      // call (spec v1.50.0 D-99 / D-100). The previous private `data` slot is
+      // gone: `data` is caller-visible, caller-writable and shared by reference
+      // with child contexts, and keeping the budget there left the documented
+      // `Context.create` parameter unreadable by the pipeline.
+      const globalDeadline = pipeCtx.context?.globalDeadline ?? null;
+      let chunkIndex = 0;
+      try {
+        for await (const chunk of outputStream) {
+          // Enforce global_deadline between chunks — matches apcore-python
+          // executor.py:872-879 (sync finding A-D-014). D-99: the deadline is
+          // epoch SECONDS, so the wall clock is scaled to match rather than the
+          // deadline being read as milliseconds.
+          if (globalDeadline !== null && Date.now() / 1000 > globalDeadline) {
+            pipeCtx.context.cancelToken?.cancel();
+            throw new ModuleTimeoutError(moduleId, 0);
+          }
+          // Enforce stream-chunk shape BEFORE merge and BEFORE yield (D10-001 /
+          // apcore-rust deep_merge_chunks_checked, D-58). A non-object chunk is
+          // rejected so it is never delivered to the consumer; deep_merge can
+          // only accumulate objects. The throw routes through the catch below
+          // (propagateError / onError) like other stream errors.
+          if (!isPlainObjectChunk(chunk)) {
+            const actualType = jsonTypeName(chunk);
+            throw new InvalidInputError(
+              `Streaming chunk at index ${chunkIndex} is not a JSON object ` +
+                `(got ${actualType}); chunks must be objects so deep_merge can ` +
+                `accumulate them.`,
+              {
+                details: {
+                  code: 'STREAM_CHUNK_NOT_OBJECT',
+                  chunk_index: chunkIndex,
+                  actual_type: actualType,
+                },
+              },
+            );
+          }
+          deepMergeChunk(accumulated, chunk, 0, mergeDepthCap);
+          yield chunk;
+          chunkIndex += 1;
+        }
+      } catch (exc) {
+        if (exc instanceof ExecutionCancelledError) throw exc;
+        const ctxObj = pipeCtx.context;
+        const wrapped = propagateError(exc as Error, moduleId, ctxObj);
+        if (pipeCtx.executedMiddlewares && pipeCtx.executedMiddlewares.length > 0) {
+          const recovery = await this._middlewareManager.executeOnError(
+            moduleId,
+            pipeCtx.inputs,
+            wrapped as Error,
+            ctxObj,
+            pipeCtx.executedMiddlewares as Middleware[],
+          );
+          // RetrySignal not supported mid-stream (sync finding A-D-017).
+          if (recovery !== null && !(recovery instanceof RetrySignal)) {
+            yield recovery;
+            return;
+          }
+        }
+        throw wrapped;
+      }
+
+      // Phase 3: Output validation + middleware_after on accumulated result
+      pipeCtx.output = accumulated;
+      const postSteps = this._strategy.steps.filter(
+        (s) =>
+          s.name === 'output_validation' ||
+          s.name === 'middleware_after' ||
+          s.name === 'return_result',
+      );
+      if (postSteps.length > 0) {
+        // The post-stream sub-strategy starts with module + output already
+        // populated on pipeCtx (set by Phase 1 / Phase 2 above), so seed those
+        // names into the dependency check (§2.1).
+        const postStrategy = new ExecutionStrategy('post_stream', postSteps, {
+          seedProvides: ['module', 'output'],
+        });
+        try {
+          await this._pipelineEngine.run(postStrategy, pipeCtx);
+        } catch (exc) {
+          // Chunks are already delivered to the caller and cannot be recalled.
+          // Swallow the phase-3 error and log a warning — matches apcore-python
+          // executor.py which emits an ApCoreEvent("apcore.stream.post_validation_failed")
+          // and does NOT re-raise (sync finding A-D-012 / A-D-006).
+          //
+          // STR-4 / CAN-002: cancellation is the ONE exception (D-20 — a
+          // cancellation must never be swallowed), and the check has to run on
+          // the UNWRAPPED error. The engine wraps every step failure in
+          // `PipelineStepError` (pipeline.ts:1109), so an
+          // `ExecutionCancelledError` raised inside a phase-3 step arrived here
+          // already wrapped and the guard — which used to sit above this unwrap
+          // — never matched. The one error that must always reach the caller was
+          // being swallowed with all the others, invisibly, because the guard
+          // that says otherwise was still right there in the source.
+          const ctxObj = pipeCtx.context;
+          const unwrappedPost =
+            exc instanceof PipelineStepError ? (exc.cause instanceof Error ? exc.cause : exc) : exc;
+          if (unwrappedPost instanceof ExecutionCancelledError) throw unwrappedPost;
+          const wrapped = propagateError(unwrappedPost as Error, moduleId, ctxObj);
+          // A-D-006: when an EventEmitter is wired, emit the post-validation-failed
+          // event so observers/trace exporters surface the failure (mirrors
+          // apcore-python executor.py:1096).
+          if (this._eventEmitter !== null) {
+            const cause = unwrappedPost instanceof Error ? unwrappedPost : (wrapped as Error);
+            this._eventEmitter.emit(
+              createEvent('apcore.stream.post_validation_failed', moduleId, 'error', {
+                error_type: cause.constructor?.name ?? 'Error',
+                message: cause.message,
+                trace_id: ctxObj?.traceId ?? null,
+              }),
+            );
+          }
+          // Sync finding A-D-011: phase-3 errors must NOT invoke middleware
+          // `on_error` once chunks have already been yielded. The middleware
+          // recovery contract is "produce a recovery output before any output is
+          // visible"; running on_error after partial-output emission breaks that
+          // contract. apcore-python and apcore-rust only log/emit at this point;
+          // TS now matches.
+          console.warn(
+            `[apcore:executor] stream phase-3 failure for '${moduleId}' (chunks already delivered): ${wrapped.message}`,
+          );
+          // Do not rethrow — phase-3 errors are swallowed per spec.
+        }
+      }
+    } finally {
+      if (pipeCtx.context.cancelToken !== ctx.cancelToken) pipeCtx.context.cancelToken?.dispose();
     }
   }
 
@@ -1228,182 +1302,181 @@ export class Executor {
       dryRun: true,
     };
 
-    let trace: PipelineTrace | null = null;
     try {
-      const [, t] = await this._pipelineEngine.run(this._strategy, pipeCtx);
-      trace = t;
-    } catch (e) {
-      // Step raised a domain error (ModuleNotFoundError, ACLDeniedError, etc.)
-      if (e instanceof PipelineAbortError) {
-        trace = e.pipelineTrace;
-      } else {
-        // Unwrap PipelineStepError to expose the original typed cause (§1.1).
-        const underlying =
-          e instanceof PipelineStepError ? (e.cause instanceof Error ? e.cause : e) : e;
-        const errorDict =
-          underlying instanceof ModuleError
-            ? { code: underlying.code, message: underlying.message }
-            : {
-                code: (underlying as Error).constructor?.name ?? 'Error',
-                message: String(underlying),
-              };
-        const code =
-          underlying instanceof ModuleError
-            ? underlying.code
-            : ((underlying as Error).constructor?.name ?? 'Error');
+      let trace: PipelineTrace | null = null;
+      try {
+        const [, t] = await this._pipelineEngine.run(this._strategy, pipeCtx);
+        trace = t;
+      } catch (e) {
+        // Step raised a domain error (ModuleNotFoundError, ACLDeniedError, etc.)
+        if (e instanceof PipelineAbortError) {
+          trace = e.pipelineTrace;
+        } else {
+          // Unwrap PipelineStepError to expose the original typed cause (protocol-spec §5.16 requirement 1).
+          const underlying =
+            e instanceof PipelineStepError ? (e.cause instanceof Error ? e.cause : e) : e;
+          const errorDict =
+            underlying instanceof ModuleError
+              ? { code: underlying.code, message: underlying.message }
+              : {
+                  code: (underlying as Error).constructor?.name ?? 'Error',
+                  message: String(underlying),
+                };
+          const code =
+            underlying instanceof ModuleError
+              ? underlying.code
+              : ((underlying as Error).constructor?.name ?? 'Error');
 
-        let checkName: string;
-        if (code === 'MODULE_NOT_FOUND') checkName = 'module_lookup';
-        else if (code === 'ACL_DENIED') checkName = Executor.ACL_CHECK;
-        else if (code === 'SCHEMA_VALIDATION_ERROR' || code === 'INVALID_INPUT')
-          checkName = 'schema';
-        else if (
-          code === 'CALL_DEPTH_EXCEEDED' ||
-          code === 'CIRCULAR_CALL' ||
-          code === 'CALL_FREQUENCY_EXCEEDED'
-        )
-          checkName = 'call_chain';
-        else checkName = 'unknown';
+          let checkName: string;
+          if (code === 'MODULE_NOT_FOUND') checkName = 'module_lookup';
+          else if (code === 'ACL_DENIED') checkName = Executor.ACL_CHECK;
+          else if (code === 'SCHEMA_VALIDATION_ERROR' || code === 'INVALID_INPUT')
+            checkName = 'schema';
+          else if (
+            code === 'CALL_DEPTH_EXCEEDED' ||
+            code === 'CIRCULAR_CALL' ||
+            code === 'CALL_FREQUENCY_EXCEEDED'
+          )
+            checkName = 'call_chain';
+          else checkName = 'unknown';
 
-        checks.push({ check: checkName, passed: false, error: errorDict });
+          checks.push({ check: checkName, passed: false, error: errorDict });
+        }
       }
-    }
 
-    // Convert pipeline trace to PreflightResult checks
-    if (trace !== null) {
-      checks.push(...this._traceToChecks(trace));
-    }
-
-    // Detect requires_approval
-    let requiresApproval = false;
-    if (pipeCtx.module != null) {
-      const mod = pipeCtx.module as Record<string, unknown>;
-      // §7.9.5 binds this to the verdict the Step-5 gate will enforce, so it
-      // MUST read the same governance source: the D-96 union of the live
-      // instance and the registry's DECLARED annotations. Reading the instance
-      // alone reported "no approval needed" for a requirement an operator
-      // declared in a `*_meta.yaml` / `metadata` source — and the gate, now
-      // reading the union, would stop the call the preflight waved through.
-      // That disagreement is the one thing this method exists to prevent.
-      const governance = governanceUnion(
-        mod['annotations'],
-        this._registry.getDeclaredAnnotations(moduleId),
-      );
-      if (this._policy !== null) {
-        // Policy overrides win over declared annotations (apcore#76), so
-        // preflight reports the same verdict the gate will enforce.
-        // §7.9.6 rule 5: `_approval_token` is a protocol-level key, not caller
-        // input, and MUST be stripped BEFORE policy resolution — §7.4's
-        // "before passing to subsequent steps" does not reach a decision made
-        // inside Step 5. Leaving it in place puts a token into the audit trail
-        // and the apcore.policy.override payload.
-        const { _approval_token: _policyToken, ...policyArguments } = effectiveInputs;
-        requiresApproval = this._policy.resolve(moduleId, governance, {
-          // §7.9.6: preflight resolves against the same call site the gate
-          // will see, so the reported verdict matches the enforced one.
-          arguments: policyArguments,
-          context: validateCtx,
-        }).needsApproval;
-      } else {
-        requiresApproval = Boolean(governance?.requiresApproval);
+      // Convert pipeline trace to PreflightResult checks
+      if (trace !== null) {
+        checks.push(...this._traceToChecks(trace));
       }
-    }
-    // §7.9.5 — report the GOVERNANCE-effective requirement, the union of §6.9
-    // rows 3–5, which since v1.28.0 includes an ACL rule carrying `approval`
-    // (§6.1.6). Reporting only the policy-effective value would tell a caller
-    // no approval is needed for a call the gate will stop. The ACL check runs
-    // in the dry-run pipeline above (it is `pure`), so its verdict is already
-    // on `pipeCtx` — and §6.9 row 4 forbids a policy from clearing it, which is
-    // why this is OR-ed on top rather than folded into the branch above.
-    if (pipeCtx.aclApprovalRequired === true) {
-      requiresApproval = true;
-    }
 
-    // Module-level introspection is gated on TWO conditions, not one.
-    //
-    // 1. Module lookup succeeded (`pipeCtx.module` is not null).
-    // 2. The ACL did not deny the call — PROTOCOL_SPEC §12.8.5.1.
-    //
-    // Condition 2 is the security half. `preflight()` and `preview()` are
-    // module-authored code, and what they return names what the call would do:
-    // the resolved binary and argv of a command-wrapping module, the target of
-    // a write. Module lookup is Step 3 and the ACL check is Step 4, so gating
-    // on lookup alone runs module code for a caller the ACL just denied and
-    // hands back what it said.
-    //
-    // Scoped to authorization deliberately: a failed `schema` check does NOT
-    // suppress introspection, because a caller the ACL permits is entitled to
-    // the module's account of what would happen even when its inputs are
-    // malformed.
-    const aclDenied = checks.some((c) => c.check === Executor.ACL_CHECK && !c.passed);
+      // Detect requires_approval
+      let requiresApproval = false;
+      if (pipeCtx.module != null) {
+        const mod = pipeCtx.module as Record<string, unknown>;
+        // §7.9.5 binds this to the verdict the Step-5 gate will enforce, so it
+        // MUST read the same governance source: the D-96 union of the live
+        // instance and the registry's DECLARED annotations. Reading the instance
+        // alone reported "no approval needed" for a requirement an operator
+        // declared in a `*_meta.yaml` / `metadata` source — and the gate, now
+        // reading the union, would stop the call the preflight waved through.
+        // That disagreement is the one thing this method exists to prevent.
+        const governance = governanceUnion(
+          mod['annotations'],
+          this._registry.getDeclaredAnnotations(moduleId),
+        );
+        if (this._policy !== null) {
+          // Policy overrides win over declared annotations (apcore#76), so
+          // preflight reports the same verdict the gate will enforce.
+          // §7.9.6 rule 5: `_approval_token` is a protocol-level key, not caller
+          // input, and MUST be stripped BEFORE policy resolution — §7.4's
+          // "before passing to subsequent steps" does not reach a decision made
+          // inside Step 5. Leaving it in place puts a token into the audit trail
+          // and the apcore.policy.override payload.
+          const { _approval_token: _policyToken, ...policyArguments } = effectiveInputs;
+          requiresApproval = this._policy.resolve(moduleId, governance, {
+            // §7.9.6: preflight resolves against the same call site the gate
+            // will see, so the reported verdict matches the enforced one.
+            arguments: policyArguments,
+            context: validateCtx,
+          }).needsApproval;
+        } else {
+          requiresApproval = Boolean(governance?.requiresApproval);
+        }
+      }
+      // §7.9.5 — report the GOVERNANCE-effective requirement, the union of §6.9
+      // rows 3–5, which since v1.28.0 includes an ACL rule carrying `approval`
+      // (§6.1.6). Reporting only the policy-effective value would tell a caller
+      // no approval is needed for a call the gate will stop. The ACL check runs
+      // in the dry-run pipeline above (it is `pure`), so its verdict is already
+      // on `pipeCtx` — and §6.9 row 4 forbids a policy from clearing it, which is
+      // why this is OR-ed on top rather than folded into the branch above.
+      if (pipeCtx.aclApprovalRequired === true) {
+        requiresApproval = true;
+      }
 
-    // Module-level preflight (optional)
-    if (!aclDenied && pipeCtx.module != null) {
-      const mod = pipeCtx.module as Record<string, unknown>;
-      const modWithPreflight = mod as { preflight?: Module['preflight'] };
-      if (typeof modWithPreflight.preflight === 'function') {
-        try {
-          const preflightWarnings = modWithPreflight.preflight(effectiveInputs, pipeCtx.context);
-          if (Array.isArray(preflightWarnings) && preflightWarnings.length > 0) {
+      // Module-level introspection is gated on TWO conditions, not one.
+      //
+      // 1. Module lookup succeeded (`pipeCtx.module` is not null).
+      // 2. The ACL did not deny the call — PROTOCOL_SPEC §12.8.5.1.
+      //
+      // Condition 2 is the security half. `preflight()` and `preview()` are
+      // module-authored code, and what they return names what the call would do:
+      // the resolved binary and argv of a command-wrapping module, the target of
+      // a write. Module lookup is Step 3 and the ACL check is Step 4, so gating
+      // on lookup alone runs module code for a caller the ACL just denied and
+      // hands back what it said.
+      //
+      // Scoped to authorization deliberately: a failed `schema` check does NOT
+      // suppress introspection, because a caller the ACL permits is entitled to
+      // the module's account of what would happen even when its inputs are
+      // malformed.
+      const aclDenied = checks.some((c) => c.check === Executor.ACL_CHECK && !c.passed);
+
+      // Module-level preflight (optional)
+      if (!aclDenied && pipeCtx.module != null) {
+        const mod = pipeCtx.module as Record<string, unknown>;
+        const modWithPreflight = mod as { preflight?: Module['preflight'] };
+        if (typeof modWithPreflight.preflight === 'function') {
+          try {
+            const preflightWarnings = modWithPreflight.preflight(effectiveInputs, pipeCtx.context);
+            if (Array.isArray(preflightWarnings) && preflightWarnings.length > 0) {
+              checks.push({
+                check: Executor.MODULE_PREFLIGHT_CHECK,
+                passed: true,
+                warnings: preflightWarnings,
+              });
+            } else {
+              checks.push({ check: Executor.MODULE_PREFLIGHT_CHECK, passed: true });
+            }
+          } catch (exc: unknown) {
+            const excName = exc instanceof Error ? exc.constructor.name : 'Error';
+            const excMsg = exc instanceof Error ? exc.message : String(exc);
             checks.push({
               check: Executor.MODULE_PREFLIGHT_CHECK,
               passed: true,
-              warnings: preflightWarnings,
+              warnings: [`preflight() raised ${excName}: ${excMsg}`],
             });
-          } else {
-            checks.push({ check: Executor.MODULE_PREFLIGHT_CHECK, passed: true });
           }
-        } catch (exc: unknown) {
-          const excName = exc instanceof Error ? exc.constructor.name : 'Error';
-          const excMsg = exc instanceof Error ? exc.message : String(exc);
-          checks.push({
-            check: Executor.MODULE_PREFLIGHT_CHECK,
-            passed: true,
-            warnings: [`preflight() raised ${excName}: ${excMsg}`],
-          });
         }
       }
-    }
 
-    // Module-level preview() (optional, protocol-spec §5.6 / §12.8.5.1).
-    // Invoked only after the standard validation pipeline has been processed.
-    // Returning null is equivalent to omitting the method. Exceptions (sync
-    // throws or async rejections) are treated as advisory warnings and do NOT
-    // fail validation, mirroring `preflight()` semantics (RFC Open Question 1).
-    let predictedChanges: Change[] | undefined;
-    if (!aclDenied && pipeCtx.module != null) {
-      const mod = pipeCtx.module as Record<string, unknown>;
-      const modWithPreview = mod as { preview?: Module['preview'] };
-      if (typeof modWithPreview.preview === 'function') {
-        try {
-          const raw = modWithPreview.preview(effectiveInputs, pipeCtx.context);
-          // Support both sync and async preview() implementations.
-          const result: PreviewResult | null =
-            raw != null && typeof (raw as Promise<unknown>).then === 'function'
-              ? await (raw as Promise<PreviewResult | null>)
-              : (raw as PreviewResult | null);
-          if (result != null && Array.isArray(result.changes) && result.changes.length > 0) {
-            predictedChanges = result.changes;
-            checks.push({ check: Executor.MODULE_PREVIEW_CHECK, passed: true });
-          } else {
-            // Method present but returned null / empty — record the no-op
-            // check so consumers can distinguish "module has preview()" from
-            // "module does not implement preview()" if desired.
-            checks.push({ check: Executor.MODULE_PREVIEW_CHECK, passed: true });
+      // Module-level preview() (optional, protocol-spec §5.6 / §12.8.5.1).
+      // Invoked only after the standard validation pipeline has been processed.
+      // Returning null is equivalent to omitting the method. Exceptions (sync
+      // throws or async rejections) are treated as advisory warnings and do NOT
+      // fail validation, mirroring `preflight()` semantics (RFC Open Question 1).
+      let predictedChanges: Change[] = [];
+      if (!aclDenied && pipeCtx.module != null) {
+        const mod = pipeCtx.module as Record<string, unknown>;
+        const modWithPreview = mod as { preview?: Module['preview'] };
+        if (typeof modWithPreview.preview === 'function') {
+          try {
+            const raw = modWithPreview.preview(effectiveInputs, pipeCtx.context);
+            // Support both sync and async preview() implementations.
+            const result: PreviewResult | null =
+              raw != null && typeof (raw as Promise<unknown>).then === 'function'
+                ? await (raw as Promise<PreviewResult | null>)
+                : (raw as PreviewResult | null);
+            if (result != null) {
+              predictedChanges = Array.isArray(result.changes) ? result.changes : [];
+              checks.push({ check: Executor.MODULE_PREVIEW_CHECK, passed: true });
+            }
+          } catch (exc: unknown) {
+            const excName = exc instanceof Error ? exc.constructor.name : 'Error';
+            const excMsg = exc instanceof Error ? exc.message : String(exc);
+            checks.push({
+              check: Executor.MODULE_PREVIEW_CHECK,
+              passed: true,
+              warnings: [`preview() raised ${excName}: ${excMsg}`],
+            });
           }
-        } catch (exc: unknown) {
-          const excName = exc instanceof Error ? exc.constructor.name : 'Error';
-          const excMsg = exc instanceof Error ? exc.message : String(exc);
-          checks.push({
-            check: Executor.MODULE_PREVIEW_CHECK,
-            passed: true,
-            warnings: [`preview() raised ${excName}: ${excMsg}`],
-          });
         }
       }
-    }
 
-    return createPreflightResult(checks, requiresApproval, predictedChanges);
+      return createPreflightResult(checks, requiresApproval, predictedChanges);
+    } finally {
+      if (pipeCtx.context.cancelToken !== validateCtx.cancelToken) pipeCtx.context.cancelToken?.dispose();
+    }
   }
 
   /**
@@ -1437,7 +1510,7 @@ export class Executor {
       const passed = st.result.action !== 'abort';
       let error: Record<string, unknown> | undefined;
       if (!passed && st.result.explanation) {
-        error = { code: `STEP_${st.name.toUpperCase()}_FAILED`, message: st.result.explanation };
+        error = st.error ?? { code: `STEP_${st.name.toUpperCase()}_FAILED`, message: st.result.explanation };
       }
       checks.push({ check: checkName, passed, error });
     }

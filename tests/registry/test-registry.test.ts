@@ -1779,23 +1779,25 @@ describe('Registry hot reload (watch/unwatch)', () => {
     expect(result).toBeNull();
   });
 
-  it('_handleFileDeletion unregisters a known module', () => {
+  it('_handleFileDeletion unregisters a known module and calls onUnload exactly once', async () => {
     const registry = new Registry();
-    let unloaded = false;
+    let unloadCount = 0;
     const mod = {
       execute: async () => ({}),
       description: 'Deletable module',
       inputSchema: { type: 'object' },
       outputSchema: { type: 'object' },
-      onUnload() { unloaded = true; },
+      onUnload() { unloadCount += 1; },
     };
     registry.register('deletable', mod);
     expect(registry.has('deletable')).toBe(true);
 
-    (registry as any)._handleFileDeletion('/extensions/deletable.ts');
+    await (registry as any)._handleFileDeletion('/extensions/deletable.ts');
 
     expect(registry.has('deletable')).toBe(false);
-    expect(unloaded).toBe(true);
+    // unregister() owns the onUnload call; a handler that also calls it
+    // releases the module's resources twice.
+    expect(unloadCount).toBe(1);
   });
 
   it('_handleFileDeletion does nothing for an unknown file', () => {
@@ -1818,13 +1820,13 @@ describe('Registry hot reload (watch/unwatch)', () => {
     // ES modules cannot be reliably evicted from Node's loader cache, so TS
     // unregisters and emits 'file_changed' for consumers to re-register.
     const registry = new Registry();
-    let unloaded = false;
+    let unloadCount = 0;
     const mod = {
       execute: async () => ({}),
       description: 'Watched module',
       inputSchema: { type: 'object' },
       outputSchema: { type: 'object' },
-      onUnload() { unloaded = true; },
+      onUnload() { unloadCount += 1; },
     };
     registry.register('watched', mod);
 
@@ -1842,7 +1844,7 @@ describe('Registry hot reload (watch/unwatch)', () => {
 
     // Module is unregistered (Python/Rust diverge: they would re-register).
     expect(registry.has('watched')).toBe(false);
-    expect(unloaded).toBe(true);
+    expect(unloadCount).toBe(1);
 
     // file_changed event is emitted with the module ID and file path.
     expect(events).toHaveLength(1);

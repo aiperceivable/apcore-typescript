@@ -527,12 +527,17 @@ export function applyNamespaceEnvOverrides(data: Record<string, unknown>): Recor
   const env = process.env;
 
   // Sort registrations by envPrefix length descending (longest first)
-  const registrations = Array.from(_globalNsRegistry.values())
+  const apcoreRegistration: NamespaceRegistration = {
+    name: 'apcore', schema: null, envPrefix: 'APCORE', defaults: DEFAULTS,
+    envStyle: 'nested', maxDepth: DEFAULT_MAX_DEPTH, envMap: null,
+  };
+  const registrations = [..._globalNsRegistry.values(), apcoreRegistration]
     .filter((r) => r.envPrefix)
     .sort((a, b) => b.envPrefix.length - a.envPrefix.length);
 
   for (const [envKey, envValue] of Object.entries(env)) {
     if (envValue === undefined) continue;
+    if (envKey === ENV_CONFIG_FILE) continue;
     const coerced = coerceEnvValue(envValue);
 
     // 1. Global env_map (bare env var → top-level key).
@@ -560,7 +565,7 @@ export function applyNamespaceEnvOverrides(data: Record<string, unknown>): Recor
 
     // 3. Prefix-based dispatch.
     for (const reg of registrations) {
-      if (envKey.startsWith(reg.envPrefix)) {
+      if (envKey.startsWith(`${reg.envPrefix}_`)) {
         let suffix = envKey.slice(reg.envPrefix.length);
         if (!suffix) continue;
         // Strip leading _ separator between prefix and suffix
@@ -569,6 +574,10 @@ export function applyNamespaceEnvOverrides(data: Record<string, unknown>): Recor
 
         const { key, isNested } = resolveEnvSuffix(suffix, reg);
         if (!key) continue;
+        // §9.2.1 requirement 5 applies in namespace mode too; the path-typed
+        // set is spelled from the apcore namespace's root.
+        const fullPath = reg.name === 'apcore' ? key : `${reg.name}.${key}`;
+        if (discardsEmptyPathValue(fullPath, coerced, envKey)) break;
 
         if (typeof result[reg.name] !== 'object' || result[reg.name] === null) {
           result[reg.name] = {};
@@ -687,6 +696,11 @@ const DEPRECATED_INERT_KEYS: readonly string[] = [
   'acl.audit.enabled',
   'acl.audit.include_denied',
   'acl.audit.log_level',
+  // D-137: names built-in middleware that is not installed; remove() or
+  // pipeline.remove is the working mechanism.
+  'middleware.disabled',
+  // D-150: discovery runs when discover() is called; nothing reads this.
+  'extensions.auto_discover',
 ];
 
 // Project root (§9.2.2 deprecation phase — apcore#113)
@@ -943,6 +957,7 @@ export class Config {
     if (_RESERVED_NAMESPACES.has(name)) {
       throw new ConfigNamespaceReservedError(name);
     }
+    if (envPrefix === 'APCORE') throw new ConfigNamespaceReservedError(name);
     if (_globalNsRegistry.has(name)) {
       throw new ConfigNamespaceDuplicateError(name);
     }
@@ -1082,31 +1097,11 @@ export class Config {
       // Merge file data over defaults
       merged = deepMergeDicts(merged, rawData);
 
-      // Apply legacy APCORE_* overrides to the "apcore" namespace only.
-      // PROTOCOL_SPEC §9.6.2: the `apcore` namespace keeps the §9.2 legacy
-      // merge rules, so `APCORE_EXECUTOR_DEFAULT__TIMEOUT` must still reach
-      // `apcore.executor.default_timeout` in namespace mode. Without this,
-      // prefix dispatch below matches only the registered namespace prefixes
-      // and every other APCORE_* var is silently discarded.
-      // Mirrors apcore-python config.py `_load_namespace_mode`.
-      const apcoreNs = merged['apcore'];
-      if (apcoreNs !== null && typeof apcoreNs === 'object' && !Array.isArray(apcoreNs)) {
-        merged['apcore'] = applyEnvOverrides(apcoreNs as Record<string, unknown>);
-      }
-
-      // Apply namespace-aware env overrides
+      // D-146: one dispatch pass, including the unmatched APCORE_ fallback.
       merged = applyNamespaceEnvOverrides(merged);
 
       // Same pipeline over the raw file only — no namespace defaults seeded.
       declared = JSON.parse(JSON.stringify(rawData)) as Record<string, unknown>;
-      const declaredApcore = declared['apcore'];
-      if (
-        declaredApcore !== null &&
-        typeof declaredApcore === 'object' &&
-        !Array.isArray(declaredApcore)
-      ) {
-        declared['apcore'] = applyEnvOverrides(declaredApcore as Record<string, unknown>);
-      }
       declared = applyNamespaceEnvOverrides(declared);
 
       // §9.6.3's `allow_unknown` row, both halves of which were inert
@@ -1822,6 +1817,11 @@ export class Config {
 
 // W-13: Use snake_case keys to match Python defaults and YAML config conventions.
 // camelCase keys would silently diverge from cross-language YAML configs.
+//
+// `observability` declares `tracing` and `metrics` only — the blocks the
+// schema's ObservabilityConfig declares (protocol-spec §9.15.2, D-144). Error
+// history, event thresholds and redaction live under `sys_modules.error_history.*`,
+// `sys_modules.events.thresholds.*` and `obs.redaction.*`.
 Config.registerNamespace({
   name: 'observability',
   envPrefix: 'APCORE_OBSERVABILITY',
@@ -1834,21 +1834,6 @@ Config.registerNamespace({
       otlp_endpoint: null,
     },
     metrics: { enabled: false, exporter: 'stdout' },
-    logging: { enabled: true, level: 'info', format: 'json', redact_sensitive: true },
-    redaction: {
-      // Issue #43 §5 — runtime-configurable redaction.
-      // Empty arrays here mean "use library defaults" (see
-      // DEFAULT_REDACTION_FIELD_PATTERNS in observability/context-logger.ts).
-      field_patterns: [] as string[],
-      value_patterns: [] as string[],
-      replacement: '***REDACTED***',
-    },
-    error_history: { max_entries_per_module: 50, max_total_entries: 1000 },
-    platform_notify: {
-      enabled: false,
-      error_rate_threshold: 0.1,
-      latency_p99_threshold_ms: 5000.0,
-    },
   },
 });
 

@@ -16,8 +16,7 @@ import type { ApprovalHandler, ApprovalResult } from './approval.js';
 import { createApprovalRequest, createApprovalResult } from './approval.js';
 import type { Config } from './config.js';
 import { getDefault } from './config-defaults.js';
-import type { CancelToken } from './cancel.js';
-import { ExecutionCancelledError } from './cancel.js';
+import { CancelToken, ExecutionCancelledError } from './cancel.js';
 import { Context } from './context.js';
 import {
   ACLDeniedError,
@@ -148,9 +147,9 @@ export class BuiltinContextCreation implements Step {
       // Issue #66: no executor arg; auto-binding happens on the next
       // executor entry. For internal child-context creation we just need a
       // fresh root.
-      derived = Context.create().child(ctx.moduleId);
+      derived = Context.create().child(ctx.moduleId, new CancelToken());
     } else {
-      derived = ctx.context.child(ctx.moduleId);
+      derived = ctx.context.child(ctx.moduleId, new CancelToken(ctx.context.cancelToken));
     }
 
     // `global_deadline` — spec v1.50.0 D-99 / D-100 / D-101,
@@ -914,6 +913,7 @@ export class BuiltinExecute implements Step {
     if (globalDeadline !== null) {
       const remaining = globalDeadline * 1000 - Date.now();
       if (remaining <= 0) {
+        ctx.context.cancelToken?.cancel();
         throw new ModuleTimeoutError(ctx.moduleId, 0);
       }
       if (timeoutMs === 0 || remaining < timeoutMs) {
@@ -935,39 +935,7 @@ export class BuiltinExecute implements Step {
       ).call(mod, ctx.inputs, ctx.context),
     );
 
-    if (timeoutMs === 0) {
-      // No timeout: still race against the cancel signal so callers see a
-      // typed ExecutionCancelledError instead of waiting for the module to
-      // discover the cancel cooperatively (D-18, D-21).
-      const cancelToken = ctx.context.cancelToken;
-      if (cancelToken !== null) {
-        ctx.output = await Promise.race([
-          executionPromise,
-          this._raceAgainstCancel(cancelToken),
-        ]);
-      } else {
-        ctx.output = await executionPromise;
-      }
-    } else {
-      let timer: ReturnType<typeof setTimeout>;
-      const timeoutPromise = new Promise<never>((_, reject) => {
-        timer = setTimeout(() => {
-          reject(new ModuleTimeoutError(ctx.moduleId, timeoutMs));
-        }, timeoutMs);
-      });
-      // D-18 / D-21: race execution against both the timeout AND the caller's
-      // cancel token so cancellation surfaces as a typed
-      // ExecutionCancelledError mid-pipeline even if the module is sitting
-      // on an await point that isn't a Web API.
-      const cancelToken = ctx.context.cancelToken;
-      const racers: Promise<unknown>[] = [executionPromise, timeoutPromise];
-      if (cancelToken !== null) {
-        racers.push(this._raceAgainstCancel(cancelToken));
-      }
-      ctx.output = (await Promise.race(racers).finally(() => {
-        clearTimeout(timer!);
-      })) as Record<string, unknown>;
-    }
+    ctx.output = await this._awaitExecution(executionPromise, ctx, timeoutMs);
 
     // MW-001: record that the module actually ran. `output == null` alone
     // cannot tell "the module returned nothing" from "this step never ran",
@@ -1017,17 +985,39 @@ export class BuiltinExecute implements Step {
     return null;
   }
 
-  private _raceAgainstCancel(cancelToken: CancelToken): Promise<never> {
-    if (cancelToken.signal.aborted) {
-      return Promise.reject(new ExecutionCancelledError());
-    }
-    return new Promise<never>((_, reject) => {
-      const onAbort = (): void => {
-        cancelToken.signal.removeEventListener('abort', onAbort);
-        reject(new ExecutionCancelledError());
+  private async _awaitExecution(
+    execution: Promise<Record<string, unknown>>, ctx: PipelineContext, timeoutMs: number,
+  ): Promise<Record<string, unknown>> {
+    const token = ctx.context.cancelToken;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let timedOut = false;
+    let onAbort: (() => void) | undefined;
+    const interruption = new Promise<never>((_, reject) => {
+      onAbort = (): void => {
+        if (!timedOut) reject(new ExecutionCancelledError());
       };
-      cancelToken.signal.addEventListener('abort', onAbort, { once: true });
+      token?.signal.addEventListener('abort', onAbort, { once: true });
+      if (token?.isCancelled || token?.signal.aborted) onAbort();
+      if (timeoutMs > 0) timer = setTimeout(() => {
+        // D-133: publish cancellation first, but the deadline owns the error.
+        // Abort listeners and module rejection must not win the timeout race.
+        timedOut = true;
+        token?.cancel();
+        reject(new ModuleTimeoutError(ctx.moduleId, timeoutMs));
+      }, timeoutMs);
     });
+    try {
+      const output = await Promise.race([execution, interruption]);
+      if (timedOut) throw new ModuleTimeoutError(ctx.moduleId, timeoutMs);
+      return output;
+    } catch (error) {
+      if (timedOut) throw new ModuleTimeoutError(ctx.moduleId, timeoutMs);
+      throw error;
+    }
+    finally {
+      if (timer !== undefined) clearTimeout(timer);
+      if (onAbort) token?.signal.removeEventListener('abort', onAbort);
+    }
   }
 }
 

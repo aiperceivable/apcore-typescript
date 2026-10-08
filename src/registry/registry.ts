@@ -356,6 +356,7 @@ export class Registry {
   private _schemaCache: Map<string, Record<string, unknown>> = new Map();
   private _config: Config | null;
   private _watchers?: Array<{ close(): void }>;
+  private _watchGeneration = 0;
   private _debounceTimers?: Map<string, number>;
   private _customDiscoverer: Discoverer | null = null;
   private _customValidator: ModuleValidator | null = null;
@@ -1331,7 +1332,7 @@ export class Registry {
    * @param options.tags When supplied, only modules carrying *all* of the given tags are returned.
    * @param options.prefix When supplied, only IDs starting with the prefix are returned.
    * @param options.visibility Filter by module visibility. Supported: `['public', 'hidden']`.
-   *                           Defaults to `['public']`. Aligned with apcore D-24.
+   *                           Defaults to `['public']` (protocol-spec §4.4 `discoverable`).
    * @param options.includeHidden Deprecated. Use `visibility: ['public', 'hidden']` instead.
    */
   list(options?: {
@@ -1342,7 +1343,8 @@ export class Registry {
   }): string[] {
     let ids = [...this._modules.keys()];
 
-    // D-24 alignment: visibility list takes precedence over legacy includeHidden bool.
+    // protocol-spec §4.4 `discoverable`: the visibility list takes precedence over the
+    // deprecated includeHidden bool.
     const vis = options?.visibility ?? (options?.includeHidden === true ? ['public', 'hidden'] : ['public']);
     const showPublic = vis.includes('public');
     const showHidden = vis.includes('hidden');
@@ -1726,7 +1728,11 @@ export class Registry {
       return; // Already watching
     }
 
+    const generation = this._watchGeneration;
     const { fs, path: nodePath } = await ensureNodeModules();
+    // unwatch() may run while the lazy Node import is pending. Concurrent
+    // watch() calls may also have installed the watcher while this awaited.
+    if (generation !== this._watchGeneration || this._watchers?.length) return;
     const { join } = nodePath;
 
     this._watchers = [];
@@ -1779,6 +1785,7 @@ export class Registry {
   }
 
   unwatch(): void {
+    this._watchGeneration += 1;
     if (this._watchers) {
       for (const watcher of this._watchers) {
         watcher.close();
@@ -1793,15 +1800,9 @@ export class Registry {
     const { basename, extname } = nodePath;
     const moduleId = this._pathToModuleId(filePath);
 
+    // unregister() runs onUnload; calling it here as well released the
+    // module's resources twice.
     if (moduleId && this.has(moduleId)) {
-      const oldModule = this.get(moduleId) as Record<string, unknown> | null;
-      if (oldModule && typeof oldModule.onUnload === "function") {
-        try {
-          oldModule.onUnload();
-        } catch (e) {
-          console.warn(`[apcore:registry] onUnload failed for '${moduleId}':`, e);
-        }
-      }
       this.unregister(moduleId);
     }
 
@@ -1818,15 +1819,8 @@ export class Registry {
 
   private async _handleFileDeletion(path: string): Promise<void> {
     const moduleId = this._pathToModuleId(path);
+    // unregister() runs onUnload; see _handleFileChange.
     if (moduleId && this.has(moduleId)) {
-      const module = this.get(moduleId) as Record<string, unknown> | null;
-      if (module && typeof module.onUnload === "function") {
-        try {
-          module.onUnload();
-        } catch (e) {
-          console.warn(`[apcore:registry] onUnload failed for '${moduleId}':`, e);
-        }
-      }
       this.unregister(moduleId);
     }
   }
@@ -1887,6 +1881,8 @@ export class Registry {
         `ephemeral.* module IDs must be registered via Registry.register(), ` +
         `not registerInternal() (got: '${moduleId}'). ` +
         `See protocol-spec §2.5.1 for rationale.`,
+        undefined,
+        ErrorCodes.INVALID_MODULE_ID,
       );
     }
     validateModuleId(moduleId, true);

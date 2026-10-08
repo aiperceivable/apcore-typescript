@@ -451,7 +451,7 @@ export class Context<T = null> {
    *
    * Everything else (`redactedInputs`, etc.) is per-call.
    */
-  child(targetModuleId: string): Context<T> {
+  child(targetModuleId: string, cancelToken: CancelToken | null = this.cancelToken): Context<T> {
     return new Context<T>(
       this.traceId,
       this.callChain.length > 0 ? this.callChain[this.callChain.length - 1] : null,
@@ -460,7 +460,7 @@ export class Context<T = null> {
       this.identity,
       null,
       this.data, // shared reference — see JSDoc above
-      this.cancelToken,
+      cancelToken,
       this.services,
       this.globalDeadline,
     );

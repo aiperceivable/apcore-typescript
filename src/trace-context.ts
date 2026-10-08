@@ -4,6 +4,7 @@
  */
 
 import type { Context } from './context.js';
+import { InvalidParentIdError } from './errors.js';
 import type { Span } from './observability/tracing.js';
 import { randomHex } from './utils/index.js';
 
@@ -57,7 +58,7 @@ export class TraceContext {
    *
    * @param context apcore Context
    * @param parentId optional 16-hex parent id override
-   * @throws {Error} if `parentId` is provided but malformed
+   * @throws {InvalidParentIdError} if `parentId` is provided but malformed
    */
   static inject(context: Context, parentId?: string): Record<string, string> {
     const traceIdHex = context.traceId; // already 32-hex format
@@ -65,11 +66,7 @@ export class TraceContext {
     let chosenParent: string;
     if (parentId !== undefined) {
       if (!PARENT_ID_RE.test(parentId)) {
-        const err = new Error(
-          `Malformed parentId override: ${JSON.stringify(parentId)}. Expected 16 lowercase hex chars matching /^[0-9a-f]{16}$/.`,
-        );
-        (err as Error & { code?: string }).code = 'INVALID_PARENT_ID';
-        throw err;
+        throw new InvalidParentIdError(parentId);
       }
       chosenParent = parentId;
     } else {

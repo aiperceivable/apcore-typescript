@@ -18,7 +18,9 @@ interface ExporterInternals {
 }
 
 async function fetchText(port: number, path: string): Promise<{ status: number; body: string }> {
-  const res = await fetch(`http://127.0.0.1:${port}${path}`);
+  // Each case closes its ephemeral listener. Do not let the shared fetch pool
+  // reuse an idle socket after that listener closes and its port is reassigned.
+  const res = await fetch(`http://127.0.0.1:${port}${path}`, { headers: { Connection: 'close' } });
   const body = await res.text();
   return { status: res.status, body };
 }
@@ -49,7 +51,7 @@ describe('PrometheusExporter HTTP server', () => {
     exporter.start({ port: 0 });
     const port = getPort(exporter);
 
-    const res = await fetch(`http://127.0.0.1:${port}/metrics`);
+    const res = await fetch(`http://127.0.0.1:${port}/metrics`, { headers: { Connection: 'close' } });
     expect(res.status).toBe(200);
     expect(res.headers.get('content-type')).toContain('text/plain');
     const body = await res.text();

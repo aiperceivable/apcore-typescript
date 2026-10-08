@@ -14,6 +14,10 @@
 import { ModuleError } from './errors.js';
 
 export class ExecutionCancelledError extends ModuleError {
+  // Retryable with a fresh CancelToken (protocol-spec §8.6, D-135): the
+  // cancelled token is spent, not the operation.
+  static override readonly DEFAULT_RETRYABLE: boolean | null = true;
+
   constructor(message: string = "Execution was cancelled") {
     super("EXECUTION_CANCELLED", message);
     this.name = "ExecutionCancelledError";
@@ -37,6 +41,29 @@ export class CancelToken {
    * resetting their flag in place.
    */
   private readonly _controller: AbortController = new AbortController();
+  private readonly _signal: AbortSignal;
+  private _disposeParentLink: (() => void) | null = null;
+
+  /** Derive a cancellation scope, including runtimes without AbortSignal.any. */
+  constructor(private readonly _parent: CancelToken | null = null) {
+    if (_parent !== null && typeof AbortSignal.any === 'function') {
+      this._signal = AbortSignal.any([this._controller.signal, _parent.signal]);
+    } else {
+      this._signal = this._controller.signal;
+      if (_parent !== null) {
+        const onAbort = () => { this._controller.abort(); this.dispose(); };
+        this._disposeParentLink = () => _parent.signal.removeEventListener('abort', onAbort);
+        if (_parent.signal.aborted) onAbort();
+        else _parent.signal.addEventListener('abort', onAbort, { once: true });
+      }
+    }
+  }
+
+  /** @internal Release a completed execution scope's fallback parent listener. */
+  dispose(): void {
+    this._disposeParentLink?.();
+    this._disposeParentLink = null;
+  }
 
   /** One-shot guard for the reset-after-cancel notice below. */
   private _resetAfterCancelWarned: boolean = false;
@@ -50,11 +77,11 @@ export class CancelToken {
    * returned before and after {@link reset}.
    */
   get signal(): AbortSignal {
-    return this._controller.signal;
+    return this._signal;
   }
 
   get isCancelled(): boolean {
-    return this._cancelled;
+    return this._cancelled || (this._parent?.isCancelled ?? false);
   }
 
   cancel(): void {
@@ -62,10 +89,11 @@ export class CancelToken {
     if (!this._controller.signal.aborted) {
       this._controller.abort();
     }
+    this.dispose();
   }
 
   check(): void {
-    if (this._cancelled) {
+    if (this.isCancelled) {
       throw new ExecutionCancelledError();
     }
   }

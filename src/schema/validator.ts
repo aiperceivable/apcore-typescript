@@ -4,6 +4,7 @@
 
 import type { TSchema } from '@sinclair/typebox';
 import { Value, type ValueError } from '@sinclair/typebox/value';
+import { ValueErrorType } from '@sinclair/typebox/errors';
 import type { SchemaValidationErrorDetail, SchemaValidationResult } from './types.js';
 import { validationResultToError } from './types.js';
 import { KEYWORD_MARKER } from './constants.js';
@@ -318,14 +319,14 @@ export class SchemaValidator {
     if (matchCount === 0) {
       return {
         valid: false,
-        errors: [{ path: '/', message: 'oneOf: no branches matched', constraint: 'oneOf' }],
+        errors: [{ path: '', message: 'oneOf: no branches matched', keyword: 'oneOf' }],
         errorCode: 'SCHEMA_UNION_NO_MATCH',
       };
     }
     if (matchCount > 1) {
       return {
         valid: false,
-        errors: [{ path: '/', message: `oneOf: expected exactly 1 match, got ${matchCount}`, constraint: 'oneOf' }],
+        errors: [{ path: '', message: `oneOf: expected exactly 1 match, got ${matchCount}`, keyword: 'oneOf' }],
         errorCode: 'SCHEMA_UNION_AMBIGUOUS',
       };
     }
@@ -360,7 +361,7 @@ export class SchemaValidator {
     if (!branches.some((b) => Value.Check(b, data))) {
       return {
         valid: false,
-        errors: [{ path: '/', message: 'anyOf: no branches matched', constraint: 'anyOf' }],
+        errors: [{ path: '', message: 'anyOf: no branches matched', keyword: 'anyOf' }],
         errorCode: 'SCHEMA_UNION_NO_MATCH',
       };
     }
@@ -487,20 +488,42 @@ export class SchemaValidator {
   }
 
   private _collectErrors(schema: TSchema, data: unknown): SchemaValidationErrorDetail[] {
+    const raw = [...Value.Errors(schema, data)];
+    const missing = new Set(raw.filter((error) => error.type === ValueErrorType.ObjectRequiredProperty).map((error) => error.path));
     const errors: SchemaValidationErrorDetail[] = [];
-    for (const error of Value.Errors(schema, data)) {
-      errors.push(this._typeboxErrorToDetail(error));
+    for (const error of raw) {
+      if (missing.has(error.path) && error.type !== ValueErrorType.ObjectRequiredProperty && error.value === undefined) continue;
+      // TypeBox adds aggregate intersection failures beside the precise causes.
+      if (error.type === ValueErrorType.Intersect && raw.some((other) => other !== error && other.path.startsWith(error.path))) continue;
+      const detail = this._typeboxErrorToDetail(error);
+      if (!errors.some((item) => item.path === detail.path && item.keyword === detail.keyword)) errors.push(detail);
     }
     return errors;
   }
 
   private _typeboxErrorToDetail(error: ValueError): SchemaValidationErrorDetail {
+    const type = ValueErrorType[error.type];
+    const suffix = type.replace(/^(Array|BigInt|Date|Integer|Number|Object|String|Tuple|Uint8Array)/, '');
+    const keywords: Record<string, string> = {
+      Contains: 'contains', MaxContains: 'maxContains', MinContains: 'minContains',
+      MaxItems: 'maxItems', MinItems: 'minItems', UniqueItems: 'uniqueItems',
+      ExclusiveMaximum: 'exclusiveMaximum', ExclusiveMinimum: 'exclusiveMinimum',
+      Maximum: 'maximum', Minimum: 'minimum', MultipleOf: 'multipleOf',
+      AdditionalProperties: 'additionalProperties', MaxProperties: 'maxProperties',
+      MinProperties: 'minProperties', RequiredProperty: 'required',
+      Format: 'format', FormatUnknown: 'format', MaxLength: 'maxLength', MinLength: 'minLength', Pattern: 'pattern',
+    };
+    let keyword = keywords[suffix] ?? 'type';
+    if (error.type === ValueErrorType.Union) keyword = 'enum' in error.schema ? 'enum' : 'anyOf';
+    if (error.type === ValueErrorType.Literal) keyword = 'enum' in error.schema ? 'enum' : 'const';
+    if (error.type === ValueErrorType.Intersect) keyword = 'allOf';
+    if (error.type === ValueErrorType.Not) keyword = 'not';
+    if (error.type === ValueErrorType.Kind) keyword = String(error.schema[KEYWORD_MARKER] ?? 'type');
+    const objectConstraint = keyword === 'required' || keyword === 'additionalProperties';
     return {
-      path: error.path || '/',
+      path: objectConstraint ? error.path.replace(/\/[^/]*$/, '') : error.path,
       message: error.message,
-      constraint: String(error.type),
-      expected: error.schema,
-      actual: error.value,
+      keyword,
     };
   }
 }

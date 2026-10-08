@@ -89,39 +89,57 @@ function isObject(value: unknown): value is JsonObject {
 /**
  * Every dotted key marked `"x-apcore-path": true` in one canonical schema.
  *
- * `$ref` is followed into the document's own `$defs` (the path-typed markers all
- * live in `$defs` definitions such as `ExtensionsConfig`, reached by `$ref` from
- * the root `properties`). A `$ref` to another *file* is not followed: nothing
- * outside these two schemas carries the marker, and chasing
- * `sys-modules.schema.json` would only add keys the fixture does not claim.
+ * `$ref` is followed into the document's own `$defs` (most markers live in
+ * `$defs` definitions such as `ExtensionsConfig`, reached by `$ref` from the root
+ * `properties`) and — `cross_file_ref` — into a sibling schema file:
+ * `sys_modules` is a `$ref` to `sys-modules.schema.json`, where the
+ * `control.overrides_path` marker lives (D-138).
  *
  * Composition keywords are traversed without descending a level, because a
  * `oneOf` branch describes the SAME node — `ExtensionsConfig` states its single-
  * root and multi-root modes that way, and only the branches carry `properties`.
  */
 function projectPathTypedKeys(schemaPath: string): string[] {
-  const root = JSON.parse(fs.readFileSync(schemaPath, 'utf-8')) as JsonObject;
-  const defs = isObject(root['$defs']) ? root['$defs'] : {};
+  const schemaDir = path.dirname(schemaPath);
+  const documents = new Map<string, JsonObject>();
+  function load(file: string): JsonObject {
+    let doc = documents.get(file);
+    if (doc === undefined) {
+      doc = JSON.parse(fs.readFileSync(path.join(schemaDir, file), 'utf-8')) as JsonObject;
+      documents.set(file, doc);
+    }
+    return doc;
+  }
+  const rootFile = path.basename(schemaPath);
+  const root = load(rootFile);
   const found = new Set<string>();
 
-  /** Resolve a local `$ref` chain, or return null for an external one. */
-  function deref(node: JsonObject): JsonObject | null {
+  /** Resolve a `$ref` chain within a document or across sibling files. */
+  function deref(node: JsonObject, file: string): [JsonObject, string] | null {
     let current: JsonObject = node;
+    let currentFile = file;
     for (let hop = 0; hop < 10; hop++) {
       const ref = current['$ref'];
-      if (typeof ref !== 'string') return current;
-      if (!ref.startsWith('#/$defs/')) return null;
-      const target = defs[ref.slice('#/$defs/'.length)];
+      if (typeof ref !== 'string') return [current, currentFile];
+      const [refFile, fragment = ''] = ref.split('#');
+      if (refFile !== '') currentFile = refFile;
+      let target: unknown = load(currentFile);
+      if (fragment !== '') {
+        if (!fragment.startsWith('/$defs/')) return null;
+        const defs = (target as JsonObject)['$defs'];
+        target = isObject(defs) ? defs[fragment.slice('/$defs/'.length)] : undefined;
+      }
       if (!isObject(target)) return null;
       current = target;
     }
     return null;
   }
 
-  function visit(node: unknown, keyPath: string, depth: number): void {
+  function visit(node: unknown, keyPath: string, depth: number, file = rootFile): void {
     if (!isObject(node) || depth > 25) return;
-    const resolved = deref(node);
-    if (resolved === null) return;
+    const hit = deref(node, file);
+    if (hit === null) return;
+    const [resolved, resolvedFile] = hit;
 
     if (resolved['x-apcore-path'] === true && keyPath !== '') {
       // `roots_element_form`: a marker at or below an array boundary is reported
@@ -134,19 +152,19 @@ function projectPathTypedKeys(schemaPath: string): string[] {
     for (const keyword of ['oneOf', 'anyOf', 'allOf']) {
       const branches = resolved[keyword];
       if (Array.isArray(branches)) {
-        for (const branch of branches) visit(branch, keyPath, depth + 1);
+        for (const branch of branches) visit(branch, keyPath, depth + 1, resolvedFile);
       }
     }
 
     const properties = resolved['properties'];
     if (isObject(properties)) {
       for (const [name, child] of Object.entries(properties)) {
-        visit(child, keyPath === '' ? name : `${keyPath}.${name}`, depth + 1);
+        visit(child, keyPath === '' ? name : `${keyPath}.${name}`, depth + 1, resolvedFile);
       }
     }
 
     const items = resolved['items'];
-    if (isObject(items)) visit(items, `${keyPath}[]`, depth + 1);
+    if (isObject(items)) visit(items, `${keyPath}[]`, depth + 1, resolvedFile);
   }
 
   visit(root, '', 0);
@@ -219,6 +237,7 @@ describe('Conformance: the closed set of path-typed configuration keys (§9.2.1)
 
     expect([...fixture.canonical_sources]).toEqual([
       'schemas/apcore-config.schema.json',
+      'schemas/sys-modules.schema.json',
       'schemas/defaults.schema.json',
     ]);
   });
@@ -272,6 +291,16 @@ describe('Conformance: the closed set of path-typed configuration keys (§9.2.1)
     expect(
       wrongly.length === 0 ? { path_typed: false } : { path_typed: true, keys: wrongly },
       `These keys are not filesystem paths but the SDK reports them as path-typed: ${wrongly.join(', ')}`,
+    ).toEqual(testCase.expected);
+  });
+
+  it('id_map_overrides_is_path_typed: the ID map file and the runtime overrides file (D-138)', () => {
+    const testCase = caseFor('id_map_overrides_is_path_typed');
+    const declared = Config.pathTypedKeys();
+    const missing = (testCase.keys ?? []).filter((k) => !declared.includes(k));
+    expect(
+      missing.length === 0 ? { path_typed: true } : { path_typed: false, keys: missing },
+      `These keys carry filesystem paths but the SDK does not report them: ${missing.join(', ')}`,
     ).toEqual(testCase.expected);
   });
 
@@ -356,6 +385,7 @@ describe('Conformance: the closed set of path-typed configuration keys (§9.2.1)
       'extensions_roots_elements_are_path_typed',
       'no_scalar_env_encoding_for_roots',
       'accessor_is_stable_across_config_instances',
+      'id_map_overrides_is_path_typed',
     ]);
     const undriven = fixture.test_cases.map((c) => c.id).filter((id) => !driven.has(id));
     expect(undriven, `config_path_typed_keys.json gained cases this driver ignores`).toEqual([]);

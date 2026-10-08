@@ -24,14 +24,16 @@ const CANONICAL_ID_RE = /^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$/;
 function toSnakeCase(segment: string): string {
   if (!segment) return segment;
 
-  // If already snake_case (all lowercase + underscores), return as-is.
-  if (segment === segment.toLowerCase() && /^[a-z_]\w*$/.test(segment)) {
+  // A02 is ASCII-scoped. Segments with no ASCII uppercase are left byte-for-byte
+  // unchanged for grammar validation; this preserves existing underscores and
+  // rejects out-of-alphabet characters instead of repairing them.
+  if (!/[A-Z]/.test(segment)) {
     return segment;
   }
 
-  // Split at case boundaries, join with underscore, lowercase.
+  // CASE_BOUNDARY and ASCII uppercase input make this an ASCII-only transform.
   const words = segment.split(CASE_BOUNDARY).filter(Boolean);
-  return words.map((w) => w.toLowerCase()).join('_');
+  return words.map((w) => w.replace(/[A-Z]/g, (ch) => ch.toLowerCase())).join('_');
 }
 
 /**

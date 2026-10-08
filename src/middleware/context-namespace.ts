@@ -20,7 +20,7 @@ const EXT_NS_PREFIX = 'ext.';
 /**
  * Validate whether a context key write is allowed for the given writer role.
  *
- * Rules (PROTOCOL_SPEC §Middleware Architecture Hardening §1.1):
+ * Rules (docs/features/middleware-system.md "Context Namespacing"):
  *   - User middleware MUST NOT write `_apcore.*` keys.
  *   - Framework MUST NOT write `ext.*` keys.
  */

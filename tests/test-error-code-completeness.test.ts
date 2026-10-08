@@ -18,7 +18,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { ErrorCodes } from '../src/errors.js';
+import { ErrorCodes, InvalidParentIdError, ModuleError } from '../src/errors.js';
 import { ErrorCodeRegistry } from '../src/error-code-registry.js';
 import { ErrorCodeCollisionError } from '../src/error-code-registry.js';
 import { TraceContext } from '../src/trace-context.js';
@@ -51,6 +51,28 @@ describe('framework codes thrown outside errors.ts are still in ErrorCodes (ERR-
     }
     expect(thrown?.code).toBe('INVALID_PARENT_ID');
     expect(Object.values(ErrorCodes)).toContain(thrown?.code);
+  });
+
+  it('TraceContext.inject throws a ModuleError carrying the recovery metadata', () => {
+    const context = Context.create();
+    let thrown: unknown = null;
+    try {
+      TraceContext.inject(context, 'not-hex');
+    } catch (e) {
+      thrown = e;
+    }
+    // A plain Error with `code` stamped on it has no userFixable / retryable /
+    // toJSON, so a bridge serializing it loses the recovery hints the other
+    // SDKs send for the same code.
+    expect(thrown).toBeInstanceOf(InvalidParentIdError);
+    expect(thrown).toBeInstanceOf(ModuleError);
+    const err = thrown as InvalidParentIdError;
+    expect(err.userFixable).toBe(true);
+    expect(err.retryable).toBe(false);
+    const wire = err.toJSON();
+    expect(wire.code).toBe('INVALID_PARENT_ID');
+    expect(wire.user_fixable).toBe(true);
+    expect(wire.details).toEqual({ parent_id: 'not-hex' });
   });
 
   it('an unrelated module code is still accepted', () => {

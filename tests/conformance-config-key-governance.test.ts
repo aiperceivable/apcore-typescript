@@ -421,3 +421,67 @@ describe('default tiers mirror the canonical schemas (A-D-021)', () => {
     }
   });
 });
+
+describe('config_key_governance.json — built-in namespaces (D-144)', () => {
+  let tmp: string;
+  beforeEach(() => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'apcore-ns-governance-'));
+  });
+  afterEach(() => {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  /** A namespace-mode document that declares nothing under any namespace. */
+  function probeConfig(): Config {
+    const file = path.join(tmp, 'probe.yaml');
+    fs.writeFileSync(
+      file,
+      yaml.dump({ apcore: { version: '1.0.0', project: { name: 'probe' } } }),
+      'utf-8',
+    );
+    return Config.load(file, { validate: false });
+  }
+
+  it('observability_namespace_declares_what_the_schema_declares', () => {
+    const tc = caseFor('observability_namespace_declares_what_the_schema_declares') as unknown as {
+      builtin_namespace: string;
+      expected: { violations: string[]; required_keys: string[] };
+    };
+    const ns = tc.builtin_namespace;
+    const leavesOfNs = Object.keys(flatten(probeConfig().namespace(ns))).map(
+      (key) => `${ns}.${key}`,
+    );
+    const violations = leavesOfNs.filter((key) => !allowed.has(key)).sort();
+    expect(violations, 'keys the built-in registration declares but the schemas do not').toEqual(
+      tc.expected.violations,
+    );
+    const missing = tc.expected.required_keys.filter((key) => !leavesOfNs.includes(key));
+    expect(missing, 'required keys the registration does not supply').toEqual([]);
+  });
+
+  it('the_three_builtin_namespaces_are_registered', () => {
+    const tc = caseFor('the_three_builtin_namespaces_are_registered') as unknown as {
+      builtin_namespaces_registered: Record<string, string>;
+      expected: { missing: string[] };
+    };
+    const missing = Object.entries(tc.builtin_namespaces_registered)
+      .filter(([name, prefix]) => _globalNsRegistry.get(name)?.envPrefix !== prefix)
+      .map(([name]) => name);
+    expect(missing).toEqual(tc.expected.missing);
+  });
+
+  it('drives every fixture case', () => {
+    expect((fixture.test_cases ?? []).map((c) => c.id).sort()).toEqual(
+      [
+        'observability_namespace_declares_what_the_schema_declares',
+        'sdk_constraint_table_declares_no_undeclared_key',
+        'sdk_default_table_declares_no_undeclared_key',
+        'sdk_default_values_match_canonical_defaults',
+        'sdk_reproduces_every_canonical_default',
+        'the_three_builtin_namespaces_are_registered',
+        'unknown_framework_key_is_rejected_under_strict',
+        'unknown_framework_key_is_retained_by_default',
+      ].sort(),
+    );
+  });
+});

@@ -205,6 +205,20 @@ describe('ExecutionStrategy.replace', () => {
     const s = new ExecutionStrategy('s', [makeStep('locked', { replaceable: false })]);
     expect(() => s.replace('locked', makeStep('new'))).toThrow(StepNotReplaceableError);
   });
+
+  it('throws StepNameDuplicateError when the new name belongs to a different step', () => {
+    const s = new ExecutionStrategy('s', [makeStep('a'), makeStep('b'), makeStep('c')]);
+    expect(() => s.replace('a', makeStep('c'))).toThrow(StepNameDuplicateError);
+    // The strategy is untouched: no second 'c', index map still consistent.
+    expect(s.stepNames()).toEqual(['a', 'b', 'c']);
+    expect(s.findStepIndex('c')).toBe(2);
+  });
+
+  it('accepts a replacement that keeps the same name', () => {
+    const s = new ExecutionStrategy('s', [makeStep('a'), makeStep('b')]);
+    s.replace('a', makeStep('a'));
+    expect(s.stepNames()).toEqual(['a', 'b']);
+  });
 });
 
 // ---------------------------------------------------------------------------

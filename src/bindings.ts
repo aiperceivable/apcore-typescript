@@ -4,7 +4,7 @@
 
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
-import { type TSchema, Type } from '@sinclair/typebox';
+import type { TSchema } from '@sinclair/typebox';
 import yaml from 'js-yaml';
 import { FunctionModule } from './decorator.js';
 
@@ -27,6 +27,25 @@ import type { ModuleAnnotations } from './module.js';
 import { DEFAULT_ANNOTATIONS } from './module.js';
 
 const SUPPORTED_SPEC_VERSIONS = new Set(['1.0']);
+const BINDING_KEYS = new Set(['module_id', 'target', 'description', 'documentation',
+  'input_schema', 'output_schema', 'schema_ref', 'auto_schema', 'tags', 'version',
+  'annotations', 'metadata']);
+
+/** D-139: reject malformed declarations before importing any target code. */
+function validateBindingEntry(entry: unknown, filePath: string): asserts entry is Record<string, unknown> {
+  if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
+    throw new BindingFileInvalidError(filePath, 'Binding entry must be a mapping');
+  }
+  for (const key of Object.keys(entry)) {
+    if (!BINDING_KEYS.has(key)) throw new BindingFileInvalidError(filePath, `Unknown binding key '${key}'`);
+  }
+  if (('input_schema' in entry) !== ('output_schema' in entry)) {
+    throw new BindingFileInvalidError(filePath, 'input_schema and output_schema must be provided together');
+  }
+  if ('auto_schema' in entry && ![true, false, 'true', 'permissive', 'strict'].includes(entry.auto_schema as boolean | string)) {
+    throw new BindingFileInvalidError(filePath, "auto_schema must be true, false, 'true', 'permissive', or 'strict'");
+  }
+}
 
 /**
  * Convert a snake_case YAML annotations dict to a typed ModuleAnnotations.
@@ -237,6 +256,9 @@ export class BindingLoader {
     }
 
     const dataObj = data as Record<string, unknown>;
+    for (const key of Object.keys(dataObj)) {
+      if (!['spec_version', 'bindings'].includes(key)) throw new BindingFileInvalidError(filePath, `Unknown top-level key '${key}'`);
+    }
 
     const specVersion = dataObj['spec_version'] as string | undefined;
     if (specVersion == null) {
@@ -261,6 +283,7 @@ export class BindingLoader {
 
     const results: FunctionModule[] = [];
     for (const entry of bindings) {
+      validateBindingEntry(entry, filePath);
       const entryObj = entry as Record<string, unknown>;
       if (!('module_id' in entryObj)) {
         throw new BindingFileInvalidError(filePath, "Binding entry missing 'module_id'");
@@ -271,7 +294,7 @@ export class BindingLoader {
 
       validateBindingLimits(entryObj, config ?? null, filePath);
       const fm = await this._createModuleFromBinding(entryObj, bindingFileDir, filePath);
-      registry.register(entryObj['module_id'] as string, fm);
+      await registry.register(entryObj['module_id'] as string, fm);
       results.push(fm);
     }
 
@@ -419,6 +442,9 @@ export class BindingLoader {
     if (modes.length > 1) {
       throw new BindingSchemaModeConflictError(moduleId, modes, filePath);
     }
+    if (binding['auto_schema'] === false) {
+      throw new BindingSchemaInferenceFailedError(targetString, moduleId, filePath);
+    }
 
     let inputSchema: TSchema;
     let outputSchema: TSchema;
@@ -488,11 +514,7 @@ export class BindingLoader {
           'auto_schema is explicitly false; provide input_schema/output_schema or schema_ref instead.',
         );
       } else {
-        // Implicit default: no mode specified, inference didn't find schemas.
-        // Per spec §3.4, implicit auto is the default. If inference fails,
-        // fall back to permissive schema (matches TypeScript pre-0.19.0 behavior).
-        inputSchema = Type.Record(Type.String(), Type.Unknown());
-        outputSchema = Type.Record(Type.String(), Type.Unknown());
+        throw new BindingSchemaInferenceFailedError(targetString, moduleId, filePath);
       }
     }
 

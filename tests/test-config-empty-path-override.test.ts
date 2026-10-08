@@ -79,6 +79,8 @@ function writeConfigDeclaringEveryPathKey(): string {
       `bindings:\n  dir: "${declared['bindings.dir']}"`,
       `extensions:\n  root: "${declared['extensions.root']}"`,
       `schema:\n  root: "${declared['schema.root']}"`,
+      `id_map:\n  overrides: "${declared['id_map.overrides']}"`,
+      `sys_modules:\n  control:\n    overrides_path: "${declared['sys_modules.control.overrides_path']}"`,
       '',
     ].join('\n'),
     'utf-8',

@@ -580,7 +580,7 @@ function applyPipelineConfigImpl(
 
   const strategy = buildStandardStrategy(deps);
 
-  // (1) Remove steps — fail fast if target does not exist (§1.2)
+  // (1) Remove steps — fail fast if target does not exist (protocol-spec §5.16.1)
   for (const stepName of pipelineConfig.remove ?? []) {
     if (strategy.findStepIndex(stepName) === undefined) {
       throw new ConfigurationError(
@@ -591,7 +591,7 @@ function applyPipelineConfigImpl(
     strategy.remove(stepName);
   }
 
-  // (2) Configure existing step fields — fail fast if target does not exist (§1.2)
+  // (2) Configure existing step fields — fail fast if target does not exist (protocol-spec §5.16.1)
   for (const [stepName, overrides] of Object.entries(pipelineConfig.configure ?? {})) {
     if (strategy.findStepIndex(stepName) === undefined) {
       throw new ConfigurationError(
@@ -652,7 +652,7 @@ function applyPipelineConfigImpl(
     }
   }
 
-  // (3) Resolve and insert custom steps — anchors must exist (§1.2).
+  // (3) Resolve and insert custom steps — anchors must exist (protocol-spec §5.16.1).
   // The entry is validated against the closed `$defs/PipelineStep` key set and
   // normalised to the camelCase `StepDefinition` spelling FIRST, so an unknown
   // key raises before any step factory runs and the canonical snake_case

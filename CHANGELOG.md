@@ -7,13 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 
 
-## [Unreleased]
+## [0.32.0] - 2026-10-08
 
 ### Security
 
 - **An executor's ACL, approval handler and policy are bound into the built-in gates of whatever strategy it runs** (D-129) — including a pre-built instance, a registered strategy name and a per-call `callWithTrace` strategy; `governanceState()` reports what the running gate holds.
 - **`acl_check` / `approval_gate` cannot be weakened** (D-130) — `ignore_errors: true`, any `match_modules` and `pure: true` on `approval_gate` raise `PIPELINE_CONFIGURATION_ERROR`, from `pipeline.configure` and from every step-entry API (`configureStep`, `replace`, `insertAfter`/`insertBefore`, the `ExecutionStrategy` constructor).
 - **`LoggingMiddleware` and `ObsLoggingMiddleware` log only `context.redactedInputs` / `redactedOutput`, never the raw values** (D-131) — `x-sensitive` now survives JSON Schema conversion, so it is honoured at the capture point, and schemaless inputs/outputs are captured with the configured rules.
+
+### Fixed
+
+- **Timeouts cancel only the timed-out call's linked cancellation scope** (D-133); parent cancellation propagates down, child deadlines do not cancel parents, and abort-listener races still report `MODULE_TIMEOUT` immediately.
+- **Preflight collects all evaluable pure checks and preserves earlier results** (D-134), with module-authored hooks withheld after ACL denial; null previews omit their check and `predictedChanges` is always an array (D-141).
+- **Binding declarations reject unknown keys, incomplete schema pairs, invalid inference modes and uninferable targets** (D-139), including implicit inference.
+- **Namespace environment overrides dispatch once to the longest prefix** (D-146); the exact `APCORE` prefix is reserved for the framework.
+- **MCP approval and streaming flags appear only when true in `_meta`** (D-140); schema extension stripping preserves property and definition names.
+- **Schema diagnostics use exact `path`, `keyword`, `message` fields and RFC 6901 pointers** (D-149), with required-property failures located at the containing object.
+- **Bare `ephemeral` registration emits one contextual event and privileged registration rejects ephemeral IDs with `INVALID_MODULE_ID`** (D-148).
+- **Configured event subscribers honor their `circuit_breaker` block**, including default circuit-breaker wrapping.
+- **Asynchronous watcher initialization respects `unwatch()` and concurrent startup**, preventing leaked filesystem listeners; Prometheus shutdown drains idle connections and HTTP lifecycle tests isolate ephemeral sockets.
+- **`APCore.register()` returns the registry's `Promise<void>`** (#123) — it settles once an async `onLoad` completes and rejects with its error; validation errors are still thrown synchronously.
+- **`TraceContext.inject` throws `InvalidParentIdError`** (#123) — a `ModuleError` with `code: INVALID_PARENT_ID`, `userFixable: true`, `retryable: false` and `toJSON()`, exported from both entry points.
+- **`Registry.watch()` calls a changed or deleted module's `onUnload` once** (#123).
+- **A bulk (`path_filter`) reload fails with `RELOAD_FAILED` when a module is missing after re-discovery** (#123, D-112 rule 4) — the missing modules are restored, modules that reloaded stay reloaded, and no audit entries are written for a failed operation.
+- **`useBefore` / `useAfter` key each wrapper's identity on its callback** (#123) — a second distinct callback no longer triggers the duplicate-middleware warning; the same callback registered twice still does.
+- **`ExecutionStrategy.replace()` rejects a new step name that belongs to a different step** with `StepNameDuplicateError` (#123), as `configureStep` and the insert methods do.
+- **Step middleware can be attached through `Executor.addStepMiddleware()` / `APCore.addStepMiddleware()`** (#123, protocol-spec §5.16 requirement 5); `Executor.stepMiddlewares` lists them.
 
 ## [0.31.0] - 2026-09-22
 

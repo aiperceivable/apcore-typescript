@@ -761,7 +761,7 @@ describe('APCore.register', () => {
     expect((caught as DuplicateModuleIdError).code).toBe('DUPLICATE_MODULE_ID');
   });
 
-  it('apcore_client.register.returns.none: register returns undefined and module is present', () => {
+  it('apcore_client.register.returns.none: register resolves to undefined and module is present', async () => {
     const moduleObj = {
       inputSchema: AddInputSchema,
       outputSchema: AddOutputSchema,
@@ -771,9 +771,12 @@ describe('APCore.register', () => {
       }),
     };
     const client = new APCore();
+    // TypeScript returns Registry.register's Promise<void> (registry-system.md
+    // "Contract: Registry.register") so an async onLoad can be awaited and its
+    // failure caught; with no async onLoad the module is visible at once.
     const ret = client.register('math.target', moduleObj);
-    expect(ret).toBeUndefined();
     expect(client.registry.has('math.target')).toBe(true);
+    await expect(ret).resolves.toBeUndefined();
   });
 
   it('apcore_client.register.property.thread_safe: >=8 concurrent registrations all present', async () => {

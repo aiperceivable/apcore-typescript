@@ -28,7 +28,7 @@ afterEach(() => {
 
 function writeTempModule(filename: string, content: string): string {
   const filePath = join(tmpDir, filename);
-  writeFileSync(filePath, content, 'utf-8');
+  writeFileSync(filePath, `${content}\nexport const inputSchema = {type:'object'};\nexport const outputSchema = {type:'object'};\n`, 'utf-8');
   return filePath;
 }
 
@@ -64,7 +64,7 @@ describe('Binding + Registry + Executor', () => {
     );
     const yamlPath = writeTempYaml(
       'validated.binding.yaml',
-      `bindings:\n  - module_id: "test.validated"\n    target: "${modPath}:handle"\n    input_schema:\n      type: object\n      properties:\n        name:\n          type: string\n      required:\n        - name\n`,
+      `bindings:\n  - module_id: "test.validated"\n    target: "${modPath}:handle"\n    input_schema:\n      type: object\n      properties:\n        name:\n          type: string\n      required:\n        - name\n    output_schema:\n      type: object\n`,
     );
 
     await loader.loadBindings(yamlPath, registry);

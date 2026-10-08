@@ -20,15 +20,26 @@ import { findFixturesRoot } from './spec-repo.js';
 
 interface IdMapCase {
   readonly id: string;
-  readonly input: { readonly declare_override: boolean; readonly explicit_argument: boolean };
+  readonly input: {
+    readonly declare_override: boolean;
+    readonly explicit_argument: boolean;
+    readonly config_map_entries?: ReadonlyArray<{ file: string; id: string }>;
+    readonly env?: Readonly<Record<string, string>>;
+  };
   readonly expected: { readonly module_ids: readonly string[] };
 }
 
-const fixture: { test_cases: readonly IdMapCase[] } = JSON.parse(
+const fixture: {
+  test_cases: readonly IdMapCase[];
+  driver_contract: Record<string, string>;
+} = JSON.parse(
   fs.readFileSync(path.join(findFixturesRoot(), 'id_map_from_config.json'), 'utf-8'),
 );
 
-function tree(declareOverride: boolean): string {
+function tree(
+  declareOverride: boolean,
+  configMapEntries?: ReadonlyArray<{ file: string; id: string }>,
+): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'apcore-id-map-'));
   const leaf = path.join(root, 'ext', 'executor', 'orig');
   fs.mkdirSync(leaf, { recursive: true });
@@ -48,16 +59,17 @@ function tree(declareOverride: boolean): string {
     ].join('\n'),
     'utf-8',
   );
-  for (const [name, id] of [
-    ['map.yaml', 'executor.renamed.mod'],
-    ['explicit.yaml', 'executor.explicit.mod'],
-  ]) {
-    fs.writeFileSync(
-      path.join(root, name as string),
-      yaml.dump({ mappings: [{ file: 'executor/orig/mod.ts', id }] }),
-      'utf-8',
-    );
-  }
+  // `config_map_entries`: replaces map.yaml's mappings, with this SDK's module
+  // extension in place of `.py`.
+  const mapEntries =
+    configMapEntries?.map((e) => ({ file: e.file.replace(/\.py$/, '.ts'), id: e.id })) ??
+    [{ file: 'executor/orig/mod.ts', id: 'executor.renamed.mod' }];
+  fs.writeFileSync(path.join(root, 'map.yaml'), yaml.dump({ mappings: mapEntries }), 'utf-8');
+  fs.writeFileSync(
+    path.join(root, 'explicit.yaml'),
+    yaml.dump({ mappings: [{ file: 'executor/orig/mod.ts', id: 'executor.explicit.mod' }] }),
+    'utf-8',
+  );
   const doc: Record<string, unknown> = {
     version: '1.0',
     project: { name: 'id-map-probe' },
@@ -68,19 +80,30 @@ function tree(declareOverride: boolean): string {
   return root;
 }
 
+const ENV_KEY = 'APCORE_ID__MAP_OVERRIDES';
+
 let cwd: string;
+let savedEnv: string | undefined;
 beforeEach(() => {
   cwd = process.cwd();
+  savedEnv = process.env[ENV_KEY];
+  // `env`: unset in every case that does not list it.
+  delete process.env[ENV_KEY];
 });
 afterEach(() => {
   process.chdir(cwd);
+  if (savedEnv === undefined) delete process.env[ENV_KEY];
+  else process.env[ENV_KEY] = savedEnv;
 });
 
 describe('id_map_from_config.json', () => {
   for (const testCase of fixture.test_cases) {
     it(testCase.id, async () => {
-      const root = tree(testCase.input.declare_override);
+      const root = tree(testCase.input.declare_override, testCase.input.config_map_entries);
       process.chdir(root);
+      for (const [name, value] of Object.entries(testCase.input.env ?? {})) {
+        process.env[name] = value;
+      }
       const config = Config.load(path.join(root, 'apcore.yaml'));
       const registry = new Registry({
         config,
@@ -92,6 +115,18 @@ describe('id_map_from_config.json', () => {
       expect([...registry.moduleIds].sort()).toEqual([...testCase.expected.module_ids]);
     });
   }
+
+  it('honours every driver_contract rule', () => {
+    expect(Object.keys(fixture.driver_contract).sort()).toEqual([
+      'config_map',
+      'config_map_entries',
+      'env',
+      'explicit_map',
+      'real_discovery',
+      'relative_paths',
+      'tree',
+    ]);
+  });
 
   it('uses the same resolution base as extensions.root', async () => {
     // §9.2.1 leaves the base for path-typed keys deliberately unspecified

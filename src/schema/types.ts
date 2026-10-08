@@ -51,6 +51,7 @@ export interface ResolvedSchema {
 export interface SchemaValidationErrorDetail {
   path: string;
   message: string;
+  keyword?: string;
   constraint?: string | null;
   expected?: unknown;
   actual?: unknown;
@@ -72,9 +73,7 @@ export function validationResultToError(result: SchemaValidationResult): SchemaV
   const errorDicts = result.errors.map((e) => ({
     path: e.path,
     message: e.message,
-    constraint: e.constraint ?? null,
-    expected: e.expected ?? null,
-    actual: e.actual ?? null,
+    keyword: e.keyword ?? e.constraint ?? 'type',
   }));
   return new SchemaValidationError(
     'Schema validation failed',

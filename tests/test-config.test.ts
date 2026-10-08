@@ -447,7 +447,9 @@ describe('path-typed configuration keys (PROTOCOL_SPEC §9.2.1)', () => {
     'bindings.dir',
     'extensions.root',
     'extensions.roots[]',
+    'id_map.overrides',
     'schema.root',
+    'sys_modules.control.overrides_path',
   ];
 
   it('accessor matches the declared set in both directions', () => {

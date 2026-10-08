@@ -32,7 +32,7 @@ function buildExecutor(moduleId: string, mod: Module): Executor {
 }
 
 describe('Module.preview() / PreflightResult.predictedChanges', () => {
-  it('module without preview() leaves predictedChanges absent', async () => {
+  it('module without preview() returns empty predictedChanges (D-141)', async () => {
     const mod = new FunctionModule({
       execute: () => ({ ok: true }),
       moduleId: 'no.preview',
@@ -44,13 +44,13 @@ describe('Module.preview() / PreflightResult.predictedChanges', () => {
     const result = await executor.validate('no.preview', { id: 'x' });
 
     expect(result.valid).toBe(true);
-    expect(result.predictedChanges).toBeUndefined();
+    expect(result.predictedChanges).toEqual([]);
     expect(
       result.checks.some((c: PreflightCheckResult) => c.check === 'module_preview'),
     ).toBe(false);
   });
 
-  it('preview() returning null leaves predictedChanges absent', async () => {
+  it('preview() returning null returns empty predictedChanges without a check (D-141)', async () => {
     const mod: Module = {
       inputSchema,
       outputSchema,
@@ -62,14 +62,13 @@ describe('Module.preview() / PreflightResult.predictedChanges', () => {
     const result = await executor.validate('preview.null', { id: 'x' });
 
     expect(result.valid).toBe(true);
-    expect(result.predictedChanges).toBeUndefined();
-    // The check is recorded (method was present and returned cleanly), even
-    // though no changes were produced.
+    expect(result.predictedChanges).toEqual([]);
+    // Null means no prediction is available, exactly as an omitted method.
     expect(
       result.checks.some(
         (c: PreflightCheckResult) => c.check === 'module_preview' && c.passed,
       ),
-    ).toBe(true);
+    ).toBe(false);
   });
 
   it('preview() returning a single Change with required fields populates predictedChanges', async () => {
@@ -171,7 +170,7 @@ describe('Module.preview() / PreflightResult.predictedChanges', () => {
     expect(result.valid).toBe(true);
     expect(result.errors).toEqual([]);
     // No changes recorded.
-    expect(result.predictedChanges).toBeUndefined();
+    expect(result.predictedChanges).toEqual([]);
     // Warning surfaces via the dedicated check.
     const previewCheck = result.checks.find(
       (c: PreflightCheckResult) => c.check === 'module_preview',
@@ -197,7 +196,7 @@ describe('Module.preview() / PreflightResult.predictedChanges', () => {
 
     expect(result.valid).toBe(true);
     expect(result.errors).toEqual([]);
-    expect(result.predictedChanges).toBeUndefined();
+    expect(result.predictedChanges).toEqual([]);
     const previewCheck = result.checks.find(
       (c: PreflightCheckResult) => c.check === 'module_preview',
     );

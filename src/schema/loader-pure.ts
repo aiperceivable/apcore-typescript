@@ -446,7 +446,10 @@ function _combinatorMembers(
 
   const members: TSchema[] = [];
   if ('enum' in schema) {
-    members.push(Type.Union((schema['enum'] as unknown[]).map(_convertConstValue)));
+    const enumeration = Type.Union((schema['enum'] as unknown[]).map(_convertConstValue));
+    // Preserve its source keyword for canonical validation diagnostics.
+    enumeration['enum'] = schema['enum'];
+    members.push(enumeration);
   }
   if ('const' in schema) members.push(_convertConstValue(schema['const']));
   // Both unions are marked with the keyword they came from, so the validator

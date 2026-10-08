@@ -107,11 +107,10 @@ export class PrometheusExporter {
       throw new Error('PrometheusExporter is already running. Call stop() first.');
     }
 
-    const exporter = this;
     this._server = createServer((req, res) => {
       const url = req.url ?? '/';
       if (url === metricsPath) {
-        const body = Buffer.from(exporter.export(), 'utf-8');
+        const body = Buffer.from(this.export(), 'utf-8');
         res.writeHead(200, {
           'Content-Type': 'text/plain; version=0.0.4; charset=utf-8',
           'Content-Length': String(body.length),
@@ -121,7 +120,7 @@ export class PrometheusExporter {
         res.writeHead(200);
         res.end('OK');
       } else if (url === '/readyz') {
-        if (exporter._ready) {
+        if (this._ready) {
           res.writeHead(200);
           res.end('OK');
         } else {
@@ -141,8 +140,10 @@ export class PrometheusExporter {
   stop(): Promise<void> {
     return new Promise((resolve) => {
       if (this._server !== null) {
-        this._server.close(() => resolve());
+        const server = this._server;
         this._server = null;
+        server.close(() => resolve());
+        server.closeIdleConnections();
       } else {
         resolve();
       }

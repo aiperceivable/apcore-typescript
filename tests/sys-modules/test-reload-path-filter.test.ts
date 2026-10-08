@@ -5,9 +5,10 @@
  * re-discovery to matching module IDs. Unaffected modules stay loaded.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { InvalidInputError, ModuleReloadConflictError } from '../../src/errors.js';
+import { InvalidInputError, ModuleReloadConflictError, ReloadFailedError } from '../../src/errors.js';
 import { EventEmitter } from '../../src/events/emitter.js';
 import { Registry } from '../../src/registry/registry.js';
+import { InMemoryAuditStore } from '../../src/sys-modules/audit.js';
 import { ReloadModule } from '../../src/sys-modules/control.js';
 
 describe('ReloadModule path_filter (Issue #45.4)', () => {
@@ -34,17 +35,44 @@ describe('ReloadModule path_filter (Issue #45.4)', () => {
     registry.registerInternal('app.email.fetch', createDummyModule());
     registry.registerInternal('app.calendar.list', createDummyModule());
 
-    // Stub re-discovery so the modules remain registered after re-discover.
-    vi.spyOn(registry, 'discover').mockResolvedValue(0);
+    // Re-discovery brings back what was unregistered.
+    vi.spyOn(registry, 'discover').mockImplementation(async () => {
+      registry.registerInternal('app.email.send', createDummyModule('2.0.0'));
+      registry.registerInternal('app.email.fetch', createDummyModule('2.0.0'));
+      return 2;
+    });
 
     const result = await mod.execute({ path_filter: 'app.email.*', reason: 'rotate' }, null);
 
     expect(result.success).toBe(true);
-    expect(Array.isArray(result.reloaded_modules)).toBe(true);
-    // The matching modules are unregistered then expected to be re-loaded by
-    // the discoverer. With our mock discover() that does nothing, only
-    // modules restored by registerInternal fallback would appear; verify
-    // mode does not crash and returns an array.
+    expect(result.reloaded_modules).toEqual(['app.email.fetch', 'app.email.send']);
+  });
+
+  it('fails with RELOAD_FAILED when a module is missing after re-discovery (D-112 rule 4)', async () => {
+    const send = createDummyModule();
+    const fetch = createDummyModule();
+    registry.registerInternal('app.email.send', send);
+    registry.registerInternal('app.email.fetch', fetch);
+    const store = new InMemoryAuditStore();
+    mod = new ReloadModule(registry, emitter, store);
+
+    // Only one of the two matched modules comes back.
+    vi.spyOn(registry, 'discover').mockImplementation(async () => {
+      registry.registerInternal('app.email.fetch', createDummyModule('2.0.0'));
+      return 1;
+    });
+
+    const err = await mod
+      .execute({ path_filter: 'app.email.*', reason: 'rotate' }, null)
+      .then(() => null, (e: unknown) => e);
+
+    expect(err).toBeInstanceOf(ReloadFailedError);
+    expect(String((err as Error).message)).toContain('app.email.send');
+    // The missing module is restored; the one that reloaded is not rolled back.
+    expect(registry.get('app.email.send')).toBe(send);
+    expect(registry.get('app.email.fetch')).not.toBe(fetch);
+    // A failed operation is not audited as a completed reload.
+    expect(store.query()).toEqual([]);
   });
 
   it('rejects when both module_id and path_filter are supplied', async () => {
@@ -64,7 +92,10 @@ describe('ReloadModule path_filter (Issue #45.4)', () => {
     // discover() is a no-op for the test — but we want to ensure
     // app.calendar.list is left untouched throughout the call.
     const safeUnregisterSpy = vi.spyOn(registry, 'safeUnregister');
-    vi.spyOn(registry, 'discover').mockResolvedValue(0);
+    vi.spyOn(registry, 'discover').mockImplementation(async () => {
+      registry.registerInternal('app.email.send', createDummyModule());
+      return 1;
+    });
 
     await mod.execute({ path_filter: 'app.email.*', reason: 'rotate' }, null);
 

@@ -224,10 +224,11 @@ function walk(
  * working directory differs. Without a published set, each such consumer builds
  * its own and drifts from the others.
  *
- * Two exclusions are deliberate, being the mistakes an implementer would
- * otherwise make. `bindings.pattern` is a glob matched against filenames *within*
- * `bindings.dir`, never resolved as a path itself. `id_map.overrides` holds
- * module IDs.
+ * `bindings.pattern` is deliberately excluded: it is a glob matched against
+ * filenames *within* `bindings.dir`, never resolved as a path itself.
+ * `id_map.overrides` is the path of an ID map file and
+ * `sys_modules.control.overrides_path` the path of the runtime overrides file
+ * (D-138); the latter's marker lives in the sys-modules namespace schema.
  *
  * `extensions.roots` is list-valued and every element carries a path, in both the
  * bare-string and the `{ root, namespace }` form — hence the element key
@@ -241,7 +242,9 @@ export const PATH_TYPED_CONFIG_KEYS: readonly string[] = [
   "bindings.dir",
   "extensions.root",
   "extensions.roots[]",
+  "id_map.overrides",
   "schema.root",
+  "sys_modules.control.overrides_path",
 ];
 
 export function collectUndeclaredFrameworkKeys(apcoreData: Record<string, unknown>): string[] {
