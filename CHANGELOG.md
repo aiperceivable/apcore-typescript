@@ -13,6 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`canonicalizeName()` is exported from both Node and browser entry points**, with `CanonicalNameResult` and four structured `CanonicalNameError` diagnostics. It normalizes one ASCII bare name without throwing, inventing prefixes, truncating, or changing Algorithm A02; shared fixtures align the Python, TypeScript, and Rust APIs.
 
+### Fixed
+
+- **CI verifies declared canonical fixtures before running the full suite**, with an explicit spec `main` checkout independent of SDK branches. An incomplete snapshot reports every missing declared fixture and instructs publishing spec changes before SDK changes; missing fixtures and cases are never skipped or replaced with private copies.
+
 ## [0.32.0] - 2026-10-08
 
 ### Security
