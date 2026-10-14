@@ -65,7 +65,7 @@ class RecordingEmitter extends EventEmitter {
 
   override emit(event: ApCoreEvent): void {
     this.events.push(event);
-    return super.emit(event);
+    super.emit(event);
   }
 }
 

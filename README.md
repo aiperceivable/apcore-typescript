@@ -826,6 +826,11 @@ npm run build
 - Registry system (scanner, metadata, entry points, dependencies, multi-class discovery)
 - Binding loader (YAML loading, target resolution, schema modes)
 - Observability (tracing, BatchSpanProcessor, metrics, Prometheus export, structured logging with redaction)
+- Sensitive-field redaction resolves local JSON Schema `$ref` pointers, anchors,
+  and in-document embedded `$id` resources with scoped anchors, including recursive
+  object/array schemas, positional items, declared legacy tuples and
+  combinator branches. It preserves sibling `x-sensitive` markers, never fetches
+  external schemas or files, and leaves the original values and schema unchanged.
 - Event system (circuit breaker wrapper, subscriber types, filter/file/stdout)
 - System modules (health, manifest, usage, control, audit trail, overrides persistence, Prometheus usage metrics)
 - Async tasks (pluggable store, retry backoff, reaper)

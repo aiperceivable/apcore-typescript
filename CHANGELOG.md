@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [Unreleased]
+
+## [0.32.1] - 2026-10-14
+
+### Security
+
+- Resolve local JSON Schema references before sensitive-field redaction, including pointers, anchors, root and embedded resource identifiers, scoped anchors, recursive schemas, reference chains, positional/legacy tuple arrays and combinator branches. Referenced sensitive values no longer leak through executor captures or SDK consumers such as MCP routers. Resolution is cycle-safe and never retrieves external schemas or files; public redaction signatures and source data remain unchanged.
+
+### Fixed
+
+- Fix existing lint errors by expressing async-handler detection with a callable signature and making the test event emitter's void override explicit; runtime behavior is unchanged.
+
 ## [0.32.0] - 2026-10-08
 
 ### Added

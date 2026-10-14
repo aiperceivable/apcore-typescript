@@ -6,6 +6,11 @@
  */
 
 import type { ACL } from './acl.js';
+import {
+  createRedactionReferenceContext,
+  resolveRedactionReference,
+  type RedactionReferenceContext,
+} from './utils/redaction-references.js';
 import type { ApprovalHandler } from './approval.js';
 import type { ExecutionPolicy } from './policy.js';
 import {
@@ -173,7 +178,7 @@ export function redactSensitive(
   rules?: RedactionConfig | null,
 ): Record<string, unknown> {
   const redacted = JSON.parse(JSON.stringify(data));
-  redactFields(redacted, schemaDict);
+  redactFields(redacted, schemaDict, createRedactionReferenceContext(schemaDict));
   redactSecretPrefix(redacted);
   const configured = rules ?? RedactionConfig.default();
   return configured.redact(redacted) as Record<string, unknown>;
@@ -190,18 +195,30 @@ const COMBINATORS = ['anyOf', 'oneOf', 'allOf'] as const;
  * declared directly (protocol-spec §10.6, A13, D-152). `Secret | None` puts the
  * marker in `anyOf[0]`, so a walk that read only the top level logged it.
  */
-function schemaVariants(schema: Record<string, unknown>): Record<string, unknown>[] {
-  const out: Record<string, unknown>[] = [schema];
-  for (const keyword of COMBINATORS) {
-    const branches = schema[keyword];
-    if (!Array.isArray(branches)) continue;
-    for (const branch of branches) {
-      if (branch !== null && typeof branch === 'object' && !Array.isArray(branch)) {
-        out.push(...schemaVariants(branch as Record<string, unknown>));
-      }
+function schemaVariants(
+  schema: Record<string, unknown>,
+  context: RedactionReferenceContext,
+): Record<string, unknown>[] {
+  const variants: Record<string, unknown>[] = [];
+  const pending = [schema];
+  const visited = new Set<object>();
+  while (pending.length > 0) {
+    const variant = pending.pop();
+    if (variant === undefined || visited.has(variant)) continue;
+    visited.add(variant);
+    variants.push(variant);
+    const reference = variant['$ref'];
+    if (typeof reference === 'string') {
+      const target = resolveRedactionReference(reference, context, variant);
+      if (target !== undefined) pending.push(target);
+    }
+    for (const keyword of COMBINATORS) {
+      const branches = variant[keyword];
+      if (!Array.isArray(branches)) continue;
+      for (const branch of branches) if (isPlainObject(branch)) pending.push(branch);
     }
   }
-  return out;
+  return variants;
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -209,35 +226,49 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 }
 
 /** Redact `value` as described by `schema`; returns the value to store. */
-function redactBySchema(value: unknown, schema: Record<string, unknown>): unknown {
+function redactBySchema(
+  value: unknown,
+  schema: Record<string, unknown>,
+  context: RedactionReferenceContext,
+): unknown {
   if (value === null || value === undefined) return value;
-  const variants = schemaVariants(schema);
+  const variants = schemaVariants(schema, context);
   if (variants.some((v) => v['x-sensitive'] === true)) return REDACTED_VALUE;
 
   if (Array.isArray(value)) {
-    for (const variant of variants) {
-      const items = variant['items'];
-      if (!isPlainObject(items)) continue;
-      for (let i = 0; i < value.length; i++) {
-        value[i] = redactBySchema(value[i], items);
-      }
-    }
+    for (const variant of variants) redactArrayBySchema(value, variant, context);
     return value;
   }
 
   if (isPlainObject(value)) {
-    redactFields(value, schema);
+    redactFields(value, schema, context);
   }
   return value;
 }
 
-function redactFields(data: Record<string, unknown>, schemaDict: Record<string, unknown>): void {
-  for (const variant of schemaVariants(schemaDict)) {
+function redactArrayBySchema(value: unknown[], schema: Record<string, unknown>, context: RedactionReferenceContext): void {
+  const dialect = context.dialects.get(schema) ?? context.rootSchema['$schema'];
+  const legacyTuple = typeof dialect === 'string' && (dialect.includes('/draft-07/') || dialect.includes('/2019-09/'));
+  const tuple = legacyTuple && Array.isArray(schema['items']) ? schema['items'] : undefined;
+  const prefix = !legacyTuple && Array.isArray(schema['prefixItems']) ? schema['prefixItems'] : undefined;
+  for (let index = 0; index < value.length; index++) {
+    const itemSchema = prefix ? prefix[index] ?? schema['items']
+      : tuple ? tuple[index] ?? schema['additionalItems'] : schema['items'];
+    if (isPlainObject(itemSchema)) value[index] = redactBySchema(value[index], itemSchema, context);
+  }
+}
+
+function redactFields(
+  data: Record<string, unknown>,
+  schemaDict: Record<string, unknown>,
+  context: RedactionReferenceContext,
+): void {
+  for (const variant of schemaVariants(schemaDict, context)) {
     const properties = variant['properties'];
     if (!isPlainObject(properties)) continue;
     for (const [fieldName, fieldSchema] of Object.entries(properties)) {
       if (!(fieldName in data) || !isPlainObject(fieldSchema)) continue;
-      data[fieldName] = redactBySchema(data[fieldName], fieldSchema);
+      data[fieldName] = redactBySchema(data[fieldName], fieldSchema, context);
     }
   }
 }
@@ -616,7 +647,9 @@ export class Executor {
     // `builtinAclGateWired: true` for a gate that is not there. That is the one
     // direction this accessor must never fail in.
     const steps = this._strategy.steps;
-    const aclGates = steps.filter((step): step is BuiltinACLCheck => step instanceof BuiltinACLCheck);
+    const aclGates = steps.filter(
+      (step): step is BuiltinACLCheck => step instanceof BuiltinACLCheck,
+    );
     const approvalGates = steps.filter(
       (step): step is BuiltinApprovalGate => step instanceof BuiltinApprovalGate,
     );
@@ -885,7 +918,8 @@ export class Executor {
             );
             if (recovery instanceof RetrySignal) {
               this._resetPipeCtxForRetry(pipeCtx, recovery.inputs);
-              if (pipeCtx.context.cancelToken !== ctx.cancelToken) pipeCtx.context.cancelToken?.dispose();
+              if (pipeCtx.context.cancelToken !== ctx.cancelToken)
+                pipeCtx.context.cancelToken?.dispose();
               pipeCtx.context = ctx;
               continue;
             }
@@ -1010,7 +1044,8 @@ export class Executor {
       }
       throw wrapped;
     } finally {
-      if (pipelineCtx.context.cancelToken !== ctx.cancelToken) pipelineCtx.context.cancelToken?.dispose();
+      if (pipelineCtx.context.cancelToken !== ctx.cancelToken)
+        pipelineCtx.context.cancelToken?.dispose();
     }
   }
 
@@ -1475,7 +1510,8 @@ export class Executor {
 
       return createPreflightResult(checks, requiresApproval, predictedChanges);
     } finally {
-      if (pipeCtx.context.cancelToken !== validateCtx.cancelToken) pipeCtx.context.cancelToken?.dispose();
+      if (pipeCtx.context.cancelToken !== validateCtx.cancelToken)
+        pipeCtx.context.cancelToken?.dispose();
     }
   }
 
@@ -1510,7 +1546,10 @@ export class Executor {
       const passed = st.result.action !== 'abort';
       let error: Record<string, unknown> | undefined;
       if (!passed && st.result.explanation) {
-        error = st.error ?? { code: `STEP_${st.name.toUpperCase()}_FAILED`, message: st.result.explanation };
+        error = st.error ?? {
+          code: `STEP_${st.name.toUpperCase()}_FAILED`,
+          message: st.result.explanation,
+        };
       }
       checks.push({ check: checkName, passed, error });
     }

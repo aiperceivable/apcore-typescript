@@ -44,7 +44,6 @@ export function validateContextKey(
  * This is the TypeScript-safe equivalent of Python's `inspect.iscoroutinefunction`.
  * Do NOT use `handler() instanceof Promise` — that calls the function and is too late.
  */
-// eslint-disable-next-line @typescript-eslint/no-unsafe-function-type
-export function isAsyncHandler(handler: Function): boolean {
+export function isAsyncHandler(handler: (...args: never[]) => unknown): boolean {
   return handler.constructor.name === 'AsyncFunction';
 }
