@@ -14,6 +14,8 @@
 import { describe, it, expect } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { Value } from '@sinclair/typebox/value';
+import { jsonSchemaToTypeBox } from '../src/schema/loader.js';
 import { toStrictSchema } from '../src/schema/strict.js';
 import { findFixturesRoot } from './spec-repo.js';
 
@@ -22,6 +24,7 @@ interface StrictConversionCase {
   readonly description?: string;
   readonly schema: Record<string, unknown>;
   readonly expected: Record<string, unknown>;
+  readonly validation_cases?: readonly { readonly data: unknown; readonly valid: boolean }[];
 }
 
 function loadFixture(name: string): { test_cases: readonly StrictConversionCase[] } {
@@ -39,6 +42,13 @@ describe('Conformance: to_strict_schema (A23)', () => {
       const got = toStrictSchema(tc.schema);
 
       expect(got, `[${tc.id}] ${tc.description ?? ''}`).toEqual(tc.expected);
+      if (tc.validation_cases) {
+        const validator = jsonSchemaToTypeBox(got);
+        for (const example of tc.validation_cases) {
+          expect(Value.Check(validator, example.data), `[${tc.id}] ${JSON.stringify(example.data)}`)
+            .toBe(example.valid);
+        }
+      }
       // A23 MUST deep-copy — the caller's schema is never mutated.
       expect(JSON.stringify(tc.schema), `[${tc.id}] to_strict_schema mutated its input`).toBe(
         before,

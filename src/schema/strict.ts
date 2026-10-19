@@ -111,22 +111,16 @@ function convertToStrict(node: unknown): void {
 
     for (const name of optionalNames) {
       const prop = properties[name] as Record<string, unknown>;
-      if ('type' in prop) {
-        if (typeof prop['type'] === 'string') {
-          prop['type'] = [prop['type'], 'null'];
-        } else if (Array.isArray(prop['type'])) {
-          if (!(prop['type'] as string[]).includes('null')) {
-            (prop['type'] as string[]).push('null');
-          }
-        }
-      } else {
-        // Pure $ref or composition — wrap in anyOf with null. `anyOf`, not
-        // `oneOf`: OpenAI structured outputs accepts only `anyOf` as the
-        // nullable-union spelling, and strict mode exists to feed that adapter.
-        // An author-written `oneOf` / `anyOf` is wrapped, never appended to:
-        // pushing a `null` branch into their union rewrites the contract they
-        // declared (and, for `oneOf`, its exclusivity count).
+      const constrained = ['enum', 'const', '$ref', 'allOf', 'anyOf', 'oneOf', 'not', 'if']
+        .some((key) => key in prop);
+      if (!('type' in prop) || constrained) {
+        // Constraints can reject null independently of the type keyword.
+        // Preserve the complete original schema in the non-null branch.
         properties[name] = { anyOf: [prop, { type: 'null' }] };
+      } else if (typeof prop['type'] === 'string') {
+        if (prop['type'] !== 'null') prop['type'] = [prop['type'], 'null'];
+      } else if (Array.isArray(prop['type']) && !prop['type'].includes('null')) {
+        prop['type'].push('null');
       }
     }
 
