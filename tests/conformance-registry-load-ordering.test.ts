@@ -202,30 +202,45 @@ describe('Conformance: registry_load_ordering.json', () => {
     expect(registry.list()).toHaveLength(expected['post_register_count']);
   });
 
-  it('concurrent_distinct_ids_run_in_parallel', async () => {
+  it.each([0, 150])('concurrent_distinct_ids_run_in_parallel (startup delay %ims)', async (startupDelayMs) => {
     const tc = caseById('concurrent_distinct_ids_run_in_parallel');
     const setup = tc['setup'];
     const expected = tc['expected'];
-
     const registry = new Registry();
+    let entered = 0;
+    let callbacksOverlap = false;
+    let release!: () => void;
+    let fail!: (error: Error) => void;
+    const gate = new Promise<void>((resolve, reject) => {
+      release = resolve;
+      fail = reject;
+    });
+    // Deadlock protection, not a performance assertion.
+    const watchdog = setTimeout(() => fail(new Error('onLoad callbacks did not overlap')), 5000);
     const makeSlow = (delayMs: number) => ({
       execute: async () => ({}),
       onLoad: async () => {
+        entered += 1;
+        if (entered === 2) {
+          callbacksOverlap = true;
+          release();
+        }
+        await gate;
         await sleep(delayMs);
       },
     });
-
-    const start = Date.now();
-    await Promise.all([
-      registry.register(setup['module_x']['id'], makeSlow(setup['module_x']['on_load_delay_ms'])),
-      registry.register(setup['module_y']['id'], makeSlow(setup['module_y']['on_load_delay_ms'])),
-    ]);
-    const elapsedMs = Date.now() - start;
-
-    expect(registry.get(setup['module_x']['id'])).not.toBeNull();
-    expect(registry.get(setup['module_y']['id'])).not.toBeNull();
-    expect(registry.list()).toHaveLength(expected['post_register_count']);
-    // Serialized callbacks would take >= 100ms; parallel ones stay under the cap.
-    expect(elapsedMs).toBeLessThan(expected['wall_clock_ms_less_than']);
+    try {
+      const results = await Promise.allSettled(['module_x', 'module_y'].map(async (key) => {
+        await sleep(startupDelayMs);
+        await registry.register(setup[key]['id'], makeSlow(setup[key]['on_load_delay_ms']));
+      }));
+      expect(results.every((result) => result.status === 'fulfilled')).toBe(expected['both_succeed']);
+      expect(callbacksOverlap).toBe(expected['callbacks_overlap']);
+      expect(registry.get(setup['module_x']['id'])).not.toBeNull();
+      expect(registry.get(setup['module_y']['id'])).not.toBeNull();
+      expect(registry.list()).toHaveLength(expected['post_register_count']);
+    } finally {
+      clearTimeout(watchdog);
+    }
   });
 });
