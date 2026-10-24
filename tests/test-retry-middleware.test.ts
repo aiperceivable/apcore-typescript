@@ -8,6 +8,9 @@ import { Config } from '../src/config.js';
 import { Executor } from '../src/executor.js';
 import { Registry } from '../src/registry/registry.js';
 import { FunctionModule } from '../src/decorator.js';
+import { buildStandardStrategy } from '../src/builtin-steps.js';
+import { MiddlewareManager } from '../src/middleware/manager.js';
+import type { StepResult } from '../src/pipeline.js';
 
 describe('RetryMiddleware', () => {
   const makeContext = () => new Context('trace-1', null, ['test.module'], null, null, null, {});
@@ -270,5 +273,48 @@ describe('RetryMiddleware', () => {
 
     const out = await executor.call('target', {});
     expect(out).toEqual({ recovered: true });
+  });
+
+  it('retries a real pipeline step timeout after module middleware has entered', async () => {
+    const observed: Error[] = [];
+    class RecordingRetry extends RetryMiddleware {
+      override async onError(
+        moduleId: string, inputs: Record<string, unknown>, error: Error, context: Context,
+      ): Promise<RetrySignal | null> {
+        observed.push(error);
+        return super.onError(moduleId, inputs, error, context);
+      }
+    }
+    const retry = new RecordingRetry({ maxRetries: 1, baseDelayMs: 1, jitter: false });
+    const manager = new MiddlewareManager();
+    manager.add(retry);
+    const registry = new Registry();
+    let moduleCalls = 0;
+    registry.register('test.module', new FunctionModule({
+      moduleId: 'test.module', description: 'Step timeout retry target',
+      inputSchema: Type.Object({}), outputSchema: Type.Object({ ok: Type.Boolean() }),
+      execute: () => { moduleCalls += 1; return { ok: true }; },
+    }));
+    const config = new Config({ executor: { max_module_repeat: 100 } });
+    const strategy = buildStandardStrategy({
+      registry, config, acl: null, approvalHandler: null, middlewareManager: manager,
+    });
+    let stepCalls = 0;
+    strategy.insertAfter('middleware_before', {
+      name: 'timed_step', description: 'Times out once before succeeding',
+      removable: true, replaceable: true, timeoutMs: 5,
+      execute: async (): Promise<StepResult> => {
+        stepCalls += 1;
+        if (stepCalls === 1) return new Promise<StepResult>(() => {});
+        return { action: 'continue' };
+      },
+    });
+    const executor = new Executor({ registry, config, strategy, middlewares: [retry] });
+    await expect(executor.call('test.module', {})).resolves.toEqual({ ok: true });
+    expect(stepCalls).toBe(2);
+    expect(moduleCalls).toBe(1);
+    expect(observed).toHaveLength(1);
+    expect(observed[0]).toBeInstanceOf(ModuleTimeoutError);
+    expect(observed[0]).toMatchObject({ code: 'MODULE_TIMEOUT', retryable: true });
   });
 });

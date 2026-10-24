@@ -59,7 +59,7 @@ import {
   annotationsToJSON,
   annotationsFromJSON,
 } from '../src/module.js';
-import { BuiltinApprovalGate } from '../src/builtin-steps.js';
+import { BuiltinApprovalGate, buildStandardStrategy } from '../src/builtin-steps.js';
 import type { ApprovalResult } from '../src/approval.js';
 import { resolveDependencies } from '../src/registry/dependencies.js';
 import { parseDependencies } from '../src/registry/metadata-pure.js';
@@ -1722,6 +1722,47 @@ describe('apcore Conformance Suite (TypeScript)', () => {
       }
       expect(strategy.findStepIndex('nonexistent')).toBeUndefined();
     });
+
+    for (const tc of pipelineHardeningFixture.test_cases.filter((c: any) => c.input.custom_step)) {
+      it(tc.id, async () => {
+        const registry = new Registry();
+        const moduleId = 'fixture.module';
+        registry.register(moduleId, new FunctionModule({
+          execute: () => ({}), moduleId,
+          inputSchema: Type.Object({}), outputSchema: Type.Object({}),
+          description: 'Step timeout fixture module',
+        }));
+        const strategy = buildStandardStrategy({
+          registry, config: null, acl: null, approvalHandler: null,
+          middlewareManager: new MiddlewareManager(),
+        });
+        const custom = tc.input.custom_step;
+        let completed = false;
+        strategy.insertAfter(custom.after, {
+          name: custom.name, description: 'Fixture-driven timed step',
+          removable: true, replaceable: true, timeoutMs: tc.input.timeout_ms,
+          execute: async (): Promise<StepResult> => {
+            await new Promise((resolve) => setTimeout(resolve, custom.sleep_ms));
+            completed = true;
+            return { action: 'continue' };
+          },
+        });
+        const executor = new Executor({ registry, strategy });
+        if ('call_error_code' in tc.expected) {
+          await expect(executor.call(moduleId, {})).rejects.toMatchObject({
+            code: tc.expected.call_error_code,
+          });
+          expect(completed).toBe(false);
+        } else if ('call_succeeds' in tc.expected) {
+          const result = await executor.call(moduleId, {});
+          expect(result).toEqual({});
+          expect(completed).toBe(tc.expected.call_succeeds);
+        } else {
+          throw new Error(`Unhandled timeout expectation in ${tc.id}`);
+        }
+      });
+    }
+
   });
 
   // ---------------------------------------------------------------------------

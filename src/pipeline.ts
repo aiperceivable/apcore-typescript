@@ -4,7 +4,7 @@
 
 import type { GovernanceProjection } from './acl-handlers.js';
 import type { Context } from './context.js';
-import { ModuleError } from './errors.js';
+import { ModuleError, ModuleTimeoutError } from './errors.js';
 import type { ErrorOptions } from './errors.js';
 import { MiddlewareChainError } from './middleware/manager.js';
 import { matchPattern } from './utils/pattern.js';
@@ -1179,7 +1179,7 @@ export class PipelineEngine {
           let timer: ReturnType<typeof setTimeout>;
           const timeoutPromise = new Promise<never>((_, reject) => {
             timer = setTimeout(() => {
-              reject(new Error(`Step '${step.name}' timed out after ${stepTimeoutMs}ms`));
+              reject(new ModuleTimeoutError(ctx.moduleId, stepTimeoutMs));
             }, stepTimeoutMs);
           });
           result = await Promise.race([step.execute(ctx), timeoutPromise]).finally(() => {

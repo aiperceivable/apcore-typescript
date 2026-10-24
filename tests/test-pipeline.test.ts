@@ -3,6 +3,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
+import { ModuleTimeoutError } from '../src/errors.js';
 import { Context } from '../src/context.js';
 import {
   ExecutionStrategy,
@@ -461,6 +462,68 @@ describe('PipelineEngine.run - timeoutMs', () => {
     const s = new ExecutionStrategy('s', [slowStep]);
     await expect(engine.run(s, ctx)).rejects.toThrow(/timed out/);
   }, 3000);
+
+  function stalledStep(ignoreErrors = false): Step {
+    return {
+      ...makeStep('slow', { timeoutMs: 5, ignoreErrors }),
+      execute: () => new Promise<StepResult>(() => {}),
+    };
+  }
+
+  it('preserves the typed timeout cause, step identity and failure trace', async () => {
+    const engine = new PipelineEngine();
+    const ctx = makeContext();
+    const strategy = new ExecutionStrategy('s', [stalledStep()]);
+    const failure: unknown = await engine.run(strategy, ctx).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(PipelineStepError);
+    const error = failure as PipelineStepError;
+    expect(error.stepName).toBe('slow');
+    expect(error.cause).toBeInstanceOf(ModuleTimeoutError);
+    expect(error.cause).toMatchObject({
+      code: 'MODULE_TIMEOUT', moduleId: 'test.module', timeoutMs: 5, retryable: true,
+    });
+    expect(error.pipelineTrace).toBe(ctx.trace);
+    expect(error.pipelineTrace).toMatchObject({
+      success: false,
+      steps: [{ name: 'slow', result: { action: 'abort' }, skipped: false }],
+    });
+  });
+
+  it('continues after an ignored timeout and records the ignored step', async () => {
+    const engine = new PipelineEngine();
+    const strategy = new ExecutionStrategy('s', [stalledStep(true), makeStep('after')]);
+    const [, trace] = await engine.run(strategy, makeContext());
+    expect(trace.success).toBe(true);
+    expect(trace.steps.map((step) => step.name)).toEqual(['slow', 'after']);
+    expect(trace.steps[0].skipReason).toBe('error_ignored');
+  });
+
+  it('allows timeout recovery and closes the step middleware hooks in reverse order', async () => {
+    const engine = new PipelineEngine();
+    const events: string[] = [];
+    engine.addStepMiddleware({
+      beforeStep: () => { events.push('before:outer'); },
+      onStepError: () => { events.push('error:outer'); return null; },
+      afterStep: (_name, _state, output) => {
+        events.push('after:outer');
+        expect(output).toEqual({ recovered: true });
+      },
+    });
+    engine.addStepMiddleware({
+      beforeStep: () => { events.push('before:inner'); },
+      onStepError: (_name, _state, error) => {
+        events.push('error:inner');
+        expect(error).toBeInstanceOf(ModuleTimeoutError);
+        return { recovered: true };
+      },
+      afterStep: () => { events.push('after:inner'); },
+    });
+    const [output, trace] = await engine.run(new ExecutionStrategy('s', [stalledStep()]), makeContext());
+    expect(output).toEqual({ recovered: true });
+    expect(trace.success).toBe(true);
+    expect(trace.steps[0].skipReason).toBe('error_recovered');
+    expect(events).toEqual(['before:outer', 'before:inner', 'error:inner', 'after:inner', 'after:outer']);
+  });
 });
 
 // ---------------------------------------------------------------------------
