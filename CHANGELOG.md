@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [0.32.3] - 2026-10-25
+
+### Added
+
+- Add `CancelToken.drain()` so lifecycle owners can await actual module execution and asynchronous finalizers, including descendant cancellation scopes. Ordinary cancellation and executor deadlines remain prompt.
+
+### Fixed
+
+- `AsyncTaskManager.shutdown()` now joins owned workers even when their task records are already cancelled or reclaimed, and reports task-store errors only after local cleanup settles.
+- Retain concurrency slots until module execution and finalizers finish, preventing another task or retry from overlapping deferred cleanup.
+- Publish task failure and retry-pending status before awaiting physical cleanup, so timeout errors and task outcomes remain promptly observable.
+- `ReaperHandle.stop()` now waits for an in-flight sweep before resolving, preventing store cleanup from continuing after the reaper is reported stopped.
+
 ## [0.32.2] - 2026-10-19
 
 ### Fixed
