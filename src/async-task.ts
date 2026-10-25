@@ -621,12 +621,6 @@ export class AsyncTaskManager {
             execError = err;
           }
 
-          // An aborted executor can settle before the module's finally block.
-          // Keep physical concurrency capacity reserved until that work settles.
-          await cancelToken.drain();
-          this._releaseSlot();
-          slotHeld = false;
-
           if (succeeded || abandoned || internal.cancelled) return;
 
           if (retry && info.retryCount < retry.maxRetries) {
@@ -640,6 +634,12 @@ export class AsyncTaskManager {
             // startedAt reflects first-run timestamp; completedAt remains null
             // because the task has not yet terminated.
             await this._store.save(info);
+
+            // Publish the logical retry outcome promptly, but do not let a
+            // retry or another task overlap this attempt's deferred finalizers.
+            await cancelToken.drain();
+            this._releaseSlot();
+            slotHeld = false;
 
             // A-D-004 (apcore v0.22.0): race the backoff wait against the
             // task's cancel signal so a cancel() issued mid-backoff unwinds

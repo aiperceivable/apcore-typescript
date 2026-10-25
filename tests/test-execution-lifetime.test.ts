@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { Type } from '@sinclair/typebox';
-import { AsyncTaskManager, InMemoryTaskStore } from '../src/async-task.js';
+import { AsyncTaskManager, InMemoryTaskStore, RetryConfig } from '../src/async-task.js';
 import { CancelToken } from '../src/cancel.js';
 import { Context } from '../src/context.js';
 import { Executor } from '../src/executor.js';
@@ -74,6 +74,54 @@ describe('execution lifetime after prompt cancellation', () => {
 
   it('drains an unused cancellation scope immediately', async () => {
     await expect(new CancelToken().drain()).resolves.toBeUndefined();
+  });
+
+  it.each([false, true])('publishes timeout failure before cleanup and retains shutdown ownership after record removal=%s', async (removeRecord) => {
+    const fixture = cancellationFixture();
+    const manager = new AsyncTaskManager({ executor: fixture.executor, maxConcurrent: 1 });
+    const context = Context.create(null, null, new CancelToken(), {}, null, Date.now() / 1000 + 0.05);
+    const taskId = await manager.submit('test.cleanup', {}, { context });
+    let stopping: Promise<void> | undefined;
+    try {
+      await fixture.started.promise;
+      await expect.poll(async () => (await manager.getStatus(taskId))?.status).toBe('failed');
+      const failed = await manager.getStatus(taskId);
+      expect(failed?.error).toContain('timed out');
+      expect(failed?.completedAt).not.toBeNull();
+      expect(fixture.state.cleaned).toBe(false);
+      if (removeRecord) await manager.cleanup(0);
+      const next = await manager.submit('test.cleanup', {});
+      await turn();
+      expect((await manager.getStatus(next))?.status).toBe('pending');
+      let stopped = false;
+      stopping = manager.shutdown().then(() => { stopped = true; });
+      await turn();
+      expect(stopped).toBe(false);
+    } finally {
+      fixture.cleanup.resolve();
+      await (stopping ?? manager.shutdown());
+    }
+    expect(fixture.state.cleaned).toBe(true);
+  });
+
+  it('publishes a pending retry before cleanup without starting another execution', async () => {
+    const fixture = cancellationFixture();
+    const manager = new AsyncTaskManager({ executor: fixture.executor, maxConcurrent: 1 });
+    const context = Context.create(null, null, new CancelToken(), {}, null, Date.now() / 1000 + 0.05);
+    const taskId = await manager.submit('test.cleanup', {}, {
+      context, retry: new RetryConfig({ maxRetries: 1, retryDelayMs: 0 }),
+    });
+    try {
+      await fixture.started.promise;
+      await expect.poll(async () => (await manager.getStatus(taskId))?.retryCount).toBe(1);
+      expect((await manager.getStatus(taskId))?.status).toBe('pending');
+      expect(fixture.state.cleaned).toBe(false);
+      const next = await manager.submit('test.cleanup', {});
+      await turn();
+      expect((await manager.getStatus(next))?.status).toBe('pending');
+      expect(await manager.cancel(taskId)).toBe(true);
+      expect((await manager.getStatus(taskId))?.status).toBe('cancelled');
+    } finally { fixture.cleanup.resolve(); await manager.shutdown(); }
   });
 
   it.each([false, true])('joins already cancelled workers even after cleanup removes records=%s', async (removeRecords) => {
