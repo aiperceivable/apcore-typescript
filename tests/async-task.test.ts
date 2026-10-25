@@ -623,7 +623,7 @@ describe('AsyncTaskManager', () => {
     it('shutdown() still resolves normally when the store is healthy', async () => {
       const store = new UnavailableStore();
       const manager = managerOver(store);
-      const taskId = await manager.submit('test.slow', { delay: 60000 });
+      const taskId = await manager.submit('test.slow', { delay: 200 });
       await wait(50);
       await expect(manager.shutdown()).resolves.toBeUndefined();
       expect((await manager.getStatus(taskId))?.status).toBe(TaskStatus.CANCELLED);

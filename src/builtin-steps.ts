@@ -6,6 +6,7 @@
  * that each step is independently testable.
  */
 
+import { trackExecution } from './execution-lifetime.js';
 import type { TSchema } from '@sinclair/typebox';
 import { Kind } from '@sinclair/typebox';
 import type { ACL, AccessDecision } from './acl.js';
@@ -989,6 +990,7 @@ export class BuiltinExecute implements Step {
     execution: Promise<Record<string, unknown>>, ctx: PipelineContext, timeoutMs: number,
   ): Promise<Record<string, unknown>> {
     const token = ctx.context.cancelToken;
+    if (token) trackExecution(token, execution);
     let timer: ReturnType<typeof setTimeout> | undefined;
     let timedOut = false;
     let onAbort: (() => void) | undefined;

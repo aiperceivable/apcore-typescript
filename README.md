@@ -847,3 +847,18 @@ npm run build
 ## License
 
 Apache-2.0
+
+### Cancellation and execution cleanup
+
+`CancelToken.cancel()` and executor timeouts interrupt the caller promptly. A
+module's asynchronous `finally` block can still be running after that interruption.
+Lifecycle owners can `await token.drain()` after stopping new work to join actual
+module execution and finalizers, including child scopes. Call `drain()` from the
+owner, never from a module tracked by the same token. A module that ignores
+cancellation can keep graceful drain pending.
+
+`AsyncTaskManager.shutdown()` joins its workers even when their records are already
+cancelled or reclaimed, retains concurrency capacity until physical execution
+finishes, and joins an in-flight reaper sweep. Store errors are reported after
+owned work settles. This cleanup capability is additive; ordinary cancellation and
+execution deadlines retain their prompt response behavior.

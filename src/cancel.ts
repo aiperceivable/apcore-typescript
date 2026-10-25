@@ -11,6 +11,7 @@
  * whose pause points are not Web APIs.
  */
 
+import { drainExecutions, linkExecutionParent } from './execution-lifetime.js';
 import { ModuleError } from './errors.js';
 
 export class ExecutionCancelledError extends ModuleError {
@@ -46,6 +47,7 @@ export class CancelToken {
 
   /** Derive a cancellation scope, including runtimes without AbortSignal.any. */
   constructor(private readonly _parent: CancelToken | null = null) {
+    linkExecutionParent(this, _parent);
     if (_parent !== null && typeof AbortSignal.any === 'function') {
       this._signal = AbortSignal.any([this._controller.signal, _parent.signal]);
     } else {
@@ -90,6 +92,16 @@ export class CancelToken {
       this._controller.abort();
     }
     this.dispose();
+  }
+
+  /**
+   * Wait for owned module bodies and their asynchronous finalizers to settle.
+   * Cancellation remains prompt; lifecycle owners call drain after stopping new
+   * work. Do not await this from inside an execution owned by the same token.
+   * A body that ignores cancellation can keep drain pending indefinitely.
+   */
+  async drain(): Promise<void> {
+    await drainExecutions(this);
   }
 
   check(): void {

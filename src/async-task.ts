@@ -171,6 +171,7 @@ export class AsyncTaskManager {
   private readonly _maxConcurrent: number;
   private readonly _maxTasks: number;
   private readonly _internal: Map<string, InternalTask> = new Map();
+  private readonly _workers: Set<Promise<void>> = new Set();
   private _runningCount: number = 0;
   private readonly _waitQueue: Array<() => void> = [];
   private _reaper: ReaperHandle | null = null;
@@ -371,34 +372,28 @@ export class AsyncTaskManager {
       await this._reaper.stop();
     }
 
-    const promises: Promise<void>[] = [];
+    // Physical workers remain owned even after terminal records are reclaimed.
+    const workers = [...this._workers];
+    for (const internal of this._internal.values()) {
+      internal.cancelled = true;
+      internal.cancelToken.cancel();
+    }
     const cancels: Promise<boolean>[] = [];
-    for (const task of await this._store.list()) {
-      if (task.status === TaskStatus.PENDING || task.status === TaskStatus.RUNNING) {
-        const internal = this._internal.get(task.taskId);
-        // Issued together (not awaited one by one) so the store writes still
-        // overlap, but collected rather than dropped: the postcondition is
-        // that no active task survives the call, so shutdown() must not
-        // resolve while a CANCELLED write is still outstanding.
-        cancels.push(this.cancel(task.taskId));
-        if (internal) promises.push(internal.promise);
+    let listFailure: { error: unknown } | undefined;
+    try {
+      for (const task of await this._store.list()) {
+        if (task.status === TaskStatus.PENDING || task.status === TaskStatus.RUNNING) {
+          cancels.push(this.cancel(task.taskId));
+        }
       }
+    } catch (error) {
+      listFailure = { error };
     }
-    const cancelOutcomes = await Promise.allSettled(cancels);
-    // Task-body exceptions stay swallowed — the shutdown Contract's `### Errors`
-    // row says they are settled and not re-raised.
-    await Promise.allSettled(promises);
-
-    // A store write that failed is a different matter (spec v1.49.0, D-81:
-    // "store errors reach the caller"). Resolving normally would assert this
-    // method's own postcondition — every task that was PENDING or RUNNING is now
-    // CANCELLED — for a task whose CANCELLED record never landed. The reaper and
-    // the task promises are settled first so a store outage does not also leak a
-    // running timer.
-    const storeFailure = cancelOutcomes.find((o) => o.status === 'rejected');
-    if (storeFailure !== undefined) {
-      throw (storeFailure as PromiseRejectedResult).reason;
-    }
+    const outcomes = await Promise.allSettled(cancels);
+    await Promise.allSettled(workers);
+    const failedCancel = outcomes.find((outcome) => outcome.status === 'rejected');
+    if (listFailure !== undefined) throw listFailure.error;
+    if (failedCancel?.status === 'rejected') throw failedCancel.reason;
   }
 
   /**
@@ -489,8 +484,8 @@ export class AsyncTaskManager {
 
     let stopped = false;
     let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
-    let resolveStop!: () => void;
-    const stopPromise = new Promise<void>((resolve) => { resolveStop = resolve; });
+    let activeSweep: Promise<void> | null = null;
+    let stopping: Promise<void> | null = null;
 
     const sweep = async (): Promise<void> => {
       if (stopped) return;
@@ -505,22 +500,24 @@ export class AsyncTaskManager {
         console.warn('[apcore:async-task] Reaper sweep failed:', err);
       }
       if (!stopped) {
-        timeoutHandle = setTimeout(() => { void sweep(); }, sweepIntervalMs);
+        timeoutHandle = setTimeout(() => { activeSweep = sweep(); }, sweepIntervalMs);
       }
     };
 
-    timeoutHandle = setTimeout(() => { void sweep(); }, sweepIntervalMs);
+    timeoutHandle = setTimeout(() => { activeSweep = sweep(); }, sweepIntervalMs);
 
     const handle: ReaperHandle = {
-      stop: async (): Promise<void> => {
+      stop: (): Promise<void> => {
+        if (stopping) return stopping;
         stopped = true;
-        this._reaper = null;
         if (timeoutHandle !== null) {
           clearTimeout(timeoutHandle);
           timeoutHandle = null;
         }
-        resolveStop();
-        await stopPromise;
+        stopping = Promise.resolve(activeSweep).then(() => {
+          if (this._reaper === handle) this._reaper = null;
+        });
+        return stopping;
       },
     };
 
@@ -624,6 +621,9 @@ export class AsyncTaskManager {
             execError = err;
           }
 
+          // An aborted executor can settle before the module's finally block.
+          // Keep physical concurrency capacity reserved until that work settles.
+          await cancelToken.drain();
           this._releaseSlot();
           slotHeld = false;
 
@@ -660,6 +660,7 @@ export class AsyncTaskManager {
           }
         }
       } finally {
+        await cancelToken.drain();
         if (slotHeld) this._releaseSlot();
         internal.resolve();
         // The handle holds a Promise, a resolve closure and a live
@@ -674,9 +675,11 @@ export class AsyncTaskManager {
       }
     };
 
-    run().catch((err) => {
+    const worker = run().catch((err) => {
       console.warn('[apcore:async-task] Unexpected error in task runner:', err);
     });
+    this._workers.add(worker);
+    void worker.then(() => { this._workers.delete(worker); });
   }
 
   /**
